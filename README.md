@@ -1,131 +1,119 @@
-# Fas2Lsp
+# atlispcc — FAS4 Bytecode Compiler & Decompiler
 
-Fas2Lsp is an experimental toolkit for decoding AutoCAD/BricsCAD FAS files back into readable AutoLISP (`.lsp`) output.
+`atlispcc` is a unified CLI toolchain for compiling AutoLISP (`.lsp`) to AutoCAD/BricsCAD FAS4 bytecode (`.fas`), decompiling FAS4 back to Lisp, linking multiple FAS files, and validating Lisp syntax.
 
-The project currently focuses on FAS4 files and includes a practical compatibility path for loading decoded output in BricsCAD, especially for cases where BricsCAD cannot load AutoCAD `.fas` files directly.
+## CLI
 
-## Current Status
-
-This is not a perfect source-code recovery tool. FAS files do not preserve all original source structure, names, comments, or external runtime dependencies. The generated `.lsp` is best treated as a reconstructed, editable starting point.
-
-The current decoder can:
-
-- Parse and disassemble FAS4 bytecode.
-- Recover many function definitions, command names, local variables, string literals, and symbol references.
-- Emit runnable AutoLISP-style output where possible.
-- Add compatibility helpers for decoded calls that collide with BricsCAD or AutoLISP built-ins.
-- Validate generated `.lsp` syntax with the included validator.
-
-Known limitations:
-
-- Decompiled output may still need manual cleanup.
-- External application frameworks are not bundled automatically. If a FAS file depends on other `.fas`, `.vlx`, `.arx`, `.dcl`, `.odcl`, or `.lsp` files, those dependencies are still required or must be stubbed.
-- Some helper behavior is inferred from bytecode usage, not recovered from original source.
-- Command behavior should always be tested in CAD before using it on important drawings.
-
-## Repository Contents
-
-```text
-Fas2Lsp/
-  fas4_decompiler.py       Main FAS4 decoder and AutoLISP generator
-  validate.py              Generated LSP syntax validator
-  bib.fas                  Sample/input FAS file currently under investigation
-  bib_generic.lsp          Generated LSP output for bib.fas
-  PDI.fas                  Small sample FAS file
-  PDI_generic.lsp          Generated LSP output for PDI.fas
-  compare_lsp.py           Output comparison helper
-  decrypt_fas4.py          FAS4 decoding/decryption helper
-  analyze_rosetta.py       Analysis helper
-  test_disasm.py           Disassembler test scaffold
-  server/                  Older parser/LSP server experiments
+```sh
+atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]      # compile
+atlispcc decompile <input.fas> [output.lsp]                   # decompile
+atlispcc validate <input.lsp>                                  # validate
+atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]       # link
 ```
 
-## Requirements
+Without a subcommand, defaults to compile: `atlispcc <input.lsp> [output.fas]`
 
-- Python 3.8 or newer
-- BricsCAD or AutoCAD for testing generated AutoLISP
+The decompiler can also be called directly: `python fas4_decompiler.py <input.fas> [output.lsp]`
 
-No network service is required for local decoding.
+## Compiler Pipeline
 
-## Basic Usage
-
-Decode a FAS4 file:
-
-```powershell
-python fas4_decompiler.py bib.fas bib_generic.lsp
+```
+Lisp source → Parser.parse() → AST
+           → SymbolTableBuilder.build() → SymbolTable
+           → Codegen.generate() → List[FunctionDef] (instruction stream)
+           → [OptPipeline.optimize()  # optional: -O1/-O2/-O3]
+           → ResourceBuilder.build() → resource segment
+           → FasWriter.write() → FAS4 binary
 ```
 
-Validate generated output:
+## Decompiler Pipeline
 
-```powershell
-python validate.py bib_generic.lsp
+```
+Fas4Parser.parse() → Disassembler.disassemble()
+→ ControlFlowAnalyzer.find_functions() → LispGenerator.generate()
 ```
 
-Load the decoded file in BricsCAD:
+## Linker Pipeline
 
-```lisp
-(load "F:/Fas2Lsp/bib_generic.lsp")
+```
+FAS A + FAS B + ... → merge symbol tables / function catalogs
+→ re-index → fix cross-references → merged FAS
 ```
 
-Call a decoded command, for example:
+## Optimization Levels
 
-```lisp
-POLYCC
+| Level | Passes | Description |
+|-------|--------|-------------|
+| `-O0` | none | Raw compilation, no optimization |
+| `-O1` | ConstantFold, DeadBranchElim, Peephole | Basic cleanup: `(+ 1 2)` → `3`, `(if T e1 e2)` → `e1`, `(progn x)` → `x` |
+| `-O2` | O1 + ConstantPropagate, DeadAssignElim | Aggressive: `(setq x 3) (+ x 1)` → `(+ 3 1)`, remove unused `setq` |
+| `-O3` | O2 + CrossFuncConstPropagate, DeadCodeElim, InlineSmallFuncs | Extreme: inline single-use functions, replace constant functions at call sites, remove dead code after `exit`/`quit` |
+
+### Analysis
+
+Use `--analyze` with any `-O` level to see compilation statistics:
+
+```sh
+atlispcc compile --analyze -O3 input.lsp output.fas
 ```
 
-## BricsCAD Compatibility Notes
+Output includes:
+- Function count, instruction count, constants estimate
+- Tail-recursive function detection
+- Per-function detail: arg count, locals, called functions
+- Before/after comparison when optimization is enabled
 
-BricsCAD cannot load AutoCAD `.fas` files directly in many cases, so this project emits plain `.lsp` output.
+## Key Files
 
-The generator now includes compatibility helpers for several decoded patterns found in `bib.fas`, including:
+| File | Role |
+|------|------|
+| `fas4_decompiler.py` (2136 lines) | Main decompiler: parse + disassemble + analyze + generate |
+| `fas_core.py` (690 lines) | Shared crypto/parse/symbol utilities |
+| `compiler/cli.py` | CLI entry point, subcommand dispatch |
+| `compiler/parser.py` | Lisp source parser → AST |
+| `compiler/ast.py` | AST node definitions |
+| `compiler/symbol_table.py` | Symbol table construction and scope analysis |
+| `compiler/codegen.py` | Bytecode generator (AST → instruction stream) |
+| `compiler/resource_builder.py` | Constant/symbol/function index → resource segment |
+| `compiler/fas_writer.py` | Instruction stream → FAS4 binary |
+| `compiler/opt.py` | Optimizer: 8 passes across O1-O3 |
+| `compiler/analyzer.py` | Compilation analysis and statistics |
+| `compiler/linker.py` | Multi-file FAS linker |
+| `validate.py` | Generated `.lsp` syntax validator |
 
-- One-argument decoded `POLAR` calls routed through `fas-polar1`.
-- Project-style `RTOS` calls routed through `fas-rtos1` / `fas-rtos3` so they do not collide with AutoLISP `rtos`.
-- Project-style `GETVAR` calls routed through `fas-getvar2` / `fas-getvar3`.
-- `IN_PARAM` lookup support for lists, association lists, lambda-style selectors, and entity DXF group reads.
-- A BricsCAD selection fallback for the missing `PROJET/PA_PROJET/AR_PROJET` project dialog.
+## Install
 
-For `POLYCC`, the original FAS appears to call a project selection/dialog framework named `Projet/PA_Projet`. That framework is not present in this repository, so the generated file uses a fallback entity selection prompt. This allows the command to load and continue in BricsCAD, but it is not a full replacement for the original application UI.
-
-## Regenerating Included Outputs
-
-Regenerate both included sample outputs:
-
-```powershell
-python fas4_decompiler.py bib.fas bib_generic.lsp
-python fas4_decompiler.py PDI.fas PDI_generic.lsp
-python validate.py bib_generic.lsp
-python validate.py PDI_generic.lsp
+```sh
+pip install -e ".[dev]"      # development mode with dev tools
 ```
 
-Expected validator output:
+## Tests
 
-```text
-[PASS] bib_generic.lsp
-[PASS] PDI_generic.lsp
+```sh
+python -m pytest              # run all tests (75+ cases)
+python -m pytest tests/ -v   # verbose output
 ```
 
-## Development Notes
+Test files under `tests/`:
+- `test_parser.py` — AST parser (14 cases)
+- `test_compile_decompile.py` — compile-decompile roundtrip (15 cases)
+- `test_compiler_output.py` — FAS output correctness (8 cases)
+- `test_assembler.py` — disassemble/assemble roundtrip (4 cases)
+- `test_linker.py` — multi-file linking (8 cases)
+- `test_optimizer.py` — all optimization passes (26 cases)
 
-When improving decoder quality, prefer fixing `fas4_decompiler.py` and regenerating the `.lsp` output instead of hand-editing generated files. Hand patches are useful for experiments, but decoder-level fixes are repeatable across files.
+## BricsCAD Compatibility
 
-Useful checks:
+The decompiler emits wrapper helpers to avoid built-in collisions:
+- `fas-polar1`, `fas-rtos1`, `fas-rtos3`, `fas-getvar2`, `fas-getvar3`
+- `IN_PARAM` lookup for lists, association lists, DXF group reads
+- Fallback prompt when the `Projet/PA_Projet` framework is missing
 
-```powershell
-python -m py_compile fas4_decompiler.py
-python validate.py bib_generic.lsp
-python validate.py PDI_generic.lsp
-```
+## Docs
 
-If a generated file loads but a command fails in CAD, capture:
-
-- The exact command called.
-- The exact BricsCAD/AutoCAD error text.
-- The expression shown near the error.
-- The call stack if available.
-
-That information usually identifies whether the issue is syntax recovery, function arity recovery, a built-in name collision, or a missing external dependency.
+- `docs/development.md` — architecture deep-dive, coding conventions, debugging guide
+- `docs/usage.md` — user installation, compile/decompile workflows, tool reference
 
 ## Safety
 
-Generated LSP should be reviewed before use. Test in a scratch drawing first. Some decoded commands may create, modify, or delete drawing entities depending on the original FAS behavior.
+Always review decompiled `.lsp` before use. Test in a scratch drawing first. Some decoded commands may create, modify, or delete drawing entities.
