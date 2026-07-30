@@ -1,6 +1,6 @@
 # atlispcc — FAS4 Bytecode Compiler & Decompiler
 
-`atlispcc` is a unified CLI toolchain for compiling AutoLISP (`.lsp`) to AutoCAD/BricsCAD FAS4 bytecode (`.fas`), decompiling FAS4 back to Lisp, linking multiple FAS files, and validating Lisp syntax.
+`atlispcc` is a unified CLI toolchain for compiling AutoLISP (`.lsp`) to FAS4 bytecode (`.fas`), decompiling FAS4 back to Lisp, linking multiple FAS files, and validating Lisp syntax.
 
 ## CLI
 
@@ -101,13 +101,6 @@ Test files under `tests/`:
 - `test_assembler.py` — disassemble/assemble roundtrip (4 cases)
 - `test_linker.py` — multi-file linking (8 cases)
 - `test_optimizer.py` — all optimization passes (26 cases)
-
-## BricsCAD Compatibility
-
-The decompiler emits wrapper helpers to avoid built-in collisions:
-- `fas-polar1`, `fas-rtos1`, `fas-rtos3`, `fas-getvar2`, `fas-getvar3`
-- `IN_PARAM` lookup for lists, association lists, DXF group reads
-- Fallback prompt when the `Projet/PA_Projet` framework is missing
 
 ## Docs
 
