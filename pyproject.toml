@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atlispcc"
+version = "0.1.0"
+description = "FAS4 bytecode decompiler and compiler toolchain for AutoCAD/BricsCAD .fas files"
+requires-python = ">=3.8"
+dependencies = [
+    "pygls>=1.0.0",
+    "typing-extensions>=4.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.3.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+atlispcc = "compiler.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["compiler*", "server*"]
+namespaces = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 120
+target-version = ["py38"]
+
+[tool.mypy]
+python_version = "3.8"
+ignore_missing_imports = true
+warn_unused_ignores = false

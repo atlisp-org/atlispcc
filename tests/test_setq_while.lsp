@@ -1,0 +1,17 @@
+(defun count-down (n)
+  (while (> n 0)
+    (princ n)
+    (setq n (- n 1))
+  )
+  (princ "Done!")
+)
+
+(defun sum-to-n (n)
+  (setq result 0)
+  (setq i 1)
+  (while (<= i n)
+    (setq result (+ result i))
+    (setq i (+ i 1))
+  )
+  result
+)

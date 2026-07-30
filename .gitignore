@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+*.lsp
+!tests/*.lsp
+*.fas
+!tests/*.fas
+!PDI.fas
+!bib.fas
+*.split/
+*.analysis.json
+dist/
+*.egg-info/
+build/
+.pytest_cache/
