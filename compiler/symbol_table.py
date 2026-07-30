@@ -2,7 +2,7 @@ from typing import List, Dict, Tuple, Any, Optional, Set
 from compiler.ast import (
     Node, Program, Symbol, Integer, Real, String,
     ListExpr, QuotedExpr, Defun, Setq, IfNode, WhileNode,
-    ForeachNode, Call, Progn, LambdaNode, Cond,
+    ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
 )
 
 
@@ -135,6 +135,11 @@ class SymbolTable:
                 self.collect_symbols(node.var)
             if node.list_expr:
                 self.collect_symbols(node.list_expr)
+            for expr in node.body:
+                self.collect_symbols(expr)
+        elif isinstance(node, RepeatNode):
+            if node.count:
+                self.collect_symbols(node.count)
             for expr in node.body:
                 self.collect_symbols(expr)
         elif isinstance(node, Call):

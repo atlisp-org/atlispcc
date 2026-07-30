@@ -3,7 +3,7 @@ from typing import List, Optional, Dict, Any, Set, Tuple
 from compiler.ast import (
     Node, Program, Symbol, Integer, Real, String,
     ListExpr, QuotedExpr, Defun, Setq, IfNode, WhileNode,
-    ForeachNode, Call, Progn, LambdaNode, Cond,
+    ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
 )
 from compiler.opcodes import (
     NAME_TO_OPCODE,
@@ -32,6 +32,7 @@ INIT_ARGS = NAME_TO_OPCODE['INIT_ARGS']     # 0x18
 CLEAR_ARGS = NAME_TO_OPCODE['CLEAR_ARGS']   # 0x19
 END_DEFUN = NAME_TO_OPCODE['END_DEFUN']     # 0x16
 INC = NAME_TO_OPCODE['INC']                 # 0x4f
+DEC = NAME_TO_OPCODE['DEC']                 # 0x50
 FIX_SUB = NAME_TO_OPCODE['FIX_SUB']         # 0x47
 FIX_DIV = NAME_TO_OPCODE['FIX_DIV']         # 0x49
 GET_LOCAL_8 = 0x05      # GET_LOCAL with 1-byte operand index
@@ -92,6 +93,10 @@ class CodeGenerator:
         self.symtab = symtab
         self.local_slots: Dict[str, int] = {}
         self.next_slot = 0
+        self.current_func_name: str = ''
+        self.current_func_args: List[str] = []
+        self._tail_entry_label: str = ''
+        self._in_tail_context: bool = False
         self.func_offset_map: Dict[str, int] = {}
         self.stub_offsets: List[int] = []
 
@@ -145,13 +150,22 @@ class CodeGenerator:
             self._emit_expr(buf, arg)
             buf.emit(encode_usubr(1, idx))
 
-    def _emit_expr(self, buf: BytecodeBuffer, node: Node):
+    def _emit_expr(self, buf: BytecodeBuffer, node: Node, _tail: bool = False):
+        saved_tail = self._in_tail_context
+        if _tail:
+            self._in_tail_context = True
         if isinstance(node, Symbol):
             name = node.name
             if name == 'T':
                 buf.emit(encode_op_noarg(PUSH_T))
             elif name == 'nil':
                 buf.emit(encode_op_noarg(PUSH_NIL))
+            elif name in self.local_slots:
+                slot = self.local_slots[name]
+                if slot < 256:
+                    buf.emit(struct.pack('<BB', GET_LOCAL_8, slot))
+                else:
+                    buf.emit(encode_op_u16(GET_LOCAL_16, slot))
             else:
                 idx = self.symtab.get_or_add(name)
                 buf.emit(encode_op_u16(PUSH_VALUE, idx))
@@ -194,12 +208,15 @@ class CodeGenerator:
         elif isinstance(node, ForeachNode):
             self._emit_foreach(buf, node)
 
+        elif isinstance(node, RepeatNode):
+            self._emit_repeat(buf, node.count, node.body)
+
         elif isinstance(node, Progn):
             for form in node.forms[:-1]:
                 self._emit_expr(buf, form)
                 buf.emit(encode_op_noarg(POP))
             if node.forms:
-                self._emit_expr(buf, node.forms[-1])
+                self._emit_expr(buf, node.forms[-1], _tail=self._in_tail_context)
 
         elif isinstance(node, Cond):
             self._emit_cond(buf, node)
@@ -209,6 +226,7 @@ class CodeGenerator:
 
         else:
             raise NotImplementedError(f'Cannot emit expression: {type(node).__name__}')
+        self._in_tail_context = saved_tail
 
     def _emit_call_expr(self, buf: BytecodeBuffer, node: Call):
         name = node.name
@@ -221,7 +239,13 @@ class CodeGenerator:
         if name in UNARY_OP_TO_FAS and len(args) == 1:
             self._emit_unary(buf, name, args[0])
             return
-        if name in ('and', 'or') and len(args) >= 1:
+        if name in ('and', 'or'):
+            if len(args) == 0:
+                if name == 'and':
+                    buf.emit(encode_op_noarg(PUSH_T))
+                else:
+                    buf.emit(encode_op_noarg(PUSH_NIL))
+                return
             self._emit_short_circuit(buf, name, args)
             return
         if name == 'list':
@@ -243,10 +267,9 @@ class CodeGenerator:
                 if i + 1 < len(args):
                     self._emit_setq_expr(buf, args[i], args[i + 1])
             return
-        if name == 'repeat' and len(args) >= 2:
-            self._emit_repeat(buf, args[0], args[1:])
+        if name == self.current_func_name and self._in_tail_context:
+            self._emit_tail_call(buf, args)
             return
-
         idx = self.symtab.get_or_add(name)
         is_builtin = self.symtab.is_builtin(name)
         for arg in args:
@@ -259,8 +282,12 @@ class CodeGenerator:
     def _emit_setq_expr(self, buf: BytecodeBuffer, target: Node, value: Node):
         if isinstance(target, Symbol):
             self._emit_expr(buf, value)
-            idx = self.symtab.get_or_add(target.name)
-            buf.emit(encode_op_u16(SETQ_G, idx))
+            if target.name in self.local_slots:
+                slot = self.local_slots[target.name]
+                buf.emit(encode_op_u16(SET_LOCAL_16, slot))
+            else:
+                idx = self.symtab.get_or_add(target.name)
+                buf.emit(encode_op_u16(SETQ_G, idx))
         else:
             self._emit_expr(buf, value)
             self._emit_expr(buf, target)
@@ -270,8 +297,12 @@ class CodeGenerator:
         for target, value in node.pairs:
             if isinstance(target, Symbol) and value:
                 self._emit_expr(buf, value)
-                idx = self.symtab.get_or_add(target.name)
-                buf.emit(encode_op_u16(SETQ_G, idx))
+                if target.name in self.local_slots:
+                    slot = self.local_slots[target.name]
+                    buf.emit(encode_op_u16(SET_LOCAL_16, slot))
+                else:
+                    idx = self.symtab.get_or_add(target.name)
+                    buf.emit(encode_op_u16(SETQ_G, idx))
                 buf.emit(encode_op_noarg(POP))
 
     def _emit_if(self, buf: BytecodeBuffer, node: IfNode):
@@ -285,20 +316,20 @@ class CodeGenerator:
             buf.emit(encode_op_u16(JMP16_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_else, 2)
 
-            self._emit_expr(buf, node.then)
+            self._emit_expr(buf, node.then, _tail=self._in_tail_context)
             jmp2_pos = buf.pos()
             buf.emit(encode_op_s32(JUMP, 0))
             buf.add_patch(jmp2_pos + 1, label_end, 4)
 
             buf.patch_label(label_else, buf.pos())
-            self._emit_expr(buf, node.else_expr)
+            self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
             buf.patch_label(label_end, buf.pos())
         else:
             jmp_pos = buf.pos()
             buf.emit(encode_op_u16(JMP16_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_end, 2)
 
-            self._emit_expr(buf, node.then)
+            self._emit_expr(buf, node.then, _tail=self._in_tail_context)
             buf.patch_label(label_end, buf.pos())
 
     def _emit_while(self, buf: BytecodeBuffer, node: WhileNode):
@@ -341,8 +372,12 @@ class CodeGenerator:
 
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
         buf.emit(encode_op_noarg(CAR))
-        idx = self.symtab.get_or_add(var_name)
-        buf.emit(encode_op_u16(SETQ_G, idx))
+        if var_name in self.local_slots:
+            vslot = self.local_slots[var_name]
+            buf.emit(encode_op_u16(SET_LOCAL_16, vslot))
+        else:
+            idx = self.symtab.get_or_add(var_name)
+            buf.emit(encode_op_u16(SETQ_G, idx))
 
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
         buf.emit(encode_op_noarg(CDR))
@@ -409,14 +444,15 @@ class CodeGenerator:
         label_end = f'_repeat_end_{buf.pos()}'
         buf.label(label_loop)
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
-        buf.emit(encode_op_noarg(INC))
         jmp_pos = buf.pos()
         buf.emit(encode_op_u16(JMP16_IFNOT, 0))
         buf.add_patch(jmp_pos + 1, label_end, 2)
-        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
         for form in body:
             self._emit_expr(buf, form)
             buf.emit(encode_op_noarg(POP))
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        buf.emit(encode_op_noarg(DEC))
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
         jmp_back = buf.pos()
         buf.emit(encode_op_s32(JUMP, 0))
         buf.add_patch(jmp_back + 1, label_loop, 4)
@@ -473,11 +509,31 @@ class CodeGenerator:
             buf.emit(struct.pack('<BB', GET_LOCAL_8, i))
         buf.emit(encode_op_u16(INIT_ARGS, len(args) * 2))
 
+    def _emit_tail_call(self, buf: BytecodeBuffer, args: List[Node]):
+        for i, arg in enumerate(args):
+            if i < len(self.current_func_args):
+                self._emit_expr(buf, arg)
+                buf.emit(encode_op_u16(SET_LOCAL_16, i))
+        jmp_back = buf.pos()
+        buf.emit(encode_op_s32(JUMP, 0))
+        buf.add_patch(jmp_back + 1, self._tail_entry_label, 4)
+
     def _emit_clear_args(self, buf: BytecodeBuffer, args: List[str]):
         if args:
             buf.emit(encode_op_u16(CLEAR_ARGS, len(args)))
 
     def generate_function(self, func: Defun) -> Tuple[bytes, int]:
+        if func.quoted:
+            return self._generate_quoted_defun(func)
+
+        saved_name = self.current_func_name
+        saved_args = self.current_func_args
+        saved_label = self._tail_entry_label
+
+        self.current_func_name = func.name
+        self.current_func_args = func.args
+        self._tail_entry_label = f'_tail_entry_{func.name}_{id(func)}'
+
         buf = BytecodeBuffer()
         start_offset = 0
 
@@ -488,6 +544,8 @@ class CodeGenerator:
             self.local_slots[arg] = i
 
         self._emit_init_args(buf, func.args)
+
+        buf.label(self._tail_entry_label)
 
         for i, loc in enumerate(func.locals):
             slot = i + len(func.args)
@@ -502,13 +560,37 @@ class CodeGenerator:
             self._emit_expr(buf, expr)
             buf.emit(encode_op_noarg(POP))
         if func.body:
-            self._emit_expr(buf, func.body[-1])
+            self._emit_expr(buf, func.body[-1], _tail=True)
 
         self._emit_clear_args(buf, func.args)
         buf.emit(encode_op_noarg(END_DEFUN))
 
         buf.resolve()
+
+        self.current_func_name = saved_name
+        self.current_func_args = saved_args
+        self._tail_entry_label = saved_label
+
         return bytes(buf.data), start_offset
+
+    def _generate_quoted_defun(self, func: Defun) -> Tuple[bytes, int]:
+        buf = BytecodeBuffer()
+
+        lambda_body = func.body
+        lambda_sym = Symbol('lambda')
+        lambda_args = []
+        for a in func.args:
+            lambda_args.append(Symbol(a))
+        if func.locals:
+            lambda_args.append(Symbol('/'))
+            for l in func.locals:
+                lambda_args.append(Symbol(l))
+        lambda_call = ListExpr(items=[lambda_sym] + [ListExpr(items=lambda_args)] + lambda_body)
+        quoted = QuotedExpr(expr=lambda_call)
+
+        self._emit_setq_expr(buf, Symbol(func.name), quoted)
+        buf.resolve()
+        return bytes(buf.data), 0
 
     def generate_init_code(self, forms: List[Node]) -> bytes:
         buf = BytecodeBuffer()

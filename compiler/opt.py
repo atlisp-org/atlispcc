@@ -1,10 +1,10 @@
 """AST optimization passes for the FAS4 compiler."""
 
-from typing import List, Optional, Set, Tuple, Any, Union
+from typing import Dict, List, Optional, Set, Tuple, Any, Union
 from compiler.ast import (
     Node, Program, Symbol, Integer, Real, String,
     ListExpr, QuotedExpr, Defun, Setq, IfNode, WhileNode,
-    ForeachNode, Call, Progn, LambdaNode, Cond,
+    ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
 )
 
 
@@ -234,6 +234,10 @@ def _fold_const(node: Node) -> Node:
         list_expr = _fold_const(node.list_expr)
         body = [_fold_const(f) for f in node.body]
         return ForeachNode(var=var, list_expr=list_expr, body=body)
+    if isinstance(node, RepeatNode):
+        count = _fold_const(node.count)
+        body = [_fold_const(f) for f in node.body]
+        return RepeatNode(count=count, body=body)
     if isinstance(node, Setq):
         pairs = [(t, _fold_const(v)) for t, v in node.pairs]
         return Setq(pairs=pairs)
@@ -333,6 +337,10 @@ def _elim_dead_branches(node: Node) -> Node:
         list_expr = _elim_dead_branches(node.list_expr)
         body = [_elim_dead_branches(f) for f in node.body]
         return ForeachNode(var=var, list_expr=list_expr, body=body)
+    if isinstance(node, RepeatNode):
+        count = _elim_dead_branches(node.count)
+        body = [_elim_dead_branches(f) for f in node.body]
+        return RepeatNode(count=count, body=body)
     return node
 
 
@@ -423,6 +431,10 @@ def _peephole(node: Node) -> Node:
         list_expr = _peephole(node.list_expr)
         body = [_peephole(f) for f in node.body]
         return ForeachNode(var=var, list_expr=list_expr, body=body)
+    if isinstance(node, RepeatNode):
+        count = _peephole(node.count)
+        body = [_peephole(f) for f in node.body]
+        return RepeatNode(count=count, body=body)
     if isinstance(node, Cond):
         clauses = [tuple(_peephole(c) for c in clause) for clause in node.clauses]
         return Cond(clauses=clauses)
@@ -430,9 +442,13 @@ def _peephole(node: Node) -> Node:
         pairs = [(t, _peephole(v)) for t, v in node.pairs]
         return Setq(pairs=pairs)
     if isinstance(node, Defun):
+        body = [_peephole(e) for e in node.body]
+        body = [e for e in body if not (isinstance(e, Symbol) and e.name == 'nil')]
+        if not body:
+            body = [Symbol('nil')]
         return Defun(
             name=node.name, args=node.args, locals=node.locals,
-            body=[_peephole(e) for e in node.body],
+            body=body,
             is_command=node.is_command,
         )
     if isinstance(node, ListExpr):
@@ -480,6 +496,10 @@ def _collect_var_refs(nodes: List[Node]) -> Set[str]:
         elif isinstance(node, ForeachNode):
             walk(node.var)
             walk(node.list_expr)
+            for b in node.body:
+                walk(b)
+        elif isinstance(node, RepeatNode):
+            walk(node.count)
             for b in node.body:
                 walk(b)
         elif isinstance(node, Progn):
@@ -541,6 +561,11 @@ def _elim_dead_assign(node: Node, referenced: Set[str], params: Set[str]) -> Nod
             list_expr=_elim_dead_assign(node.list_expr, referenced, params),
             body=[_elim_dead_assign(b, referenced, params) for b in node.body],
         )
+    if isinstance(node, RepeatNode):
+        return RepeatNode(
+            count=_elim_dead_assign(node.count, referenced, params),
+            body=[_elim_dead_assign(b, referenced, params) for b in node.body],
+        )
     if isinstance(node, Cond):
         return Cond(clauses=[tuple(_elim_dead_assign(c, referenced, params) for c in clause)
                              for clause in node.clauses])
@@ -596,6 +621,10 @@ def copy_node(node: Node) -> Node:
             var=copy_node(node.var), list_expr=copy_node(node.list_expr),
             body=[copy_node(b) for b in node.body],
         )
+    if isinstance(node, RepeatNode):
+        return RepeatNode(
+            count=copy_node(node.count), body=[copy_node(b) for b in node.body],
+        )
     if isinstance(node, Setq):
         return Setq(pairs=[(copy_node(t), copy_node(v)) for t, v in node.pairs])
     if isinstance(node, Cond):
@@ -632,6 +661,11 @@ def _propagate_body(body: List[Node], params: Set[str]) -> List[Node]:
         if isinstance(node, ForeachNode):
             return ForeachNode(
                 var=subst(node.var), list_expr=subst(node.list_expr),
+                body=[subst(b) for b in node.body],
+            )
+        if isinstance(node, RepeatNode):
+            return RepeatNode(
+                count=subst(node.count),
                 body=[subst(b) for b in node.body],
             )
         if isinstance(node, Progn):
@@ -678,6 +712,365 @@ def const_propagate(program: Program) -> Program:
     return Program(forms=forms)
 
 
+# ─── Pass 6: Cross-function constant propagation ──────────────────────────
+
+
+def _is_constant_func(func: Defun) -> Optional[Node]:
+    if func.args or func.locals or len(func.body) != 1:
+        return None
+    body = func.body[0]
+    if isinstance(body, (Integer, Real, String, Symbol)):
+        return body
+    return None
+
+
+def _propagate_cross_func_in_body(body: List[Node],
+                                   const_funcs: Dict[str, Node]) -> List[Node]:
+    def subst(node: Node) -> Node:
+        if isinstance(node, Call):
+            args = [subst(a) for a in node.args]
+            if node.name in const_funcs and not args:
+                return copy_node(const_funcs[node.name])
+            return Call(name=node.name, args=args)
+        if isinstance(node, Setq):
+            return Setq(pairs=[(subst(t), subst(v)) for t, v in node.pairs])
+        if isinstance(node, IfNode):
+            return IfNode(
+                cond=subst(node.cond),
+                then=subst(node.then) if node.then else None,
+                else_expr=subst(node.else_expr) if node.else_expr else None,
+            )
+        if isinstance(node, WhileNode):
+            return WhileNode(cond=subst(node.cond),
+                             body=[subst(b) for b in node.body])
+        if isinstance(node, ForeachNode):
+            return ForeachNode(
+                var=subst(node.var), list_expr=subst(node.list_expr),
+                body=[subst(b) for b in node.body],
+            )
+        if isinstance(node, RepeatNode):
+            return RepeatNode(count=subst(node.count),
+                              body=[subst(b) for b in node.body])
+        if isinstance(node, Progn):
+            return Progn(forms=[subst(f) for f in node.forms])
+        if isinstance(node, Cond):
+            return Cond(clauses=[tuple(subst(c) for c in clause)
+                                 for clause in node.clauses])
+        if isinstance(node, ListExpr):
+            return ListExpr(items=[subst(i) for i in node.items])
+        if isinstance(node, QuotedExpr):
+            return QuotedExpr(expr=subst(node.expr) if node.expr else None)
+        if isinstance(node, LambdaNode):
+            return LambdaNode(args=node.args,
+                              body=[subst(b) for b in node.body])
+        return node
+
+    return [subst(e) for e in body]
+
+
+def cross_func_const_propagate(program: Program) -> Program:
+    const_funcs: Dict[str, Node] = {}
+    for f in program.forms:
+        if isinstance(f, Defun) and not f.quoted:
+            c = _is_constant_func(f)
+            if c is not None:
+                const_funcs[f.name] = c
+
+    forms = []
+    for f in program.forms:
+        if isinstance(f, Defun):
+            new_body = _propagate_cross_func_in_body(f.body, const_funcs)
+            forms.append(Defun(
+                name=f.name, args=f.args, locals=f.locals,
+                body=new_body, is_command=f.is_command,
+                quoted=f.quoted,
+            ))
+        else:
+            forms.append(_propagate_cross_func_in_body(
+                [f], const_funcs)[0])
+    return Program(forms=forms)
+
+
+# ─── Pass 7: Dead code elimination ────────────────────────────────────────
+
+TERMINAL_CALLS = {'exit', 'quit', 'abort'}
+
+
+def _is_terminal(node: Node) -> bool:
+    return isinstance(node, Call) and node.name in TERMINAL_CALLS
+
+
+def _elim_dead_code_in_body(body: List[Node]) -> List[Node]:
+    result = []
+    for expr in body:
+        result.append(_elim_dead_code(expr))
+        if _is_terminal(expr):
+            break
+    return result
+
+
+def _elim_dead_code(node: Node) -> Node:
+    if isinstance(node, Progn):
+        forms = _elim_dead_code_in_body(node.forms)
+        return Progn(forms=forms)
+    if isinstance(node, IfNode):
+        cond = _elim_dead_code(node.cond)
+        then = _elim_dead_code(node.then) if node.then else None
+        else_expr = _elim_dead_code(node.else_expr) if node.else_expr else None
+        return IfNode(cond=cond, then=then, else_expr=else_expr)
+    if isinstance(node, WhileNode):
+        return WhileNode(
+            cond=_elim_dead_code(node.cond),
+            body=_elim_dead_code_in_body(node.body),
+        )
+    if isinstance(node, ForeachNode):
+        return ForeachNode(
+            var=_elim_dead_code(node.var),
+            list_expr=_elim_dead_code(node.list_expr),
+            body=_elim_dead_code_in_body(node.body),
+        )
+    if isinstance(node, RepeatNode):
+        return RepeatNode(
+            count=_elim_dead_code(node.count),
+            body=_elim_dead_code_in_body(node.body),
+        )
+    if isinstance(node, Cond):
+        return Cond(clauses=[tuple(_elim_dead_code(c) for c in clause)
+                             for clause in node.clauses])
+    if isinstance(node, Setq):
+        return Setq(pairs=[(t, _elim_dead_code(v)) for t, v in node.pairs])
+    if isinstance(node, Call):
+        return Call(name=node.name, args=[_elim_dead_code(a) for a in node.args])
+    if isinstance(node, ListExpr):
+        return ListExpr(items=[_elim_dead_code(i) for i in node.items])
+    if isinstance(node, LambdaNode):
+        return LambdaNode(args=node.args, body=_elim_dead_code_in_body(node.body))
+    return node
+
+
+def dead_code_elim(program: Program) -> Program:
+    forms = []
+    for f in program.forms:
+        if isinstance(f, Defun):
+            forms.append(Defun(
+                name=f.name, args=f.args, locals=f.locals,
+                body=_elim_dead_code_in_body(f.body),
+                is_command=f.is_command,
+            ))
+        else:
+            forms.append(_elim_dead_code(f))
+    return Program(forms=forms)
+
+
+# ─── Pass 7: Small function inlining (O3) ────────────────────────────────
+
+def _count_calls(program: Program) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+
+    def walk(node: Node):
+        if isinstance(node, Call):
+            counts[node.name] = counts.get(node.name, 0) + 1
+            for a in node.args:
+                walk(a)
+        elif isinstance(node, Setq):
+            for _, v in node.pairs:
+                walk(v)
+        elif isinstance(node, IfNode):
+            walk(node.cond)
+            if node.then:
+                walk(node.then)
+            if node.else_expr:
+                walk(node.else_expr)
+        elif isinstance(node, WhileNode):
+            walk(node.cond)
+            for b in node.body:
+                walk(b)
+        elif isinstance(node, ForeachNode):
+            walk(node.var)
+            walk(node.list_expr)
+            for b in node.body:
+                walk(b)
+        elif isinstance(node, RepeatNode):
+            walk(node.count)
+            for b in node.body:
+                walk(b)
+        elif isinstance(node, Progn):
+            for f in node.forms:
+                walk(f)
+        elif isinstance(node, Cond):
+            for c in node.clauses:
+                for item in c:
+                    walk(item)
+        elif isinstance(node, ListExpr):
+            for i in node.items:
+                walk(i)
+        elif isinstance(node, LambdaNode):
+            for b in node.body:
+                walk(b)
+
+    for f in program.forms:
+        if isinstance(f, Defun):
+            for e in f.body:
+                walk(e)
+        else:
+            walk(f)
+    return counts
+
+
+def _inline_defun(call: Call, func: Defun, call_counts: Dict[str, int]) -> Optional[Node]:
+    if func.locals:
+        return None
+    if len(func.body) > 5:
+        return None
+    if len(call.args) != len(func.args):
+        return None
+
+    body = [copy_node(e) for e in func.body]
+
+    def _rename_args(node: Node, arg_map: Dict[str, Node]) -> Node:
+        if isinstance(node, Symbol):
+            if node.name in arg_map:
+                return copy_node(arg_map[node.name])
+            return node
+        if isinstance(node, Call):
+            return Call(name=node.name, args=[_rename_args(a, arg_map) for a in node.args])
+        if isinstance(node, Setq):
+            return Setq(pairs=[(_rename_args(t, arg_map), _rename_args(v, arg_map))
+                              for t, v in node.pairs])
+        if isinstance(node, IfNode):
+            cond = _rename_args(node.cond, arg_map)
+            then = _rename_args(node.then, arg_map) if node.then else None
+            else_expr = _rename_args(node.else_expr, arg_map) if node.else_expr else None
+            return IfNode(cond=cond, then=then, else_expr=else_expr)
+        if isinstance(node, WhileNode):
+            return WhileNode(
+                cond=_rename_args(node.cond, arg_map),
+                body=[_rename_args(b, arg_map) for b in node.body],
+            )
+        if isinstance(node, ForeachNode):
+            return ForeachNode(
+                var=_rename_args(node.var, arg_map),
+                list_expr=_rename_args(node.list_expr, arg_map),
+                body=[_rename_args(b, arg_map) for b in node.body],
+            )
+        if isinstance(node, RepeatNode):
+            return RepeatNode(
+                count=_rename_args(node.count, arg_map),
+                body=[_rename_args(b, arg_map) for b in node.body],
+            )
+        if isinstance(node, Progn):
+            return Progn(forms=[_rename_args(f, arg_map) for f in node.forms])
+        if isinstance(node, Cond):
+            return Cond(clauses=[tuple(_rename_args(c, arg_map) for c in clause)
+                                 for clause in node.clauses])
+        if isinstance(node, ListExpr):
+            return ListExpr(items=[_rename_args(i, arg_map) for i in node.items])
+        if isinstance(node, QuotedExpr):
+            return QuotedExpr(expr=_rename_args(node.expr, arg_map) if node.expr else None)
+        if isinstance(node, LambdaNode):
+            return LambdaNode(args=node.args, body=[_rename_args(b, arg_map) for b in node.body])
+        return node
+
+    arg_map = {}
+    for param, arg in zip(func.args, call.args):
+        arg_map[param] = arg
+
+    inlined = [_rename_args(e, arg_map) for e in body]
+    if len(inlined) == 1:
+        return inlined[0]
+    return Progn(forms=inlined)
+
+
+def _inline_in_node(node: Node, funcs: Dict[str, Defun],
+                    call_counts: Dict[str, int]) -> Node:
+    if isinstance(node, Call):
+        args = [_inline_in_node(a, funcs, call_counts) for a in node.args]
+        if node.name in funcs:
+            inlined = _inline_defun(Call(name=node.name, args=args),
+                                    funcs[node.name], call_counts)
+            if inlined is not None:
+                return inlined
+        return Call(name=node.name, args=args)
+    if isinstance(node, Progn):
+        return Progn(forms=[_inline_in_node(f, funcs, call_counts) for f in node.forms])
+    if isinstance(node, IfNode):
+        return IfNode(
+            cond=_inline_in_node(node.cond, funcs, call_counts),
+            then=_inline_in_node(node.then, funcs, call_counts) if node.then else None,
+            else_expr=_inline_in_node(node.else_expr, funcs, call_counts) if node.else_expr else None,
+        )
+    if isinstance(node, WhileNode):
+        return WhileNode(
+            cond=_inline_in_node(node.cond, funcs, call_counts),
+            body=[_inline_in_node(b, funcs, call_counts) for b in node.body],
+        )
+    if isinstance(node, ForeachNode):
+        return ForeachNode(
+            var=_inline_in_node(node.var, funcs, call_counts),
+            list_expr=_inline_in_node(node.list_expr, funcs, call_counts),
+            body=[_inline_in_node(b, funcs, call_counts) for b in node.body],
+        )
+    if isinstance(node, RepeatNode):
+        return RepeatNode(
+            count=_inline_in_node(node.count, funcs, call_counts),
+            body=[_inline_in_node(b, funcs, call_counts) for b in node.body],
+        )
+    if isinstance(node, Cond):
+        return Cond(clauses=[tuple(_inline_in_node(c, funcs, call_counts) for c in clause)
+                             for clause in node.clauses])
+    if isinstance(node, Setq):
+        return Setq(pairs=[(t, _inline_in_node(v, funcs, call_counts))
+                           for t, v in node.pairs])
+    if isinstance(node, ListExpr):
+        return ListExpr(items=[_inline_in_node(i, funcs, call_counts) for i in node.items])
+    if isinstance(node, LambdaNode):
+        return LambdaNode(args=node.args,
+                          body=[_inline_in_node(b, funcs, call_counts) for b in node.body])
+    return node
+
+
+def remove_dead_functions(program: Program) -> Program:
+    call_counts = _count_calls(program)
+    forms = []
+    for f in program.forms:
+        if isinstance(f, Defun):
+            if f.name not in call_counts and not f.is_command:
+                continue
+        forms.append(f)
+    return Program(forms=forms)
+
+
+def inline_small_funcs(program: Program) -> Program:
+    call_counts = _count_calls(program)
+    funcs = {}
+    for f in program.forms:
+        if isinstance(f, Defun) and not f.is_command and not f.quoted:
+            if f.name in call_counts and call_counts[f.name] == 1 and len(f.body) <= 5 and not f.locals:
+                funcs[f.name] = f
+
+    result = []
+    for f in program.forms:
+        if isinstance(f, Defun) and f.name in funcs:
+            result.append(f)
+        elif isinstance(f, Defun):
+            new_body = [_inline_in_node(e, funcs, call_counts) for e in f.body]
+            result.append(Defun(
+                name=f.name, args=f.args, locals=f.locals,
+                body=new_body, is_command=f.is_command,
+                quoted=f.quoted,
+            ))
+        else:
+            result.append(_inline_in_node(f, funcs, call_counts))
+
+    cleaned = []
+    for f in result:
+        if isinstance(f, Defun) and f.name in funcs:
+            call_counts.pop(f.name, None)
+            continue
+        cleaned.append(f)
+    return Program(forms=cleaned)
+
+
 # ─── Main entry point ─────────────────────────────────────────────────────
 
 def optimize(program: Program, level: int = 1) -> Program:
@@ -686,6 +1079,17 @@ def optimize(program: Program, level: int = 1) -> Program:
         program = dead_branch_elim(program)
         program = peephole(program)
     if level >= 2:
+        program = dead_assign_elim(program)
+        program = const_propagate(program)
+        program = constant_fold(program)
+        program = peephole(program)
+    if level >= 3:
+        program = cross_func_const_propagate(program)
+        program = dead_code_elim(program)
+        program = inline_small_funcs(program)
+        program = constant_fold(program)
+        program = dead_branch_elim(program)
+        program = peephole(program)
         program = dead_assign_elim(program)
         program = const_propagate(program)
         program = constant_fold(program)

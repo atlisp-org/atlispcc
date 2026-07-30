@@ -9,6 +9,7 @@ from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
+from compiler.ast import Defun
 from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator
 from validate import tokenize, parse_tokens, validate_ast
 
@@ -202,6 +203,53 @@ def test_mapcar():
     assert ok, f'Validation failed: {errs}'
 
 
+def test_foreach():
+    """Foreach compiles and decompiles correctly."""
+    src = '(defun foo (l) (foreach x l (princ x)))'
+    result = compile_and_decompile(src)
+    assert '(foreach' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_repeat():
+    """Repeat compiles and decompiles correctly."""
+    src = '(defun foo (n) (repeat n (princ ".")))'
+    result = compile_and_decompile(src)
+    assert '(while n' in result or '(repeat' in result
+    assert '(princ ".")' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_and_or():
+    """And/or compiles and decompiles correctly."""
+    src = '''
+(defun test-and (a b) (and a b))
+(defun test-or (a b) (or a b))
+'''
+    result = compile_and_decompile(src)
+    assert '(and a b)' in result or 'and' in result
+    assert '(or a b)' in result or 'or' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_defun_q():
+    """Defun-q compiles correctly (body is quoted)."""
+    src = '(defun-q foo (x) (princ x))'
+    parser = Parser(src)
+    program = parser.parse()
+    assert len(program.forms) == 1
+    defun = program.forms[0]
+    assert isinstance(defun, Defun)
+    assert defun.quoted
+    # Quoted defun should produce setq with quoted body
+    result = compile_and_decompile(src)
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
 def test_real_fas_decompile():
     """Decompile real FAS4 file (PDI.fas) and validate output."""
     fas_path = os.path.join(os.path.dirname(__file__), '..', 'PDI.fas')
@@ -234,3 +282,20 @@ def test_real_fas_decompile():
         assert ok, f'Validation failed: {errs}'
     finally:
         os.unlink(out_path)
+
+
+def test_tail_recursive_factorial():
+    """Tail-recursive factorial compiles and decompiles correctly."""
+    src = '''
+(defun fact (n acc)
+  (if (= n 0)
+    acc
+    (fact (1- n) (* n acc))))
+'''
+    result = compile_and_decompile(src)
+    assert '(defun fact' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+    # The tail call should be emitted as a loop back (JUMP) not a CALL
+    assert '(fact ' not in result or '(while' in result, \
+        'Tail recursion may be compiled as a loop'

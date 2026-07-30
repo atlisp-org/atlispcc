@@ -11,6 +11,7 @@ from compiler.ast import Defun
 from compiler.opt import optimize
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
+from compiler.analyzer import analyze
 from compiler.linker import link_fas
 from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator
 from validate import validate_file
@@ -19,16 +20,47 @@ from validate import validate_file
 ENCODE_POP = bytes([0x0a])
 
 
-def cmd_compile(source: str, output: str = '', opt_level: int = 0) -> str:
-    parser_obj = Parser(source)
+def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis: bool = False) -> str:
+    if os.path.exists(source):
+        with open(source, 'r', encoding='utf-8') as f:
+            source_code = f.read()
+    else:
+        source_code = source
+    parser_obj = Parser(source_code)
     try:
         program = parser_obj.parse()
     except ParseError as e:
         print(f'Parse error: {e}', file=sys.stderr)
         sys.exit(1)
 
+    if show_analysis:
+        stats = analyze(program)
+        print('=== Compilation Analysis ===')
+        print(f'  Functions:               {stats["functions"]}')
+        print(f'  Top-level forms:         {stats["top_level_forms"]}')
+        print(f'  Total instructions:      {stats["total_instructions"]}')
+        print(f'  Constants (estimate):    {stats["constants_estimate"]}')
+        print(f'  Symbol table entries:    {stats["symbol_table_entries"]}')
+        print(f'  Function offsets:        {stats["function_offsets"]}')
+        print(f'  Locals (total):          {stats["locals"]}')
+        print(f'  Tail-recursive:          {stats["tail_recursive_functions"]}')
+        print(f'  External/builtin calls:  {len(stats["builtin_calls"])}')
+        for fd in stats['functions_detail']:
+            tr = ' [tail-recursive]' if fd['tail_recursive'] else ''
+            print(f'    {fd["name"]}: {fd["instructions"]} instr, '
+                  f'{fd["args"]} args, {fd["locals"]} locals, '
+                  f'calls {fd["calls"]}{tr}')
+        print()
+
     if opt_level:
         program = optimize(program, level=opt_level)
+        if show_analysis:
+            stats2 = analyze(program)
+            print(f'=== After O{opt_level} Optimization ===')
+            print(f'  Functions:          {stats2["functions"]} (was {stats["functions"]})')
+            print(f'  Instructions:       {stats2["total_instructions"]} (was {stats["total_instructions"]})')
+            print(f'  Tail-recursive:     {stats2["tail_recursive_functions"]}')
+            print()
 
     symtab = SymbolTable()
     symtab.collect_symbols(program)
@@ -104,8 +136,10 @@ def main():
     p_compile = sub.add_parser('compile', aliases=['c'], help='Compile .lsp → .fas')
     p_compile.add_argument('source', help='input .lsp file')
     p_compile.add_argument('output', nargs='?', default='', help='output .fas file (optional)')
-    p_compile.add_argument('-O', type=int, default=0, choices=[0, 1, 2],
-                           help='optimization level (0=none, 1=basic, 2=aggressive)')
+    p_compile.add_argument('-O', type=int, default=0, choices=[0, 1, 2, 3],
+                           help='optimization level (0=none, 1=basic, 2=aggressive, 3=extreme)')
+    p_compile.add_argument('--analyze', action='store_true',
+                           help='show compilation analysis report')
 
     # decompile
     p_decompile = sub.add_parser('decompile', aliases=['d'], help='Decompile .fas → .lsp')
@@ -129,7 +163,8 @@ def main():
         return 0
 
     if args.command in ('compile', 'c'):
-        return cmd_compile(args.source, args.output, opt_level=args.O)
+        return cmd_compile(args.source, args.output, opt_level=args.O,
+                           show_analysis=args.analyze)
 
     if args.command in ('decompile', 'd'):
         return cmd_decompile(args.source, args.output)

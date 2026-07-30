@@ -49,6 +49,7 @@ class Defun(Node):
     locals: List[str] = field(default_factory=list)
     body: List['Node'] = field(default_factory=list)
     is_command: bool = False
+    quoted: bool = False
 
 
 @dataclass
@@ -90,6 +91,12 @@ class Progn(Node):
 @dataclass
 class LambdaNode(Node):
     args: List[str] = field(default_factory=list)
+    body: List['Node'] = field(default_factory=list)
+
+
+@dataclass
+class RepeatNode(Node):
+    count: Optional['Node'] = None
     body: List['Node'] = field(default_factory=list)
 
 

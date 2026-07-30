@@ -3,7 +3,7 @@ from compiler.lexer import tokenize, Token
 from compiler.ast import (
     Node, Program, Symbol, Integer, Real, String,
     ListExpr, QuotedExpr, Defun, Setq, IfNode, WhileNode,
-    ForeachNode, Call, Progn, LambdaNode, Cond,
+    ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
 )
 
 
@@ -94,6 +94,10 @@ class Parser:
                 list_expr = self.parse_form()
                 body = self._parse_forms_until_rparen()
                 return ForeachNode(var=var, list_expr=list_expr, body=body)
+            elif name == 'repeat':
+                count = self.parse_form()
+                body = self._parse_forms_until_rparen()
+                return RepeatNode(count=count, body=body)
             elif name == 'progn':
                 return Progn(forms=self._parse_forms_until_rparen())
             elif name == 'lambda':
@@ -153,7 +157,8 @@ class Parser:
             body.append(self.parse_form())
         self.expect('RPAREN')
         is_cmd = name.upper().startswith('C:')
-        return Defun(name=name, args=args, locals=locals_list, body=body, is_command=is_cmd)
+        return Defun(name=name, args=args, locals=locals_list, body=body,
+                     is_command=is_cmd, quoted=(kind == 'defun-q'))
 
     def _parse_cond(self) -> Cond:
         clauses = []
