@@ -37,7 +37,7 @@ class ResourceBuilder:
         self.data = bytearray()
 
     def _push_single_symbol(self, name: str):
-        self.data.append(0x56)
+        self.data.append(0x5B)
         self.data.extend(name.encode('ascii', errors='replace'))
         self.data.append(0)
         self.data.append(0)

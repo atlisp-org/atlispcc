@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "FAS4 bytecode decompiler and compiler toolchain for AutoCAD/BricsCAD .fas files"
 requires-python = ">=3.8"
 dependencies = [
-    "pygls>=1.0.0",
     "typing-extensions>=4.5.0",
 ]
 
@@ -23,7 +22,7 @@ dev = [
 atlispcc = "compiler.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["compiler*", "server*"]
+include = ["compiler*"]
 namespaces = false
 
 [tool.pytest.ini_options]
@@ -34,6 +33,6 @@ line-length = 120
 target-version = ["py38"]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 ignore_missing_imports = true
 warn_unused_ignores = false

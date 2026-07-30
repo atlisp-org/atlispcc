@@ -53,8 +53,7 @@ class Defun(Node):
 
 @dataclass
 class Setq(Node):
-    target: Optional['Node'] = None
-    value: Optional['Node'] = None
+    pairs: List[tuple] = field(default_factory=list)
 
 
 @dataclass

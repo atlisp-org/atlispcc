@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 FAS4 核心模块 — 统一解析、解密、符号表重建。
 
@@ -14,7 +15,7 @@ import os
 FAS4_MAGIC = b'\r\n FAS4-FILE ; Do not change it!\r\n'
 CRUNCH_MARKER = b'\n;fas4 crunch\n;'
 FUNC_DEF_OPCODE = bytes([0x14, 0x01, 0x01, 0x01, 0x00])
-SEG_TERMINATOR = b'\x16\x24\r\n'
+SEG_TERMINATOR = b'\x19\x04\x00\x16\x24\r\n'
 
 # ─── 加解密 ────────────────────────────────────────────────────────────────────
 

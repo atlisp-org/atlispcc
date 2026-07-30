@@ -3,6 +3,7 @@ sys.path.insert(0, '.')
 
 import os
 import tempfile
+import pytest
 from compiler.parser import Parser
 from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
@@ -179,3 +180,57 @@ def test_recursive_fib():
     assert '(defun fib (n)' in result
     ok, errs = _validate(result)
     assert ok, f'Validation failed: {errs}'
+
+
+def test_apply():
+    """Apply compiles and decompiles correctly."""
+    src = '(defun foo (l) (apply (quote +) l))'
+    result = compile_and_decompile(src)
+    assert '(apply' in result
+    assert "'+" in result or '(quote +)' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_mapcar():
+    """Mapcar compiles and decompiles correctly."""
+    src = "(defun foo (l) (mapcar '1+ l))"
+    result = compile_and_decompile(src)
+    assert '(mapcar' in result
+    assert "'1+" in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_real_fas_decompile():
+    """Decompile real FAS4 file (PDI.fas) and validate output."""
+    fas_path = os.path.join(os.path.dirname(__file__), '..', 'PDI.fas')
+    if not os.path.exists(fas_path):
+        pytest.skip('PDI.fas not found')
+
+    from fas4_decompiler import Fas4Parser, Disassembler, \
+        ControlFlowAnalyzer, LispGenerator
+    import tempfile
+
+    decomp_parser = Fas4Parser()
+    fas = decomp_parser.parse(fas_path)
+    disasm = Disassembler()
+    instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
+    cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
+    functions = cfa.find_functions()
+    gen = LispGenerator(fas)
+
+    with tempfile.NamedTemporaryFile(suffix='.lsp', mode='w', delete=False) as f:
+        out_path = f.name
+        result = gen.generate(functions, out_path)
+
+    try:
+        assert '(defun c:' in result or '(defun C:' in result, \
+            f'Expected function definition in decompiled output'
+        assert 'dict_name' in result or 'pattern' in result or 'purge' in result.lower(), \
+            'Expected dictionary purge logic in output'
+
+        ok, errs = _validate(result)
+        assert ok, f'Validation failed: {errs}'
+    finally:
+        os.unlink(out_path)

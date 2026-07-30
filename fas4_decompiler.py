@@ -1432,7 +1432,7 @@ class LispGenerator:
                 flush_stack()
             elif name in ('CLEAR_ARGS', 'END_DEFUN', 'INIT_DONE'):
                 flush_stack()
-            elif name in ('NIL', 'NOP', 'NOP_62', 'NOP_63', 'DEFUN'):
+            elif name in ('NIL', 'NOP', 'NOP_62', 'NOP_63', 'DEFUN', 'ALPHA', 'BETA'):
                 pass
             else:
                 unresolved_ops.add(name)

@@ -115,10 +115,10 @@ class SymbolTable:
             for expr in node.body:
                 self.collect_symbols(expr)
         elif isinstance(node, Setq):
-            if node.target:
-                self.collect_symbols(node.target)
-            if node.value:
-                self.collect_symbols(node.value)
+            for target, value in node.pairs:
+                self.collect_symbols(target)
+                if value:
+                    self.collect_symbols(value)
         elif isinstance(node, IfNode):
             if node.cond:
                 self.collect_symbols(node.cond)

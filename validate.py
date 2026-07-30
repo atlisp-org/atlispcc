@@ -213,8 +213,8 @@ def validate_ast(forms: List[Node], text: str) -> List[str]:
             errors.append(f'line {node.line}: while has no body: {form_text(node)}')
         elif head == 'progn' and len(value) == 1:
             errors.append(f'line {node.line}: empty progn: {form_text(node)}')
-        elif head == 'setq' and len(value) != 3:
-            errors.append(f'line {node.line}: setq must have exactly two arguments: {form_text(node)}')
+        elif head == 'setq' and len(value) % 2 == 0:
+            errors.append(f'line {node.line}: setq requires an even number of arguments: {form_text(node)}')
         elif head == 'foreach' and len(value) < 4:
             errors.append(f'line {node.line}: foreach must have var, list, and body: {form_text(node)}')
 

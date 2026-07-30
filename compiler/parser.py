@@ -70,10 +70,15 @@ class Parser:
             if name == 'defun' or name == 'defun-q':
                 return self._parse_defun(name)
             elif name == 'setq':
-                target = self.parse_form()
-                val = None if self.peek()[0] == 'RPAREN' else self.parse_form()
+                pairs = []
+                while self.peek()[0] != 'RPAREN':
+                    target = self.parse_form()
+                    if self.peek()[0] == 'RPAREN':
+                        pairs.append((target, None))
+                    else:
+                        pairs.append((target, self.parse_form()))
                 self.expect('RPAREN')
-                return Setq(target=target, value=val)
+                return Setq(pairs=pairs)
             elif name == 'if':
                 cond = self.parse_form()
                 then_expr = self.parse_form()

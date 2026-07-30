@@ -3,44 +3,85 @@
 ## 环境准备
 
 ```sh
-# 安装 Poetry（如未安装）
 pip install poetry
-
-# 安装依赖
 poetry install
-
-# 激活虚拟环境
 poetry shell
-
-# 或直接通过 Poetry 运行
+# 或
 poetry run python fas4_decompiler.py ...
 ```
 
-Python 版本要求：>= 3.8。当前虚拟环境使用 Python 3.10.11。
+Python >= 3.8。当前使用 Python 3.10.11。
 
 ## 项目结构
 
 ```
-fas4_decompiler.py   主反编译器（2136 行）— 解析 → 反汇编 → 分析 → 生成
+fas4_decompiler.py   主反编译器（2136 行）
 fas_core.py          共享核心模块（690 行）— 加解密、解析、符号表重建
 validate.py          LSP 语法验证器
-decompile.py         简易包装入口（带统计输出）
-decrypt_fas4.py      FAS4 解密工具
-fas-split.py         函数分割器（将多函数 FAS 拆为单函数）
-fas-analyzer.py      FAS4 分析器
-crack_key.py         密钥暴力破解工具
-server/              实验性 LSP 服务器（pygls），独立代码路径，不参与反编译管线
+decompile.py         简易包装入口
+
+compiler/
+  cli.py             CLI 入口（atlispcc），子命令：compile/decompile/validate/link
+  parser.py           Lisp 源码解析器 → AST
+  symbol_table.py     符号表构建与作用域分析
+  codegen.py          字节码生成器（AST → 指令流）
+  resource_builder.py 常量/符号/函数索引 → 资源段
+  fas_writer.py       指令流 → FAS4 二进制
+  opt.py              优化器（-O）：常量折叠、死分支消除、窥孔优化、常量传播、死赋值消除
+  ast.py              AST 节点定义
+
+debug/               FAS 调试工具
+
+server/              实验性 LSP 服务器，独立代码路径
 ```
 
 ## 架构管线
 
-反编译流程分四个阶段，**不可跳过**：
+### 编译器管线（compile）
 
 ```
-Fas4Parser.parse()           → Fas4File（含符号表、函数目录）
-  → Disassembler.disassemble()  → List[Instruction]（字节码→指令列表）
-  → ControlFlowAnalyzer.find_functions()  → List[FunctionDef]（指令→函数边界）
-  → LispGenerator.generate()    → str（AutoLISP 源码）
+Lisp 源码 → Parser.parse() → AST
+         → SymbolTableBuilder.build() → SymbolTable
+         → Codegen.generate() → FunctionDefs（指令流）
+         → [OptPipeline.optimize()  # -O 时可选]
+         → ResourceBuilder.build() → 资源段
+         → FasWriter.write() → FAS4 二进制
+```
+
+### 优化器（compiler/opt.py）
+
+优化级别通过 `-O` 标志控制：
+
+- **O0**：无优化
+- **O1**：常量折叠 + 死分支消除 + 窥孔优化
+- **O2**：O1 + 常量传播 + 死赋值消除 + 重复 O1
+
+每个优化是可组合的 Pass 类：
+
+| Pass | 作用 |
+|---|---|
+| ConstantFold | `(+ 1 2)` → `3`, `(strcat "a" "b")` → `"ab"` |
+| DeadBranchElim | `(if T e1 e2)` → `e1`, `(while nil ...)` → `nil` |
+| PeepholeOpt | `(progn x)` → `x`, `(list)` → `nil`, `(+ x)` → `x` |
+| ConstantPropagate | `(setq x 3) (+ x 1)` → `(setq x 3) (+ 3 1)` |
+| DeadAssignElim | 移除未使用的 `(setq x ...)` |
+
+### 反编译器管线（decompile）
+
+```
+FAS4 二进制 → Fas4Parser.parse() → Fas4File
+            → Disassembler.disassemble()  → List[Instruction]
+            → ControlFlowAnalyzer.find_functions() → List[FunctionDef]
+            → LispGenerator.generate() → AutoLISP 源码
+```
+
+### 链接器管线（link）
+
+```
+FAS A + FAS B + ... → 合并符号表/函数目录
+                    → 重排函数索引
+                    → 修复交叉引用
+                    → 写入合并 FAS
 ```
 
 ### Fas4Parser
@@ -91,12 +132,7 @@ Fas4Parser.parse()           → Fas4File（含符号表、函数目录）
 2. 从符号表推测函数名
 3. 遍历指令，用栈式求值将字节码转为 Lisp 表达式
 4. 结构重建：识别 `if`/`while`/`foreach` 控制流
-5. 兼容性包装：
-   - `fas-polar1`（1 参数 POLAR）
-   - `fas-rtos1`/`fas-rtos3`（Project 风格 RTOS）
-   - `fas-getvar2`/`fas-getvar3`（GETVAR 包装）
-   - `IN_PARAM` 关联列表/DXF 读取
-   - `Projet/PA_Projet` 后备选择提示
+5. 兼容性包装（BricsCAD 适配）
 6. 后处理：清理死 setq、推断局部变量重命名、调整 C: 函数签名
 
 #### _render_block 核心方法
@@ -126,24 +162,24 @@ Fas4Parser.parse()           → Fas4File（含符号表、函数目录）
 ```sh
 # 语法检查
 python -m py_compile fas4_decompiler.py
+python -m py_compile compiler/opt.py
 
-# 反编译 + 验证
-python fas4_decompiler.py PDI.fas PDI_test.lsp
-python validate.py PDI_test.lsp
+# 编译 + 反编译 + 验证
+python compiler/cli.py compile -O2 tests/test_while.lsp test.fas
+python fas4_decompiler.py test.fas test.lsp
+python validate.py test.lsp
 
-# 对比已有输出确认无退化
-diff PDI_generic.lsp PDI_test.lsp
+# 完整测试套件
+python -m pytest -v
 
-# 完整批量检查
-python fas4_decompiler.py bib.fas bib_test.lsp && python validate.py bib_test.lsp
-python fas4_decompiler.py PDI.fas PDI_test.lsp && python validate.py PDI_test.lsp
+# 格式化
+black .
 ```
 
 ## 代码规范
 
-- PEP 8 遵循（通过 `poetry run black .` 格式化）
-- 类型注解使用 `typing` 模块风格（`Optional[str]` 而非 `str | None`，保持 Python 3.8 兼容）
-- 新增函数/类需加文档字符串
+- PEP 8（通过 `black .` 格式化）
+- 类型注解使用 `typing` 模块风格（`Optional[str]`，保持 Python 3.8 兼容）
 - `fas_core.py` 是共享模块：所有工具脚本共用的函数放这里
 - 解码器修复始终在 `fas4_decompiler.py`，从不修改生成的 `.lsp`
 

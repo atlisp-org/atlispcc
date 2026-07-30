@@ -56,8 +56,8 @@ def test_parse_setq():
     setq = f.body[0]
     from compiler.ast import Setq
     assert isinstance(setq, Setq)
-    assert setq.target.name == 'x'
-    assert setq.value.value == 5
+    assert setq.pairs[0][0].name == 'x'
+    assert setq.pairs[0][1].value == 5
 
 
 def test_parse_if():
@@ -102,7 +102,7 @@ def test_parse_quote():
     prog = p.parse()
     f = prog.forms[0]
     from compiler.ast import QuotedExpr, ListExpr, Call
-    q = f.body[0].value
+    q = f.body[0].pairs[0][1]
     assert isinstance(q, QuotedExpr)
     assert isinstance(q.expr, (ListExpr, Call, tuple))
 
@@ -122,3 +122,21 @@ def test_parse_top_level_init():
     from compiler.ast import Setq, Defun
     assert isinstance(prog.forms[0], Setq)
     assert isinstance(prog.forms[1], Defun)
+
+
+def test_lexer_1plus_1minus():
+    """Lexer recognizes 1+ and 1- as symbols."""
+    from compiler.lexer import tokenize
+    toks = tokenize('(1+ 2)')
+    kinds = [k for k, _, _, _ in toks]
+    assert kinds[1] == 'SYMBOL', f'Expected SYMBOL for 1+, got {kinds[1]}'
+    assert toks[1][1] == '1+', f'Expected "1+", got {toks[1][1]}'
+
+    toks = tokenize('(1- 2)')
+    kinds = [k for k, _, _, _ in toks]
+    assert kinds[1] == 'SYMBOL', f'Expected SYMBOL for 1-, got {kinds[1]}'
+    assert toks[1][1] == '1-', f'Expected "1-", got {toks[1][1]}'
+
+    toks = tokenize("(mapcar '1+ l)")
+    vals = [v for _, v, _, _ in toks]
+    assert '1+' in vals, f'Expected 1+ in tokens, got {vals}'

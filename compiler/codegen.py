@@ -6,12 +6,37 @@ from compiler.ast import (
     ForeachNode, Call, Progn, LambdaNode, Cond,
 )
 from compiler.opcodes import (
-    NAME_TO_OPCODE, ARITH_OP_MAP, OPCODE_FORMAT,
-    encode_instruction, encode_op_noarg, encode_op_u16,
+    NAME_TO_OPCODE,
+    encode_op_noarg, encode_op_u16,
     encode_op_s32, encode_usubr, encode_func, encode_defun,
     encode_real,
 )
 from compiler.symbol_table import SymbolTable
+
+
+PUSH_T = NAME_TO_OPCODE['PUSH_T']          # 0x02
+PUSH_NIL = NAME_TO_OPCODE['PUSH_NIL']      # 0x01
+PUSH_VALUE = NAME_TO_OPCODE['PUSH_VALUE']  # 0x03
+PUSH_INT8 = NAME_TO_OPCODE['PUSH_INT8']    # 0x32
+PUSH_INT32 = NAME_TO_OPCODE['PUSH_INT32']  # 0x33
+PUSH_G = NAME_TO_OPCODE['PUSH_G']          # 0x09
+POP = NAME_TO_OPCODE['POP']                # 0x0a
+SETQ_G = NAME_TO_OPCODE['SETQ_G']          # 0x06
+JMP16_IFNOT = NAME_TO_OPCODE['JMP16_IFNOT']  # 0x0d
+JMP16_IF = NAME_TO_OPCODE['JMP16_IF']       # 0x0e
+JUMP = NAME_TO_OPCODE['JUMP']               # 0x57
+BUILD_LIST = NAME_TO_OPCODE['BUILD_LIST']   # 0x39
+CAR = NAME_TO_OPCODE['CAR']                 # 0x28
+CDR = NAME_TO_OPCODE['CDR']                 # 0x29
+INIT_ARGS = NAME_TO_OPCODE['INIT_ARGS']     # 0x18
+CLEAR_ARGS = NAME_TO_OPCODE['CLEAR_ARGS']   # 0x19
+END_DEFUN = NAME_TO_OPCODE['END_DEFUN']     # 0x16
+INC = NAME_TO_OPCODE['INC']                 # 0x4f
+FIX_SUB = NAME_TO_OPCODE['FIX_SUB']         # 0x47
+FIX_DIV = NAME_TO_OPCODE['FIX_DIV']         # 0x49
+GET_LOCAL_8 = 0x05      # GET_LOCAL with 1-byte operand index
+GET_LOCAL_16 = 0x5c     # GET_LOCAL with 2-byte operand index
+SET_LOCAL_16 = 0x5d     # SET_LOCAL with 2-byte operand index
 
 
 ARITH_OP_TO_FAS = {
@@ -88,13 +113,13 @@ class CodeGenerator:
         if fas_op:
             if len(args) == 1:
                 if op_name == '-':
+                    self._emit_expr(buf, Integer(0))
                     self._emit_expr(buf, args[0])
-                    buf.emit(encode_op_noarg(0x4f))
-                    buf.emit(encode_op_noarg(0x47))
+                    buf.emit(encode_op_noarg(FIX_SUB))
                 elif op_name == '/':
                     self._emit_expr(buf, Integer(1))
                     self._emit_expr(buf, args[0])
-                    buf.emit(encode_op_noarg(0x49))
+                    buf.emit(encode_op_noarg(FIX_DIV))
                 else:
                     self._emit_expr(buf, Integer(0))
                     self._emit_expr(buf, args[0])
@@ -124,26 +149,26 @@ class CodeGenerator:
         if isinstance(node, Symbol):
             name = node.name
             if name == 'T':
-                buf.emit(encode_op_noarg(0x02))
+                buf.emit(encode_op_noarg(PUSH_T))
             elif name == 'nil':
-                buf.emit(encode_op_noarg(0x01))
+                buf.emit(encode_op_noarg(PUSH_NIL))
             else:
                 idx = self.symtab.get_or_add(name)
-                buf.emit(encode_op_u16(0x03, idx))
+                buf.emit(encode_op_u16(PUSH_VALUE, idx))
 
         elif isinstance(node, Integer):
             val = node.value
             if -128 <= val <= 127:
-                buf.emit(encode_op_u16(0x32, val & 0xFF))
+                buf.emit(encode_op_u16(PUSH_INT8, val & 0xFF))
             else:
-                buf.emit(struct.pack('<Bi', 0x33, val))
+                buf.emit(struct.pack('<Bi', PUSH_INT32, val))
 
         elif isinstance(node, Real):
             buf.emit(encode_real(node.value))
 
         elif isinstance(node, String):
             idx = self.symtab.add_string(node.value)
-            buf.emit(encode_op_u16(0x09, idx))
+            buf.emit(encode_op_u16(PUSH_G, idx))
 
         elif isinstance(node, Call):
             self._emit_call_expr(buf, node)
@@ -152,10 +177,10 @@ class CodeGenerator:
             self._emit_quoted(buf, node.expr)
 
         elif isinstance(node, ListExpr):
-            buf.emit(encode_op_noarg(0x01))
+            buf.emit(encode_op_noarg(PUSH_NIL))
             for item in reversed(node.items):
                 self._emit_expr(buf, item)
-            buf.emit(encode_op_u16(0x39, len(node.items)))
+            buf.emit(encode_op_u16(BUILD_LIST, len(node.items)))
 
         elif isinstance(node, Setq):
             self._emit_setq(buf, node)
@@ -172,7 +197,7 @@ class CodeGenerator:
         elif isinstance(node, Progn):
             for form in node.forms[:-1]:
                 self._emit_expr(buf, form)
-                buf.emit(encode_op_noarg(0x0a))
+                buf.emit(encode_op_noarg(POP))
             if node.forms:
                 self._emit_expr(buf, node.forms[-1])
 
@@ -202,22 +227,21 @@ class CodeGenerator:
         if name == 'list':
             for arg in reversed(args):
                 self._emit_expr(buf, arg)
-            buf.emit(encode_op_u16(0x39, len(args)))
-            return
-        if name == 'cons':
-            self._emit_expr(buf, args[1] if len(args) > 1 else Symbol('nil'))
-            self._emit_expr(buf, args[0])
-            buf.emit(encode_op_noarg(0x28))
+            buf.emit(encode_op_u16(BUILD_LIST, len(args)))
             return
         if name == 'progn':
             for form in args[:-1]:
                 self._emit_expr(buf, form)
-                buf.emit(encode_op_noarg(0x0a))
+                buf.emit(encode_op_noarg(POP))
             if args:
                 self._emit_expr(buf, args[-1])
             return
-        if name in ('setq',) and len(args) >= 2:
-            self._emit_setq_expr(buf, args[0], args[1])
+        if name in ('setq',):
+            if len(args) >= 2:
+                self._emit_setq_expr(buf, args[0], args[1])
+            for i in range(2, len(args), 2):
+                if i + 1 < len(args):
+                    self._emit_setq_expr(buf, args[i], args[i + 1])
             return
         if name == 'repeat' and len(args) >= 2:
             self._emit_repeat(buf, args[0], args[1:])
@@ -236,18 +260,19 @@ class CodeGenerator:
         if isinstance(target, Symbol):
             self._emit_expr(buf, value)
             idx = self.symtab.get_or_add(target.name)
-            buf.emit(encode_op_u16(0x06, idx))
+            buf.emit(encode_op_u16(SETQ_G, idx))
         else:
             self._emit_expr(buf, value)
             self._emit_expr(buf, target)
             buf.emit(encode_func(1, self.symtab.get_or_add('set')))
 
     def _emit_setq(self, buf: BytecodeBuffer, node: Setq):
-        if isinstance(node.target, Symbol) and node.value:
-            self._emit_expr(buf, node.value)
-            idx = self.symtab.get_or_add(node.target.name)
-            buf.emit(encode_op_u16(0x06, idx))
-            buf.emit(encode_op_noarg(0x0a))
+        for target, value in node.pairs:
+            if isinstance(target, Symbol) and value:
+                self._emit_expr(buf, value)
+                idx = self.symtab.get_or_add(target.name)
+                buf.emit(encode_op_u16(SETQ_G, idx))
+                buf.emit(encode_op_noarg(POP))
 
     def _emit_if(self, buf: BytecodeBuffer, node: IfNode):
         label_else = f'_if_else_{buf.pos()}'
@@ -257,12 +282,12 @@ class CodeGenerator:
 
         if node.else_expr:
             jmp_pos = buf.pos()
-            buf.emit(encode_op_u16(0x0d, 0))
+            buf.emit(encode_op_u16(JMP16_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_else, 2)
 
             self._emit_expr(buf, node.then)
             jmp2_pos = buf.pos()
-            buf.emit(encode_op_s32(0x57, 0))
+            buf.emit(encode_op_s32(JUMP, 0))
             buf.add_patch(jmp2_pos + 1, label_end, 4)
 
             buf.patch_label(label_else, buf.pos())
@@ -270,7 +295,7 @@ class CodeGenerator:
             buf.patch_label(label_end, buf.pos())
         else:
             jmp_pos = buf.pos()
-            buf.emit(encode_op_u16(0x0d, 0))
+            buf.emit(encode_op_u16(JMP16_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_end, 2)
 
             self._emit_expr(buf, node.then)
@@ -283,15 +308,15 @@ class CodeGenerator:
         buf.label(label_loop)
         self._emit_expr(buf, node.cond)
         jmp_pos = buf.pos()
-        buf.emit(encode_op_u16(0x0d, 0))
+        buf.emit(encode_op_u16(JMP16_IFNOT, 0))
         buf.add_patch(jmp_pos + 1, label_end, 2)
 
         for form in node.body:
             self._emit_expr(buf, form)
-            buf.emit(encode_op_noarg(0x0a))
+            buf.emit(encode_op_noarg(POP))
 
         jmp_back = buf.pos()
-        buf.emit(encode_op_s32(0x57, 0))
+        buf.emit(encode_op_s32(JUMP, 0))
         buf.add_patch(jmp_back + 1, label_loop, 4)
 
         buf.label(label_end)
@@ -302,40 +327,40 @@ class CodeGenerator:
         item_slot = self._get_local_slot(f'__foreach_item__{buf.pos()}')
 
         self._emit_expr(buf, node.list_expr)
-        buf.emit(struct.pack('<BB', 0x5d, slot))
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         label_loop = f'_foreach_loop_{buf.pos()}'
         label_end = f'_foreach_end_{buf.pos()}'
 
         buf.label(label_loop)
-        buf.emit(struct.pack('<BB', 0x5c, slot))
-        buf.emit(encode_op_noarg(0x01))
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        buf.emit(encode_op_noarg(PUSH_NIL))
         jmp_pos = buf.pos()
-        buf.emit(encode_op_u16(0x0d, 0))
+        buf.emit(encode_op_u16(JMP16_IFNOT, 0))
         buf.add_patch(jmp_pos + 1, label_end, 2)
 
-        buf.emit(struct.pack('<BB', 0x5c, slot))
-        buf.emit(encode_op_noarg(0x28))
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        buf.emit(encode_op_noarg(CAR))
         idx = self.symtab.get_or_add(var_name)
-        buf.emit(encode_op_u16(0x06, idx))
+        buf.emit(encode_op_u16(SETQ_G, idx))
 
-        buf.emit(struct.pack('<BB', 0x5c, slot))
-        buf.emit(encode_op_noarg(0x29))
-        buf.emit(struct.pack('<BB', 0x5d, slot))
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        buf.emit(encode_op_noarg(CDR))
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         for form in node.body:
             self._emit_expr(buf, form)
-            buf.emit(encode_op_noarg(0x0a))
+            buf.emit(encode_op_noarg(POP))
 
         jmp_back = buf.pos()
-        buf.emit(encode_op_s32(0x57, 0))
+        buf.emit(encode_op_s32(JUMP, 0))
         buf.add_patch(jmp_back + 1, label_loop, 4)
 
         buf.label(label_end)
 
     def _emit_short_circuit(self, buf: BytecodeBuffer, op_name: str, args: List[Node]):
         label_end = f'_sc_end_{buf.pos()}'
-        op = 0x0d if op_name == 'and' else 0x0e
+        op = JMP16_IFNOT if op_name == 'and' else JMP16_IF
         for i, arg in enumerate(args[:-1]):
             self._emit_expr(buf, arg)
             jmp_pos = buf.pos()
@@ -363,79 +388,77 @@ class CodeGenerator:
             if actions:
                 jmp_pos = buf.pos()
                 label_next = f'_cond_next_{buf.pos()}_{i}'
-                buf.emit(encode_op_u16(0x0d, 0))
+                buf.emit(encode_op_u16(JMP16_IFNOT, 0))
                 buf.add_patch(jmp_pos + 1, label_next, 2)
                 for action in actions:
                     self._emit_expr(buf, action)
                 if i < len(node.clauses) - 1:
                     jmp2_pos = buf.pos()
                     label_end_label = label_end
-                    buf.emit(encode_op_s32(0x57, 0))
+                    buf.emit(encode_op_s32(JUMP, 0))
                     buf.add_patch(jmp2_pos + 1, label_end_label, 5)
             else:
-                buf.emit(encode_op_noarg(0x0a))
+                buf.emit(encode_op_noarg(POP))
         buf.label(label_end)
 
     def _emit_repeat(self, buf: BytecodeBuffer, count_expr: Node, body: List[Node]):
         slot = self._get_local_slot('__repeat__')
         self._emit_expr(buf, count_expr)
-        buf.emit(struct.pack('<BB', 0x5d, slot))
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
         label_loop = f'_repeat_loop_{buf.pos()}'
         label_end = f'_repeat_end_{buf.pos()}'
         buf.label(label_loop)
-        buf.emit(struct.pack('<BB', 0x5c, slot))
-        buf.emit(encode_op_noarg(0x4f))
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        buf.emit(encode_op_noarg(INC))
         jmp_pos = buf.pos()
-        buf.emit(b'\x00\x00')
+        buf.emit(encode_op_u16(JMP16_IFNOT, 0))
         buf.add_patch(jmp_pos + 1, label_end, 2)
-        buf.emit(encode_op_u16(0x0d, 0))
-        buf.emit(struct.pack('<BB', 0x5d, slot))
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
         for form in body:
             self._emit_expr(buf, form)
-            buf.emit(encode_op_noarg(0x0a))
+            buf.emit(encode_op_noarg(POP))
         jmp_back = buf.pos()
-        buf.emit(b'\x00\x00\x00\x00\x00')
-        buf.add_patch(jmp_back + 1, label_loop, 5)
-        buf.emit(encode_op_s32(0x57, 0))
+        buf.emit(encode_op_s32(JUMP, 0))
+        buf.add_patch(jmp_back + 1, label_loop, 4)
         buf.label(label_end)
 
     def _emit_quoted(self, buf: BytecodeBuffer, node: Optional[Node]):
         if node is None:
-            buf.emit(encode_op_noarg(0x01))
+            buf.emit(encode_op_noarg(PUSH_NIL))
         elif isinstance(node, Symbol):
             name = node.name
             if name == 'T':
-                buf.emit(encode_op_noarg(0x02))
+                buf.emit(encode_op_noarg(PUSH_T))
             elif name == 'nil':
-                buf.emit(encode_op_noarg(0x01))
+                buf.emit(encode_op_noarg(PUSH_NIL))
             elif name == 'FUNC':
-                buf.emit(encode_op_noarg(0x01))
+                buf.emit(encode_op_noarg(PUSH_NIL))
             else:
                 idx = self.symtab.get_or_add(name)
-                buf.emit(encode_op_u16(0x09, idx))
+                buf.emit(encode_op_u16(PUSH_G, idx))
         elif isinstance(node, Integer):
             val = node.value
             if -128 <= val <= 127:
-                buf.emit(encode_op_u16(0x32, val & 0xFF))
+                buf.emit(encode_op_u16(PUSH_INT8, val & 0xFF))
             else:
-                buf.emit(struct.pack('<Bi', 0x33, val))
+                buf.emit(struct.pack('<Bi', PUSH_INT32, val))
         elif isinstance(node, Real):
             buf.emit(encode_real(node.value))
         elif isinstance(node, ListExpr):
             items = node.items
             if items and isinstance(items[0], Symbol) and items[0].name == 'lambda':
-                buf.emit(encode_op_noarg(0x01))
+                buf.emit(encode_op_noarg(PUSH_NIL))
             else:
-                buf.emit(encode_op_noarg(0x01))
+                buf.emit(encode_op_noarg(PUSH_NIL))
                 for item in reversed(items):
                     self._emit_quoted(buf, item)
-                buf.emit(encode_op_u16(0x39, len(items)))
+                buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         elif isinstance(node, String):
             idx = self.symtab.add_string(node.value)
-            buf.emit(encode_op_u16(0x09, idx))
+            buf.emit(encode_op_u16(PUSH_G, idx))
         elif isinstance(node, Call):
             idx = self.symtab.get_or_add(node.name)
-            buf.emit(encode_op_u16(0x09, idx))
+            buf.emit(encode_op_u16(PUSH_G, idx))
         else:
             self._emit_expr(buf, node)
 
@@ -446,13 +469,13 @@ class CodeGenerator:
     def _emit_init_args(self, buf: BytecodeBuffer, args: List[str]):
         for i, arg in enumerate(args):
             idx = self.symtab.get_or_add(arg)
-            buf.emit(encode_op_u16(0x09, idx))
-            buf.emit(struct.pack('<BB', 0x05, i))
-        buf.emit(encode_op_u16(0x18, len(args) * 2))
+            buf.emit(encode_op_u16(PUSH_G, idx))
+            buf.emit(struct.pack('<BB', GET_LOCAL_8, i))
+        buf.emit(encode_op_u16(INIT_ARGS, len(args) * 2))
 
     def _emit_clear_args(self, buf: BytecodeBuffer, args: List[str]):
         if args:
-            buf.emit(encode_op_u16(0x19, len(args)))
+            buf.emit(encode_op_u16(CLEAR_ARGS, len(args)))
 
     def generate_function(self, func: Defun) -> Tuple[bytes, int]:
         buf = BytecodeBuffer()
@@ -477,12 +500,12 @@ class CodeGenerator:
 
         for expr in func.body[:-1]:
             self._emit_expr(buf, expr)
-            buf.emit(encode_op_noarg(0x0a))
+            buf.emit(encode_op_noarg(POP))
         if func.body:
             self._emit_expr(buf, func.body[-1])
 
         self._emit_clear_args(buf, func.args)
-        buf.emit(encode_op_noarg(0x16))
+        buf.emit(encode_op_noarg(END_DEFUN))
 
         buf.resolve()
         return bytes(buf.data), start_offset
@@ -491,6 +514,6 @@ class CodeGenerator:
         buf = BytecodeBuffer()
         for form in forms:
             self._emit_expr(buf, form)
-            buf.emit(encode_op_noarg(0x0a))
+            buf.emit(encode_op_noarg(POP))
         buf.resolve()
         return bytes(buf.data)

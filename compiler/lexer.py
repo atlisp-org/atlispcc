@@ -45,6 +45,16 @@ def tokenize(source: str) -> List[Token]:
                 break
             pos = end
             continue
+        if source.startswith('1+', pos):
+            tokens.append(('SYMBOL', '1+', line, col))
+            col += 2
+            pos += 2
+            continue
+        if source.startswith('1-', pos) and (pos + 2 >= len(source) or source[pos + 2] in ' \t\r\n()"\';'):
+            tokens.append(('SYMBOL', '1-', line, col))
+            col += 2
+            pos += 2
+            continue
         m = TOKEN_RE.match(source, pos)
         if m:
             kind = m.lastgroup
