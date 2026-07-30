@@ -1,112 +1,111 @@
-# atlispcc — FAS4 Bytecode Compiler & Decompiler
+# atlispcc — FAS4 字节码编译器 & 反编译器
 
-`atlispcc` is a unified CLI toolchain for compiling AutoLISP (`.lsp`) to FAS4 bytecode (`.fas`), decompiling FAS4 back to Lisp, linking multiple FAS files, and validating Lisp syntax.
+`atlispcc` 是一个统一的 CLI 工具链，用于将 AutoLISP (`.lsp`) 编译为 FAS4 字节码 (`.fas`)，反编译 FAS4 回 Lisp，链接多个 FAS 文件，以及验证 Lisp 语法。
 
 ## CLI
 
 ```sh
-atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]      # compile
-atlispcc decompile <input.fas> [output.lsp]                   # decompile
-atlispcc validate <input.lsp>                                  # validate
-atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]       # link
+atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]      # 编译
+atlispcc decompile <input.fas> [output.lsp]                   # 反编译
+atlispcc validate <input.lsp>                                  # 验证
+atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]       # 链接
 ```
 
-Without a subcommand, defaults to compile: `atlispcc <input.lsp> [output.fas]`
+无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
 
-The decompiler can also be called directly: `python fas4_decompiler.py <input.fas> [output.lsp]`
+反编译器也可直接调用：`python fas4_decompiler.py <input.fas> [output.lsp]`
 
-## Compiler Pipeline
+## 编译器管线
 
 ```
-Lisp source → Parser.parse() → AST
-           → SymbolTableBuilder.build() → SymbolTable
-           → Codegen.generate() → List[FunctionDef] (instruction stream)
-           → [OptPipeline.optimize()  # optional: -O1/-O2/-O3]
-           → ResourceBuilder.build() → resource segment
-           → FasWriter.write() → FAS4 binary
+Lisp 源码 → Parser.parse() → AST
+         → SymbolTableBuilder.build() → SymbolTable
+         → Codegen.generate() → List[FunctionDef]（指令流）
+         → [OptPipeline.optimize()  # 可选：-O1/-O2/-O3]
+         → ResourceBuilder.build() → 资源段
+         → FasWriter.write() → FAS4 二进制
 ```
 
-## Decompiler Pipeline
+## 反编译器管线
 
 ```
 Fas4Parser.parse() → Disassembler.disassemble()
 → ControlFlowAnalyzer.find_functions() → LispGenerator.generate()
 ```
 
-## Linker Pipeline
+## 链接器管线
 
 ```
-FAS A + FAS B + ... → merge symbol tables / function catalogs
-→ re-index → fix cross-references → merged FAS
+FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复交叉引用 → 合并 FAS
 ```
 
-## Optimization Levels
+## 优化级别
 
-| Level | Passes | Description |
-|-------|--------|-------------|
-| `-O0` | none | Raw compilation, no optimization |
-| `-O1` | ConstantFold, DeadBranchElim, Peephole | Basic cleanup: `(+ 1 2)` → `3`, `(if T e1 e2)` → `e1`, `(progn x)` → `x` |
-| `-O2` | O1 + ConstantPropagate, DeadAssignElim | Aggressive: `(setq x 3) (+ x 1)` → `(+ 3 1)`, remove unused `setq` |
-| `-O3` | O2 + CrossFuncConstPropagate, DeadCodeElim, InlineSmallFuncs | Extreme: inline single-use functions, replace constant functions at call sites, remove dead code after `exit`/`quit` |
+| 级别 | Pass 列表 | 说明 |
+|-------|--------|------|
+| `-O0` | 无 | 原始编译，不做优化 |
+| `-O1` | ConstantFold, DeadBranchElim, Peephole | 基本清理：`(+ 1 2)` → `3`、`(if T e1 e2)` → `e1`、`(progn x)` → `x` |
+| `-O2` | O1 + ConstantPropagate, DeadAssignElim | 激进优化：`(setq x 3) (+ x 1)` → `(+ 3 1)`、移除未使用的 `setq` |
+| `-O3` | O2 + CrossFuncConstPropagate, DeadCodeElim, InlineSmallFuncs | 极致优化：内联单次调用函数、跨函数常量替换、删除 `exit`/`quit` 后的死代码 |
 
-### Analysis
+### 分析
 
-Use `--analyze` with any `-O` level to see compilation statistics:
+使用 `--analyze` 配合任何 `-O` 级别查看编译统计：
 
 ```sh
 atlispcc compile --analyze -O3 input.lsp output.fas
 ```
 
-Output includes:
-- Function count, instruction count, constants estimate
-- Tail-recursive function detection
-- Per-function detail: arg count, locals, called functions
-- Before/after comparison when optimization is enabled
+输出包含：
+- 函数数、指令数、常量估算数
+- 尾递归函数检测
+- 每个函数的参数数、局部变量、调用关系
+- 开启优化时输出优化前后对比
 
-## Key Files
+## 关键文件
 
-| File | Role |
+| 文件 | 作用 |
 |------|------|
-| `fas4_decompiler.py` (2136 lines) | Main decompiler: parse + disassemble + analyze + generate |
-| `fas_core.py` (690 lines) | Shared crypto/parse/symbol utilities |
-| `compiler/cli.py` | CLI entry point, subcommand dispatch |
-| `compiler/parser.py` | Lisp source parser → AST |
-| `compiler/ast.py` | AST node definitions |
-| `compiler/symbol_table.py` | Symbol table construction and scope analysis |
-| `compiler/codegen.py` | Bytecode generator (AST → instruction stream) |
-| `compiler/resource_builder.py` | Constant/symbol/function index → resource segment |
-| `compiler/fas_writer.py` | Instruction stream → FAS4 binary |
-| `compiler/opt.py` | Optimizer: 8 passes across O1-O3 |
-| `compiler/analyzer.py` | Compilation analysis and statistics |
-| `compiler/linker.py` | Multi-file FAS linker |
-| `validate.py` | Generated `.lsp` syntax validator |
+| `fas4_decompiler.py` (2136 行) | 主反编译器：解析 + 反汇编 + 分析 + 生成 |
+| `fas_core.py` (690 行) | 共享加密/解析/符号工具函数 |
+| `compiler/cli.py` | CLI 入口，子命令分发 |
+| `compiler/parser.py` | Lisp 源码解析器 → AST |
+| `compiler/ast.py` | AST 节点定义 |
+| `compiler/symbol_table.py` | 符号表构建与作用域分析 |
+| `compiler/codegen.py` | 字节码生成器（AST → 指令流） |
+| `compiler/resource_builder.py` | 常量/符号/函数索引 → 资源段 |
+| `compiler/fas_writer.py` | 指令流 → FAS4 二进制 |
+| `compiler/opt.py` | 优化器：8 个 pass 跨 O1-O3 级别 |
+| `compiler/analyzer.py` | 编译分析与统计 |
+| `compiler/linker.py` | 多文件 FAS 链接器 |
+| `validate.py` | 生成的 `.lsp` 语法验证器 |
 
-## Install
-
-```sh
-pip install -e ".[dev]"      # development mode with dev tools
-```
-
-## Tests
+## 安装
 
 ```sh
-python -m pytest              # run all tests (75+ cases)
-python -m pytest tests/ -v   # verbose output
+pip install -e ".[dev]"      # 开发模式（含 dev 工具）
 ```
 
-Test files under `tests/`:
-- `test_parser.py` — AST parser (14 cases)
-- `test_compile_decompile.py` — compile-decompile roundtrip (15 cases)
-- `test_compiler_output.py` — FAS output correctness (8 cases)
-- `test_assembler.py` — disassemble/assemble roundtrip (4 cases)
-- `test_linker.py` — multi-file linking (8 cases)
-- `test_optimizer.py` — all optimization passes (26 cases)
+## 测试
 
-## Docs
+```sh
+python -m pytest              # 运行所有测试（75+ 用例）
+python -m pytest tests/ -v   # 详细输出
+```
 
-- `docs/development.md` — architecture deep-dive, coding conventions, debugging guide
-- `docs/usage.md` — user installation, compile/decompile workflows, tool reference
+测试文件在 `tests/` 目录：
+- `test_parser.py` — AST 解析器（14 用例）
+- `test_compile_decompile.py` — 编译-反编译往返（15 用例）
+- `test_compiler_output.py` — FAS 输出正确性（8 用例）
+- `test_assembler.py` — 反汇编/汇编往返（4 用例）
+- `test_linker.py` — 多文件链接（8 用例）
+- `test_optimizer.py` — 所有优化 pass（26 用例）
 
-## Safety
+## 文档
 
-Always review decompiled `.lsp` before use. Test in a scratch drawing first. Some decoded commands may create, modify, or delete drawing entities.
+- `docs/development.md` — 架构详解、代码规范、调试指南
+- `docs/usage.md` — 用户安装、编译/反编译工作流、工具参考
+
+## 安全
+
+反编译生成的 `.lsp` 应先审查再使用。先在空白图形中测试。某些命令可能会创建、修改或删除图形实体。
