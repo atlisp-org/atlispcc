@@ -103,3 +103,15 @@ class RepeatNode(Node):
 @dataclass
 class Cond(Node):
     clauses: List[tuple] = field(default_factory=list)
+
+
+@dataclass
+class Defpackage(Node):
+    name: str = ''
+    use: List[str] = field(default_factory=list)
+    export: List[str] = field(default_factory=list)
+
+
+@dataclass
+class InPackage(Node):
+    name: str = ''

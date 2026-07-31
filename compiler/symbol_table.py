@@ -3,7 +3,9 @@ from compiler.ast import (
     Node, Program, Symbol, Integer, Real, String,
     ListExpr, QuotedExpr, Defun, Setq, IfNode, WhileNode,
     ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
+    Defpackage, InPackage,
 )
+from compiler.packages import PackageTable, PACKAGE_SEP
 
 
 BUILTIN_FUNCTIONS = {
@@ -42,13 +44,14 @@ BUILTIN_FUNCTIONS = {
 
 
 class SymbolTable:
-    def __init__(self):
+    def __init__(self, package_table: Optional[PackageTable] = None):
         self.name_to_idx: Dict[str, int] = {}
         self.entries: List[Tuple[str, Any]] = []
         self.strings: List[str] = []
         self.function_offsets: Dict[str, int] = {}
         self.code_ref_bias = 0
         self.dispatch_stubs: Dict[str, int] = {}
+        self.package_table = package_table or PackageTable()
 
     def get_or_add(self, name: str) -> int:
         name = str(name)
@@ -96,6 +99,17 @@ class SymbolTable:
         func_var_pos = max(base, 5)
         return max(base + func_count, func_var_pos + func_count)
 
+    def resolve_name(self, name: str) -> str:
+        if ':' in name:
+            return self.package_table.resolve(name)
+        return name
+
+    def resolve_func_name(self, name: str) -> str:
+        cur = self.package_table.current()
+        if cur and name not in ('T', 'nil') and not name.startswith('C:') and not self.is_builtin(name):
+            return self.package_table.munge(cur.name, name)
+        return name
+
     def is_builtin(self, name: str) -> bool:
         return name.upper() in {n.upper() for n in BUILTIN_FUNCTIONS}
 
@@ -106,8 +120,13 @@ class SymbolTable:
         if isinstance(node, Program):
             for form in node.forms:
                 self.collect_symbols(form)
+        elif isinstance(node, Defpackage):
+            pass
+        elif isinstance(node, InPackage):
+            pass
         elif isinstance(node, Defun):
-            self.get_or_add(node.name)
+            resolved = self.resolve_func_name(node.name)
+            self.get_or_add(resolved)
             for arg in node.args:
                 self.get_or_add(arg)
             for loc in node.locals:
@@ -143,12 +162,20 @@ class SymbolTable:
             for expr in node.body:
                 self.collect_symbols(expr)
         elif isinstance(node, Call):
-            if not self.is_builtin(node.name) and node.name not in ('T', 'nil'):
-                self.get_or_add(node.name)
+            call_name = node.name
+            if ':' in call_name:
+                call_name = self.resolve_name(call_name)
+                node.name = call_name
+            if not self.is_builtin(call_name) and call_name not in ('T', 'nil'):
+                self.get_or_add(call_name)
             for arg in node.args:
                 self.collect_symbols(arg)
         elif isinstance(node, Symbol):
-            if node.name not in ('T', 'nil'):
+            if node.name not in ('T', 'nil') and ':' in node.name:
+                resolved = self.resolve_name(node.name)
+                node.name = resolved
+                self.get_or_add(resolved)
+            elif node.name not in ('T', 'nil'):
                 self.get_or_add(node.name)
         elif isinstance(node, String):
             self.add_string(node.value)

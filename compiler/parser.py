@@ -4,7 +4,9 @@ from compiler.ast import (
     Node, Program, Symbol, Integer, Real, String,
     ListExpr, QuotedExpr, Defun, Setq, IfNode, WhileNode,
     ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
+    Defpackage, InPackage,
 )
+from compiler.packages import PackageTable
 
 
 class ParseError(Exception):
@@ -12,9 +14,10 @@ class ParseError(Exception):
 
 
 class Parser:
-    def __init__(self, source: str):
+    def __init__(self, source: str, package_table: Optional[PackageTable] = None):
         self.tokens: List[Token] = tokenize(source)
         self.pos = 0
+        self.packages = package_table or PackageTable()
 
     def peek(self) -> Token:
         return self.tokens[self.pos]
@@ -114,6 +117,14 @@ class Parser:
                 return LambdaNode(args=args, body=body)
             elif name == 'cond':
                 return self._parse_cond()
+            elif name == 'defpackage':
+                return self._parse_defpackage()
+            elif name == 'in-package':
+                name_tok = self.parse_form()
+                pkg_name = name_tok.name if isinstance(name_tok, Symbol) else str(name_tok)
+                self.expect('RPAREN')
+                self.packages.set_current(pkg_name)
+                return InPackage(name=pkg_name)
             elif name in ('quote', 'function'):
                 expr = self.parse_form()
                 self.expect('RPAREN')
@@ -133,7 +144,12 @@ class Parser:
 
     def _parse_defun(self, kind: str) -> Defun:
         name_tok = self.parse_form()
-        name = name_tok.name if isinstance(name_tok, Symbol) else str(name_tok)
+        raw_name = name_tok.name if isinstance(name_tok, Symbol) else str(name_tok)
+        cur = self.packages.current()
+        if cur and not raw_name.upper().startswith('C:') and ':' not in raw_name:
+            name = self.packages.munge(cur.name, raw_name)
+        else:
+            name = raw_name
         args = []
         locals_list = []
         if self.peek()[0] == 'LPAREN':
@@ -159,6 +175,49 @@ class Parser:
         is_cmd = name.upper().startswith('C:')
         return Defun(name=name, args=args, locals=locals_list, body=body,
                      is_command=is_cmd, quoted=(kind == 'defun-q'))
+
+    def _parse_defpackage(self) -> Defpackage:
+        name_tok = self.parse_form()
+        pkg_name = name_tok.name if isinstance(name_tok, Symbol) else str(name_tok)
+        use = []
+        export = []
+        while self.peek()[0] not in ('RPAREN', 'EOF'):
+            opt = self.parse_form()
+            if isinstance(opt, Call) and opt.name in (':use', 'use', ':export', 'export'):
+                items = [a.name for a in opt.args if isinstance(a, Symbol)]
+                if opt.name in (':use', 'use'):
+                    use.extend(items)
+                else:
+                    export.extend(items)
+            elif isinstance(opt, Symbol):
+                opt_name = opt.name
+                if opt_name in (':use', 'use'):
+                    if self.peek()[0] == 'LPAREN':
+                        self.advance()
+                        while self.peek()[0] not in ('RPAREN', 'EOF'):
+                            sym = self.parse_form()
+                            if isinstance(sym, Symbol):
+                                use.append(sym.name)
+                        self.expect('RPAREN')
+                    else:
+                        sym = self.parse_form()
+                        if isinstance(sym, Symbol):
+                            use.append(sym.name)
+                elif opt_name in (':export', 'export'):
+                    if self.peek()[0] == 'LPAREN':
+                        self.advance()
+                        while self.peek()[0] not in ('RPAREN', 'EOF'):
+                            sym = self.parse_form()
+                            if isinstance(sym, Symbol):
+                                export.append(sym.name)
+                        self.expect('RPAREN')
+                    else:
+                        sym = self.parse_form()
+                        if isinstance(sym, Symbol):
+                            export.append(sym.name)
+        self.expect('RPAREN')
+        self.packages.add_package(pkg_name, use, export)
+        return Defpackage(name=pkg_name, use=use, export=export)
 
     def _parse_cond(self) -> Cond:
         clauses = []

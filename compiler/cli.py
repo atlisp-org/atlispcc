@@ -7,12 +7,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from compiler.parser import Parser, ParseError
 from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
-from compiler.ast import Defun
+from compiler.ast import Defun, Defpackage, InPackage
 from compiler.opt import optimize
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
 from compiler.analyzer import analyze
 from compiler.linker import link_fas
+from compiler.vlx_builder import build_vlx
 from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator
 from validate import validate_file
 
@@ -32,6 +33,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     except ParseError as e:
         print(f'Parse error: {e}', file=sys.stderr)
         sys.exit(1)
+
+    package_table = parser_obj.packages
 
     if show_analysis:
         stats = analyze(program)
@@ -62,7 +65,7 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
             print(f'  Tail-recursive:     {stats2["tail_recursive_functions"]}')
             print()
 
-    symtab = SymbolTable()
+    symtab = SymbolTable(package_table=package_table)
     symtab.collect_symbols(program)
 
     codegen = CodeGenerator(symtab)
@@ -71,7 +74,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     func_offsets = {}
 
     defun_forms = [f for f in program.forms if isinstance(f, Defun)]
-    other_forms = [f for f in program.forms if not isinstance(f, Defun)]
+    other_forms = [f for f in program.forms
+                   if not isinstance(f, (Defun, Defpackage, InPackage))]
 
     for form in other_forms:
         codegen._emit_expr(all_bytecode, form)
@@ -156,6 +160,15 @@ def main():
     p_link.add_argument('-o', '--output', default='', help='output .fas file')
     p_link.add_argument('--verbose', '-v', action='store_true', help='verbose output')
 
+    # build-vlx
+    p_vlx = sub.add_parser('build-vlx', help='Build VLX container from .fas files')
+    p_vlx.add_argument('inputs', nargs='+', help='input .fas files')
+    p_vlx.add_argument('-o', '--output', default='', help='output .vlx file')
+    p_vlx.add_argument('--export', nargs='*', default=[],
+                       help='exported function names for namespace isolation')
+    p_vlx.add_argument('--package', default='',
+                       help='VLX package/application name')
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -181,6 +194,17 @@ def main():
             base = args.inputs[-1].rsplit('.', 1)[0]
             output = f'{base}_linked.fas'
         return cmd_link(args.inputs, output, args.verbose)
+
+    if args.command == 'build-vlx':
+        output = args.output
+        if not output:
+            base = args.inputs[-1].rsplit('.', 1)[0]
+            output = f'{base}.vlx'
+        result = build_vlx(args.inputs, output,
+                           exports=args.export,
+                           package_name=args.package)
+        print(f'Built {result}')
+        return 0
 
     parser.print_help()
     return 1

@@ -2055,6 +2055,9 @@ class LispGenerator:
         raw = name.strip()
         if raw in {'=', '>', '<', '>=', '<=', '/=', '1+', '1-', '+', '-', '*', '/'}:
             return raw.lower()
+
+        if '|' in raw:
+            raw = raw.replace('|', ':')
         command_prefix = raw[:2].lower() if allow_command_prefix and raw.upper().startswith('C:') else ''
         body = raw[2:] if command_prefix else raw
 
@@ -2062,7 +2065,7 @@ class LispGenerator:
             inner = re.sub(r'[^A-Za-z0-9_:-]+', '_', raw[1:-1]).strip('_')
             return f'*{(inner or prefix).lower()}*'
 
-        body = re.sub(r'[^A-Za-z0-9_+<>=.-]+', '_', body)
+        body = re.sub(r'[^A-Za-z0-9_+<>=.:-]+', '_', body)
         body = re.sub(r'_+', '_', body)
         if not body:
             body = prefix
