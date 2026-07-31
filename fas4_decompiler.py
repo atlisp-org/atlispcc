@@ -53,8 +53,28 @@ class Fas4File:
 
 
 def is_compact_stub(bytecode: bytes, function_catalog: list) -> bool:
-    """判断是否为 AutoCAD 紧凑 stub 格式（3 字节 Xsubr、符号按注册序编址）。"""
-    return not bool(function_catalog) and len(bytecode) < 64
+    """判断是否为 AutoCAD 紧凑 stub 格式（3 字节 Xsubr、符号按注册序编址）。
+
+    USUBR/FUNC 有 3 字节与 6 字节两种编码。用字节启发式（长度/目录大小/
+    END_DEFUN 存在性）不可靠：操作数中可能恰好出现 0x16/0x21，且多函数
+    编译输出也会超过 64 字节。改为分别按两种格式反汇编，选择产生更少
+    UNK 指令的格式；平局时退回函数目录判定。
+    """
+    def _unk_count(insts) -> int:
+        return sum(1 for inst in insts if inst.op_name.startswith('UNK_'))
+
+    try:
+        i3 = Disassembler(short_subr=True).disassemble(bytecode, 0)
+    except Exception:
+        i3 = []
+    try:
+        i6 = Disassembler(short_subr=False).disassemble(bytecode, 0)
+    except Exception:
+        i6 = []
+    c3, c6 = _unk_count(i3), _unk_count(i6)
+    if c3 != c6:
+        return c3 < c6
+    return not bool(function_catalog)
 
 class Fas4Parser:
     def decode_text(self, raw: bytes) -> str:
@@ -438,7 +458,7 @@ class Disassembler:
         0x14: ('DEFUN', 'h'), 0x16: ('END_DEFUN', ''), 0x18: ('INIT_ARGS', '2'),
         0x19: ('CLEAR_ARGS', '2'), 0x1c: ('INIT_DONE', ''), 0x1e: ('ALPHA', '1'), 0x1f: ('BETA', '1'),
         0x20: ('NOP', ''), 0x21: ('END_DEFUN_CLEANUP', '2'), 0x23: ('NOT', ''), 0x24: ('ATOM', ''),
-        0x28: ('CAR', ''), 0x29: ('CDR', ''), 0x32: ('PUSH_INT8', '1'), 0x33: ('PUSH_INT32', '4'),
+        0x28: ('CAR', ''), 0x29: ('CDR', ''), 0x2A: ('CONS', ''), 0x32: ('PUSH_INT8', '1'), 0x33: ('PUSH_INT32', '4'),
         0x34: ('EVAL', 'e'), 0x37: ('LIST_OBJ', '2'), 0x39: ('BUILD_LIST', '2'),
         0x3a: ('DEFCODE', ''), 0x3b: ('PUSH_REAL', 'z'), 0x3c: ('JMP16_IFNOT_2', '2'),
         0x3d: ('JMP16_IF_2', '2'), 0x3e: ('EXIT_IF_NOT_ZERO', ''), 0x3f: ('EXIT_IF_ZERO', ''),
@@ -797,11 +817,7 @@ class LispGenerator:
         AutoCAD 编译器产物（如 tests/fun-cad.fas）无函数目录且 seg0 很短，
         使用 3 字节 Xsubr，符号按资源注册顺序（symbol_slots）编址。
         """
-        if self.function_catalog():
-            return False
-        if len(self.fas.bytecode) >= 64:
-            return False
-        return len(self.symbol_slots) >= 2
+        return is_compact_stub(self.fas.bytecode, self.fas.function_catalog)
 
     def function_catalog(self) -> bool:
         return bool(self.function_names_by_offset) or bool(self.function_names_by_index)
@@ -885,6 +901,8 @@ class LispGenerator:
                 self._collect_function_descriptors(item)
 
     def _collect_command_candidates(self, value: Any) -> None:
+        if isinstance(value, tuple) and len(value) == 2 and value[0] in ('STRING', 'REAL'):
+            return
         text = self._extract_text(value)
         if isinstance(text, str):
             if text.upper().startswith('C:'):
@@ -972,6 +990,8 @@ class LispGenerator:
             'bound_symbol_map': bound_symbol_map,
             'bound_gvar_map': bound_gvar_map,
             'global_aliases': {},
+            'slot_expr_map': {},
+            'localized_globals': set(),
         }
         self._localize_assigned_globals(spec, func.instructions[signature['body_start']:])
         return spec
@@ -984,6 +1004,9 @@ class LispGenerator:
             if name not in spec['args'] and name not in spec['locals']:
                 spec['locals'].append(name)
                 spec['local_originals'].append(name)
+                spec['localized_globals'].add(name)
+            spec['bound_gvar_map'][inst.operands[0]] = name
+            spec['bound_symbol_map'][name.upper()] = name
 
     def _apply_command_fallback(self, specs: List[Dict[str, Any]]) -> None:
         unique_commands = list(dict.fromkeys(
@@ -1257,7 +1280,7 @@ class LispGenerator:
             cleanup_end -= 1
             idx -= 1
 
-        lines, locals_out = self._drop_unused_local_setqs(lines, locals_out)
+        lines, locals_out = self._drop_unused_local_setqs(lines, locals_out, spec.get('localized_globals'))
         rename_map = self._infer_local_renames(lines, locals_out)
         if rename_map:
             lines = [self._replace_symbols(line, rename_map) for line in lines]
@@ -1266,17 +1289,44 @@ class LispGenerator:
 
         return lines, locals_out
 
-    def _drop_unused_local_setqs(self, lines: List[str], locals_list: List[str]) -> Tuple[List[str], List[str]]:
+    SIDE_EFFECT_FUNCS = frozenset({
+        'getstring', 'getpoint', 'getcorner', 'getreal', 'getint', 'getdist',
+        'getkword', 'getfiled', 'entsel', 'nentsel', 'nentselp', 'ssget',
+        'ssadd', 'ssdel', 'sssetfirst', 'entmake', 'entmakex', 'entdel',
+        'entmod', 'entupd', 'entnext', 'command', 'vl-cmdf', 'vl-cmdfun',
+        'read-line', 'read-char', 'write-line', 'write-char', 'print',
+        'princ', 'prin1', 'prompt', 'terpri', 'alert', 'findfile', 'getenv',
+        'load', 'open', 'startapp', 'setvar', 'regapp', 'redraw', 'regen',
+        'regenall', 'update', 'grread', 'grvecs', 'grtext', 'grdraw',
+        'vl-file-copy', 'vl-file-delete', 'vl-file-rename', 'vl-file-directory-p',
+        'vl-registry-write', 'vl-load-com', 'vlax-add-cmd', 'vlax-import-type-library',
+        'dictadd', 'dictremove', 'acad_colordlg', 'aced_ssget', 'initget',
+    })
+
+    def _has_side_effects(self, text: str) -> bool:
+        for m in re.finditer(r'\(([A-Za-z][\w-]*)', text):
+            name = m.group(1).lower()
+            if name in self.SIDE_EFFECT_FUNCS or name.startswith('vla-'):
+                return True
+        return False
+
+    def _drop_unused_local_setqs(self, lines: List[str], locals_list: List[str],
+                                 protected: Optional[Set[str]] = None) -> Tuple[List[str], List[str]]:
+        protected = protected or set()
         stripped_lines = [self._strip_strings(line) for line in lines]
         remove_indexes: Set[int] = set()
         remove_locals: Set[str] = set()
         for local in locals_list:
+            if local in protected:
+                continue
             pattern = self._symbol_pattern(local)
             count = sum(len(pattern.findall(line)) for line in stripped_lines)
             if count != 1:
                 continue
             for idx, line in enumerate(stripped_lines):
                 if re.match(rf'^\s*\(setq\s+{re.escape(local)}\b', line):
+                    if self._has_side_effects(line):
+                        break
                     remove_indexes.add(idx)
                     remove_locals.add(local)
                     break
@@ -1356,12 +1406,29 @@ class LispGenerator:
 
             if name in ('BR_IF_TRUE', 'JMP16_IF', 'JMP16_IF_2', 'JMP16_IFNOT', 'JMP16_IFNOT_2'):
                 cond = pop_expr('T' if 'IFNOT' not in name else 'nil')
+                target_idx = self._branch_target_index(instructions, offset_to_idx, i)
+                if target_idx is None and inst.operands:
+                    target_offset = inst.offset + inst.size + inst.operands[0]
+                    last_end = instructions[-1].offset + instructions[-1].size
+                    if target_offset >= last_end and end <= len(instructions):
+                        target_idx = min(end, len(instructions) - 1)
+                if (target_idx is not None and start <= target_idx <= end
+                        and instructions[target_idx].op_name in
+                        ('JMP16_IF', 'JMP16_IF_2', 'JMP16_IFNOT', 'JMP16_IFNOT_2')):
+                    pending_logic.append({
+                        'kind': 'and' if 'IFNOT' in name else 'or',
+                        'expr': cond or 'nil',
+                        'target': instructions[target_idx].offset,
+                    })
+                    i += 1
+                    continue
                 if pending_logic:
                     cond = self._combine_short_circuit_terms(pending_logic, cond)
                     pending_logic.clear()
                 flush_stack()
-                target_idx = self._branch_target_index(instructions, offset_to_idx, i)
-                if target_idx is not None and start <= target_idx <= end:
+                if target_idx is not None and start <= target_idx:
+                    if target_idx > end:
+                        target_idx = end
                     loop_info = self._detect_loop(spec, instructions, offset_to_idx, i, target_idx, end, cond)
                     if loop_info and (loop_info['keyword'] == 'foreach' or self._looks_structured_condition(cond)):
                         head = f'({loop_info["keyword"]} {loop_info["head"]}'
@@ -1432,6 +1499,7 @@ class LispGenerator:
                 stack.append(f'(atom {pop_expr()})')
             elif name in ('BUILD_LIST', 'LIST_OBJ') and inst.operands:
                 args = pop_many(inst.operands[0])
+                args.reverse()
                 stack.append(self._make_call_text('list', args))
             elif name in ('FIX_ADD', 'FIX_SUB', 'FIX_MUL', 'FIX_DIV', 'FIX_MOD',
                           'FIX_LEQ', 'FIX_GEQ', 'FIX_LT', 'FIX_GT'):
@@ -1464,6 +1532,10 @@ class LispGenerator:
             elif name == 'EVAL' and inst.operands:
                 args = pop_many(inst.operands[0] + 1)
                 stack.append(self._make_call_text('eval', args))
+            elif name == 'CONS':
+                car = pop_expr() or 'nil'
+                cdr = pop_expr() or 'nil'
+                stack.append(self._make_call_text('cons', [car, cdr]))
             elif name == 'SETQ_G' and inst.operands:
                 expr = pop_expr()
                 if stack and stack[-1] == expr:
@@ -1475,6 +1547,8 @@ class LispGenerator:
                 if stack and stack[-1] == expr:
                     stack.pop()
                 target = self._local_name(inst.operands[0], spec)
+                if expr and expr != target:
+                    spec['slot_expr_map'][target] = expr
                 stack.append(f'(setq {target} {expr})')
             elif name == 'CLEAR_LOCAL' and inst.operands:
                 target = self._local_name(inst.operands[0], spec)
@@ -1579,9 +1653,10 @@ class LispGenerator:
         if seq[3].operands[0] != slot or seq[5].operands[0] != slot:
             return None
         item_name = self._value_from_gvar(seq[2].operands[0], spec) if seq[2].operands else 'item'
+        source = spec.get('slot_expr_map', {}).get(source_expr, source_expr)
         return {
             'keyword': 'foreach',
-            'head': f'{item_name} {source_expr}',
+            'head': f'{item_name} {source}',
             'body_start': body_start + 6,
             'body_end': body_end,
         }
@@ -1590,7 +1665,7 @@ class LispGenerator:
                      offset_to_idx: Dict[int, int], branch_idx: int, target_idx: int,
                      end: int, cond_expr: str) -> Optional[Dict[str, Any]]:
         back_jump_idx = None
-        for idx in range(target_idx - 1, branch_idx, -1):
+        for idx in range(target_idx, branch_idx, -1):
             inst = instructions[idx]
             if inst.op_name not in ('JUMP', 'JUMP32') or not inst.operands:
                 continue
@@ -1610,7 +1685,7 @@ class LispGenerator:
             return loop_info
         return {
             'keyword': 'while',
-            'head': cond_expr,
+            'head': spec.get('slot_expr_map', {}).get(cond_expr, cond_expr),
             'body_start': body_start,
             'body_end': back_jump_idx,
             'after': self._skip_pops(instructions, target_idx, end),
@@ -1971,10 +2046,14 @@ class LispGenerator:
 
     def _bound_symbol_name(self, idx: int, spec: Dict[str, Any]) -> Optional[str]:
         bound = spec.get('bound_symbol_map', {})
-        for candidate_idx in (idx, idx + 1, idx - 1, idx + 2, idx - 2):
-            name = self._gvar_symbol(candidate_idx)
-            if name and name.upper() in bound:
-                return bound[name.upper()]
+        name = self._gvar_symbol(idx)
+        if name and name.upper() in bound:
+            return bound[name.upper()]
+        if not name:
+            for candidate_idx in (idx + 1, idx - 1, idx + 2, idx - 2):
+                name = self._gvar_symbol(candidate_idx)
+                if name and name.upper() in bound:
+                    return bound[name.upper()]
         return None
 
     def _repair_call_target(self, idx: int, raw_name: Optional[str], argc: int,
@@ -2146,10 +2225,10 @@ class LispGenerator:
         body = raw[2:] if command_prefix else raw
 
         if raw.startswith('*') and raw.endswith('*') and len(raw) > 2:
-            inner = re.sub(r'[^A-Za-z0-9_:-]+', '_', raw[1:-1]).strip('_')
+            inner = re.sub(r'[^\w:-]+', '_', raw[1:-1]).strip('_')
             return f'*{(inner or prefix).lower()}*'
 
-        body = re.sub(r'[^A-Za-z0-9_+<>=.:-]+', '_', body)
+        body = re.sub(r'[^\w+<>=.:-]+', '_', body)
         body = re.sub(r'_+', '_', body)
         if not body:
             body = prefix
@@ -2178,6 +2257,8 @@ class LispGenerator:
             .replace('"', '\\"')
             .replace('\r', '\\r')
             .replace('\n', '\\n')
+            .replace('\t', '\\t')
+            .replace('\x1b', '\\e')
         )
         return f'"{escaped}"'
 

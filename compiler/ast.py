@@ -35,6 +35,7 @@ class String(Node):
 @dataclass
 class ListExpr(Node):
     items: List['Node'] = field(default_factory=list)
+    dotted: Optional['Node'] = None
 
 
 @dataclass

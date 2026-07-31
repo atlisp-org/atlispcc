@@ -130,17 +130,32 @@ class Parser:
                 self.expect('RPAREN')
                 return QuotedExpr(expr=expr)
             else:
-                args = self._parse_forms_until_rparen()
-                return Call(name=name, args=args)
-        items = [head] + self._parse_forms_until_rparen()
-        return ListExpr(items=items)
+                items, dotted = self._parse_items_until_rparen()
+                if dotted is not None:
+                    return ListExpr(items=[head] + items, dotted=dotted)
+                return Call(name=name, args=items)
+        items, dotted = self._parse_items_until_rparen()
+        return ListExpr(items=[head] + items, dotted=dotted)
 
     def _parse_forms_until_rparen(self) -> List[Node]:
-        forms = []
+        items, dotted = self._parse_items_until_rparen()
+        if dotted is not None:
+            raise ParseError('Unexpected dotted pair')
+        return items
+
+    def _parse_items_until_rparen(self) -> "tuple[List[Node], Optional[Node]]":
+        items: List[Node] = []
+        dotted: Optional[Node] = None
         while self.peek()[0] not in ('RPAREN', 'EOF'):
-            forms.append(self.parse_form())
+            if self.peek()[0] == 'DOT':
+                self.advance()
+                dotted = self.parse_form()
+                if self.peek()[0] != 'RPAREN':
+                    raise ParseError('Dotted pair must be the last element')
+                break
+            items.append(self.parse_form())
         self.expect('RPAREN')
-        return forms
+        return items, dotted
 
     def _parse_defun(self, kind: str) -> Defun:
         name_tok = self.parse_form()

@@ -10,7 +10,7 @@ OPCODES = {
     0x14: ('DEFUN', 'h'), 0x16: ('END_DEFUN', ''), 0x18: ('INIT_ARGS', '2'),
     0x19: ('CLEAR_ARGS', '2'), 0x1c: ('INIT_DONE', ''), 0x1e: ('ALPHA', '1'), 0x1f: ('BETA', '1'),
     0x20: ('NOP', ''), 0x21: ('END_DEFUN_CLEANUP', '2'), 0x23: ('NOT', ''), 0x24: ('ATOM', ''),
-    0x28: ('CAR', ''), 0x29: ('CDR', ''), 0x32: ('PUSH_INT8', '1'), 0x33: ('PUSH_INT32', '4'),
+     0x28: ('CAR', ''), 0x29: ('CDR', ''), 0x2A: ('CONS', ''), 0x32: ('PUSH_INT8', '1'), 0x33: ('PUSH_INT32', '4'),
     0x34: ('EVAL', 'e'), 0x37: ('LIST_OBJ', '2'), 0x39: ('BUILD_LIST', '2'),
     0x3a: ('DEFCODE', ''), 0x3b: ('PUSH_REAL', 'z'), 0x3c: ('JMP16_IFNOT_2', '2'),
     0x3d: ('JMP16_IF_2', '2'), 0x3e: ('EXIT_IF_NOT_ZERO', ''), 0x3f: ('EXIT_IF_ZERO', ''),

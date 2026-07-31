@@ -20,7 +20,7 @@ def res_int32(v: int) -> bytes:
 
 
 def res_real_str(s: str) -> bytes:
-    return bytes([0x3B]) + s.encode('ascii') + b'\x00'
+    return bytes([0x3B]) + s.encode('utf-8') + b'\x00'
 
 
 def res_gvar_init(var_pos: int, st_init: int) -> bytes:
@@ -69,7 +69,7 @@ class ResourceBuilder:
 
     def _push_single_symbol(self, name: str):
         self.data.append(0x5B)
-        self.data.extend(name.encode('ascii', errors='replace'))
+        self.data.extend(name.encode('utf-8', errors='replace'))
         self.data.append(0)
         self.data.append(0)
 
@@ -118,7 +118,7 @@ class ResourceBuilder:
 
         # ── 函数定义 ────────────────────────────────────────────────────
         name0 = self._entry_name(entries[0])
-        out += b'\x5c\x00\x00\x32\x00\x5b' + name0.encode('ascii', errors='replace') + b'\x00\x00'
+        out += b'\x5c\x00\x00\x32\x00\x5b' + name0.encode('utf-8', errors='replace') + b'\x00\x00'
         out += b'\x3a\x01'
         out += res_gvar_init(entry_count, 1)
         out += b'\x1c'
@@ -132,9 +132,9 @@ class ResourceBuilder:
     def _push_entry(out: bytearray, entry: Tuple[str, Any]):
         entry_type, entry_val = entry
         if entry_type == 'SYMBOL':
-            out += b'\x5b' + str(entry_val).encode('ascii', errors='replace') + b'\x00\x00'
+            out += b'\x5b' + str(entry_val).encode('utf-8', errors='replace') + b'\x00\x00'
         elif entry_type == 'STRING':
-            encoded = str(entry_val).encode('ascii', errors='replace')
+            encoded = str(entry_val).encode('utf-8', errors='replace')
             out += b'\x55\x01\x00' + res_u16(len(encoded)) + encoded
         elif entry_type == 'INT':
             val = int(entry_val)

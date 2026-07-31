@@ -11,7 +11,7 @@ DEBUG_COMMENT_RE = re.compile(
     r'^\s*;;\s*(Recovered strings|Referenced symbols|Referenced strings|Original arg hints|init-args|cleanup)\b',
     re.IGNORECASE,
 )
-SYMBOL_RE = re.compile(r'^[A-Za-z0-9_\-?!*/=<>+:.]+$')
+SYMBOL_RE = re.compile(r'^[\w\-?!*/=<>+:.]+$')
 NUMBER_RE = re.compile(r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$')
 
 

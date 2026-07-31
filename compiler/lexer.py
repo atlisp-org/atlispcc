@@ -18,9 +18,25 @@ TOKEN_SPEC = [
 TOKEN_RE = re.compile('|'.join(f'(?P<{name}>{pattern})' for name, pattern in TOKEN_SPEC))
 STRING_ESC_RE = re.compile(r'\\(.)')
 
+_STRING_ESCAPES = {
+    'n': '\n',
+    'r': '\r',
+    't': '\t',
+    'e': '\x1b',
+    '\\': '\\',
+    '"': '"',
+}
+
+
+def _unescape_match(m: "re.Match[str]") -> str:
+    ch = m.group(1)
+    if ch in _STRING_ESCAPES:
+        return _STRING_ESCAPES[ch]
+    return '\\' + ch
+
 
 def unescape_string(s: str) -> str:
-    return STRING_ESC_RE.sub(r'\1', s[1:-1])
+    return STRING_ESC_RE.sub(_unescape_match, s[1:-1])
 
 
 def tokenize(source: str) -> List[Token]:
@@ -40,6 +56,19 @@ def tokenize(source: str) -> List[Token]:
             pos += 1
             continue
         if ch == ';':
+            if source.startswith(';|', pos):
+                end = source.find('|;', pos + 2)
+                if end < 0:
+                    break
+                consumed = source[pos:end + 2]
+                nl = consumed.rfind('\n')
+                if nl >= 0:
+                    line += consumed.count('\n')
+                    col = len(consumed) - nl
+                else:
+                    col += len(consumed)
+                pos = end + 2
+                continue
             end = source.find('\n', pos)
             if end < 0:
                 break

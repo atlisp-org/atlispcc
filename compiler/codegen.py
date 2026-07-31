@@ -7,7 +7,7 @@ from compiler.ast import (
 )
 from compiler.opcodes import (
     NAME_TO_OPCODE,
-    encode_op_noarg, encode_op_u16,
+    encode_op_noarg, encode_op_u16, encode_op_u8,
     encode_op_s32, encode_usubr3, encode_func3, encode_defun,
     encode_real,
 )
@@ -25,6 +25,7 @@ SETQ_G = NAME_TO_OPCODE['SETQ_G']          # 0x06
 JMP16_IFNOT = NAME_TO_OPCODE['JMP16_IFNOT']  # 0x0d
 JMP16_IF = NAME_TO_OPCODE['JMP16_IF']       # 0x0e
 JUMP = NAME_TO_OPCODE['JUMP']               # 0x57
+CONS = NAME_TO_OPCODE['CONS']
 BUILD_LIST = NAME_TO_OPCODE['BUILD_LIST']   # 0x39
 CAR = NAME_TO_OPCODE['CAR']                 # 0x28
 CDR = NAME_TO_OPCODE['CDR']                 # 0x29
@@ -173,7 +174,7 @@ class CodeGenerator:
         elif isinstance(node, Integer):
             val = node.value
             if -128 <= val <= 127:
-                buf.emit(encode_op_u16(PUSH_INT8, val & 0xFF))
+                buf.emit(encode_op_u8(PUSH_INT8, val & 0xFF))
             else:
                 buf.emit(struct.pack('<Bi', PUSH_INT32, val))
 
@@ -191,6 +192,17 @@ class CodeGenerator:
             self._emit_quoted(buf, node.expr)
 
         elif isinstance(node, ListExpr):
+            if node.items and isinstance(node.items[0], LambdaNode):
+                self._emit_expr(buf, QuotedExpr(expr=self._lambda_list(node.items[0])))
+                self._emit_expr(buf, Call(name='list', args=node.items[1:]))
+                buf.emit(encode_func3(2, self.symtab.get_or_add('apply')))
+                return
+            if node.dotted is not None:
+                self._emit_expr(buf, node.dotted)
+                for item in reversed(node.items):
+                    self._emit_expr(buf, item)
+                    buf.emit(encode_op_noarg(CONS))
+                return
             buf.emit(encode_op_noarg(PUSH_NIL))
             for item in reversed(node.items):
                 self._emit_expr(buf, item)
@@ -222,11 +234,15 @@ class CodeGenerator:
             self._emit_cond(buf, node)
 
         elif isinstance(node, LambdaNode):
-            self._emit_expr(buf, QuotedExpr(expr=ListExpr(items=[Symbol('lambda')] + node.body)))
+            self._emit_expr(buf, QuotedExpr(expr=self._lambda_list(node)))
 
         else:
             raise NotImplementedError(f'Cannot emit expression: {type(node).__name__}')
         self._in_tail_context = saved_tail
+
+    def _lambda_list(self, node: LambdaNode) -> ListExpr:
+        params = ListExpr(items=[Symbol(a) for a in node.args])
+        return ListExpr(items=[Symbol('lambda'), params] + node.body)
 
     def _emit_call_expr(self, buf: BytecodeBuffer, node: Call):
         name = node.name
@@ -303,7 +319,6 @@ class CodeGenerator:
                 else:
                     idx = self.symtab.get_or_add(target.name)
                     buf.emit(encode_op_u16(SETQ_G, idx))
-                buf.emit(encode_op_noarg(POP))
 
     def _emit_if(self, buf: BytecodeBuffer, node: IfNode):
         label_else = f'_if_else_{buf.pos()}'
@@ -365,7 +380,6 @@ class CodeGenerator:
 
         buf.label(label_loop)
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
-        buf.emit(encode_op_noarg(PUSH_NIL))
         jmp_pos = buf.pos()
         buf.emit(encode_op_u16(JMP16_IFNOT, 0))
         buf.add_patch(jmp_pos + 1, label_end, 2)
@@ -429,9 +443,8 @@ class CodeGenerator:
                     self._emit_expr(buf, action)
                 if i < len(node.clauses) - 1:
                     jmp2_pos = buf.pos()
-                    label_end_label = label_end
                     buf.emit(encode_op_s32(JUMP, 0))
-                    buf.add_patch(jmp2_pos + 1, label_end_label, 5)
+                    buf.add_patch(jmp2_pos + 1, label_end, 4)
             else:
                 buf.emit(encode_op_noarg(POP))
         buf.label(label_end)
@@ -475,26 +488,34 @@ class CodeGenerator:
         elif isinstance(node, Integer):
             val = node.value
             if -128 <= val <= 127:
-                buf.emit(encode_op_u16(PUSH_INT8, val & 0xFF))
+                buf.emit(encode_op_u8(PUSH_INT8, val & 0xFF))
             else:
                 buf.emit(struct.pack('<Bi', PUSH_INT32, val))
         elif isinstance(node, Real):
             buf.emit(encode_real(node.value))
         elif isinstance(node, ListExpr):
-            items = node.items
-            if items and isinstance(items[0], Symbol) and items[0].name == 'lambda':
-                buf.emit(encode_op_noarg(PUSH_NIL))
-            else:
-                buf.emit(encode_op_noarg(PUSH_NIL))
-                for item in reversed(items):
+            if node.dotted is not None:
+                self._emit_quoted(buf, node.dotted)
+                for item in reversed(node.items):
                     self._emit_quoted(buf, item)
-                buf.emit(encode_op_u16(BUILD_LIST, len(items)))
+                    buf.emit(encode_op_noarg(CONS))
+                return
+            for item in reversed(node.items):
+                self._emit_quoted(buf, item)
+            buf.emit(encode_op_u16(BUILD_LIST, len(node.items)))
+        elif isinstance(node, LambdaNode):
+            items = [Symbol('lambda'), ListExpr(items=[Symbol(a) for a in node.args])] + node.body
+            for item in reversed(items):
+                self._emit_quoted(buf, item)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         elif isinstance(node, String):
             idx = self.symtab.add_string(node.value)
             buf.emit(encode_op_u16(PUSH_G, idx))
         elif isinstance(node, Call):
-            idx = self.symtab.get_or_add(node.name)
-            buf.emit(encode_op_u16(PUSH_G, idx))
+            items = [Symbol(node.name)] + node.args
+            for item in reversed(items):
+                self._emit_quoted(buf, item)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         else:
             self._emit_expr(buf, node)
 
@@ -544,6 +565,7 @@ class CodeGenerator:
 
         for i, arg in enumerate(func.args):
             self.local_slots[arg] = i
+        self.next_slot = max(self.next_slot, len(func.args))
 
         self._emit_init_args(buf, func.args)
 

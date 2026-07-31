@@ -589,13 +589,13 @@ def extract_symbol_names(res_data: bytes) -> list:
             j = i + 1
             buf = bytearray()
             while j < len(res_data) and res_data[j] != 0:
-                if 32 <= res_data[j] < 127:
+                if res_data[j] >= 32:
                     buf.append(res_data[j])
                 else:
                     break
                 j += 1
             if buf and j > i + 1 and res_data[j] == 0:
-                names.append(buf.decode('ascii', errors='replace'))
+                names.append(buf.decode('utf-8', errors='replace'))
                 i = j
         i += 1
     return names
