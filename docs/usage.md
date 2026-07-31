@@ -6,11 +6,13 @@ Fas2Lsp 将兼容 AutoLISP 的 CAD 平台的 FAS4 加密字节码反编译为可
 
 ## atlispcc CLI
 
-统一命令行工具 `atlispcc`（`compiler/cli.py`），支持四个子命令：
+统一命令行工具 `atlispcc`（`compiler/cli.py`），支持六个子命令：
 
 ```
 atlispcc compile [-O {0,1,2}] <input.lsp> [output.fas]
 atlispcc decompile <input.fas> [output.lsp]
+atlispcc disasm <input.fas> [output.lasm]
+atlispcc asm <input.lasm> [output.fas]
 atlispcc validate <input.lsp>
 atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]
 ```
@@ -48,6 +50,43 @@ python validate.py output.lsp
 常见结构问题（if 参数不足、setq 参数为奇数、空 progn 等）、无残留调试注释。
 
 验证通过输出：`[PASS] <文件名>`。失败则列出每条错误。
+
+### disasm — 反汇编 FAS → .lasm
+
+将 `.fas` 的字节码反汇编为可读的汇编文本（`.lasm`），便于检查指令流：
+
+```sh
+atlispcc disasm input.fas output.lasm
+# 或
+atlispcc disassemble input.fas
+```
+
+输出包含符号表（`.symbols`）和各函数的指令列表（`.function`），如：
+
+```
+.symbols
+  0: SYMBOL hello
+  1: SYMBOL x
+.end_symbols
+
+.function c:fn0, 0
+  0x0000: DEFUN hello, 0
+  0x0005: PUSH_G x
+  0x000a: INIT_ARGS 2
+.end_function
+```
+
+### asm — 汇编 .lasm → FAS
+
+将 `.lasm` 汇编文本重新汇编为 `.fas`：
+
+```sh
+atlispcc asm input.lasm output.fas
+# 或
+atlispcc assemble input.lasm
+```
+
+`disasm` / `asm` 互为逆操作，支持 `.fas → .lasm → .fas` 往返。
 
 ### link — 多文件链接
 

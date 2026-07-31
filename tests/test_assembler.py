@@ -137,3 +137,32 @@ def test_disassemble_output_is_parseable():
             assert any(c.isalpha() for c in stripped[10:]), f'Missing mnemonic: {stripped}'
         elif stripped[0].isdigit() and ': SYMBOL' in stripped:
             continue
+
+
+def test_cli_disasm_asm_roundtrip():
+    """CLI disasm → asm 往返：.fas → .lasm → .fas → 反编译验证。"""
+    from compiler.cli import cmd_disassemble, cmd_assemble, cmd_decompile
+    fas_path = _compile_lsp('(defun foo (x) (princ (+ x 1)))')
+
+    lasm_path = fas_path.replace('.fas', '.lasm')
+    out_path = fas_path.replace('.fas', '_out.fas')
+    lsp_path = fas_path.replace('.fas', '_out.lsp')
+    try:
+        cmd_disassemble(fas_path, lasm_path)
+        assert os.path.exists(lasm_path)
+        with open(lasm_path, encoding='utf-8') as f:
+            text = f.read()
+        assert '.symbols' in text
+        assert 'FUNC' in text or 'USUBR' in text or 'DEFUN' in text
+
+        cmd_assemble(lasm_path, out_path)
+        assert os.path.exists(out_path)
+        cmd_decompile(out_path, lsp_path)
+        with open(lsp_path, encoding='utf-8') as f:
+            code = f.read()
+        assert '(defun foo' in code
+        assert 'princ' in code
+    finally:
+        for p in (lasm_path, out_path, lsp_path):
+            if os.path.exists(p):
+                os.unlink(p)

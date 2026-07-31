@@ -121,6 +121,28 @@ def cmd_decompile(source: str, output: str = '') -> str:
     return output
 
 
+def cmd_disassemble(source: str, output: str = '') -> str:
+    """反汇编 .fas → .lasm（字节码指令列表）。"""
+    from compiler.assembler import disassemble_fas
+    text = disassemble_fas(source)
+    output = output or source.replace('.fas', '.lasm')
+    with open(output, 'w', encoding='utf-8') as f:
+        f.write(text)
+    print(f'Disassembled to {output}')
+    return output
+
+
+def cmd_assemble(source: str, output: str = '') -> str:
+    """汇编 .lasm → .fas。"""
+    from compiler.assembler import assemble_lasm
+    with open(source, 'r', encoding='utf-8') as f:
+        text = f.read()
+    output = output or source.replace('.lasm', '.fas')
+    assemble_lasm(text, output)
+    print(f'Assembled to {output}')
+    return output
+
+
 def cmd_validate(source: str) -> int:
     import pathlib
     ok = validate_file(pathlib.Path(source))
@@ -156,6 +178,18 @@ def main():
     p_validate = sub.add_parser('validate', aliases=['v'], help='Validate .lsp syntax')
     p_validate.add_argument('source', help='input .lsp file')
 
+    # disassemble: .fas → .lasm
+    p_disasm = sub.add_parser('disasm', aliases=['disassemble'],
+                              help='Disassemble .fas → .lasm (bytecode instructions)')
+    p_disasm.add_argument('source', help='input .fas file')
+    p_disasm.add_argument('output', nargs='?', default='', help='output .lasm file (optional)')
+
+    # assemble: .lasm → .fas
+    p_asm = sub.add_parser('asm', aliases=['assemble'],
+                           help='Assemble .lasm → .fas')
+    p_asm.add_argument('source', help='input .lasm file')
+    p_asm.add_argument('output', nargs='?', default='', help='output .fas file (optional)')
+
     # link
     p_link = sub.add_parser('link', help='Link multiple .fas files into one')
     p_link.add_argument('inputs', nargs='+', help='input .fas files (2 or more)')
@@ -183,6 +217,12 @@ def main():
 
     if args.command in ('decompile', 'd'):
         return cmd_decompile(args.source, args.output)
+
+    if args.command in ('disasm', 'disassemble'):
+        return cmd_disassemble(args.source, args.output)
+
+    if args.command in ('asm', 'assemble'):
+        return cmd_assemble(args.source, args.output)
 
     if args.command in ('validate', 'v'):
         return cmd_validate(args.source)

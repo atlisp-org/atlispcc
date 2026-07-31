@@ -6,13 +6,17 @@
 
 ```sh
 atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]        # 编译
-atlispcc decompile <input.fas> [output.lsp]                      # 反编译
+atlispcc decompile <input.fas> [output.lsp]                      # 反编译 FAS → Lisp
+atlispcc disasm <input.fas> [output.lasm]                        # 反汇编 FAS → 字节码指令列表
+atlispcc asm <input.lasm> [output.fas]                           # 汇编 .lasm → FAS
 atlispcc validate <input.lsp>                                     # 验证
 atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]          # 链接 FAS
 atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]   # 构建 VLX 容器
 ```
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
+
+`disasm` / `asm` 互为逆操作，支持 `.fas → .lasm → .fas` 往返。
 
 ## 编译器管线
 
@@ -116,6 +120,7 @@ atlispcc compile --analyze -O3 input.lsp output.fas
 | `compiler/fas_writer.py` | 指令流 → FAS4 二进制 |
 | `compiler/opt.py` | 优化器：8 个 pass 跨 O1-O3 级别 |
 | `compiler/analyzer.py` | 编译分析与统计 |
+| `compiler/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
 | `compiler/linker.py` | 多文件 FAS 链接器 |
 | `compiler/vlx_builder.py` | VLX 容器构建器 |
 | `validate.py` | 生成的 `.lsp` 语法验证器 |
@@ -137,7 +142,7 @@ python -m pytest tests/ -v   # 详细输出
 - `test_parser.py` — AST 解析器（14 用例）
 - `test_compile_decompile.py` — 编译-反编译往返（15 用例）
 - `test_compiler_output.py` — FAS 输出正确性（8 用例）
-- `test_assembler.py` — 反汇编/汇编往返（4 用例）
+- `test_assembler.py` — 反汇编/汇编往返（5 用例）
 - `test_linker.py` — 多文件链接（8 用例）
 - `test_optimizer.py` — 所有优化 pass（26 用例）
 - `test_packages.py` — 包系统（4 用例）

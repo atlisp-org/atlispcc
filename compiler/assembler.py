@@ -69,11 +69,11 @@ def _fmt_inst(inst, symbols: List[str]) -> str:
 
 def disassemble_fas(fas_path: str) -> str:
     """Disassemble a FAS4 file into .lasm text format."""
-    from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer
+    from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, is_compact_stub
 
     parser = Fas4Parser()
     fas = parser.parse(fas_path)
-    disasm = Disassembler()
+    disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
     instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
     cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
     functions = cfa.find_functions()
@@ -85,8 +85,14 @@ def disassemble_fas(fas_path: str) -> str:
         lines.append(f'; Crunch date: {fas.crunch_date}')
     lines.append('')
 
+    # 紧凑 stub 格式按资源注册顺序（symbol_slots）编址
+    if getattr(fas, 'symbol_slots', None):
+        symbols = [str(it[1]) for it in fas.symbol_slots]
+    else:
+        symbols = fas.symbols
+
     lines.append('.symbols')
-    for idx, sym in enumerate(fas.symbols):
+    for idx, sym in enumerate(symbols):
         lines.append(f'  {idx}: SYMBOL {sym}')
     lines.append('.end_symbols')
     lines.append('')
@@ -95,7 +101,7 @@ def disassemble_fas(fas_path: str) -> str:
         fname = func.name if func.name and func.name != 'c:init' else '__init__'
         lines.append(f'.function {fname}, {func.sym_idx}')
         for inst in func.instructions:
-            lines.append(_fmt_inst(inst, fas.symbols))
+            lines.append(_fmt_inst(inst, symbols))
         lines.append('.end_function')
         lines.append('')
 
