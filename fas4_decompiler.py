@@ -47,8 +47,14 @@ class Fas4File:
     resource_gvars: List[Any]
     function_gvars: List[Any]
     function_catalog: List[Tuple[str, int]]
+    symbol_slots: List[Any] = field(default_factory=list)
 
 # ─── Decryption & Parsing ──────────────────────────────────────────────────
+
+
+def is_compact_stub(bytecode: bytes, function_catalog: list) -> bool:
+    """判断是否为 AutoCAD 紧凑 stub 格式（3 字节 Xsubr、符号按注册序编址）。"""
+    return not bool(function_catalog) and len(bytecode) < 64
 
 class Fas4Parser:
     def decode_text(self, raw: bytes) -> str:
@@ -411,13 +417,17 @@ class Fas4Parser:
         res_items, res_items_with_offsets, symbols = self.parse_resource_stream(decrypted)
         resource_gvars, function_gvars = _build_mvar_tables(decrypted, nsyms)
         function_catalog = _build_function_catalog(resource_gvars, function_gvars)
-        
+        symbol_slots = [
+            item for item in res_items
+            if item[0] in ('SYMBOL', 'STRING', 'REAL')
+        ]
+
         return Fas4File(nsyms=nsyms, bytecode=bytecode, sec2_data=decrypted,
                         sec2_items=sec2_items, crunch_date=crunch_date,
                         tail_bytes=tail, key=key or b'',
                         resource_items=res_items, resource_items_with_offsets=res_items_with_offsets,
                         symbols=symbols, resource_gvars=resource_gvars, function_gvars=function_gvars,
-                        function_catalog=function_catalog)
+                        function_catalog=function_catalog, symbol_slots=symbol_slots)
 
 class Disassembler:
     OPCODES = {
@@ -442,6 +452,12 @@ class Disassembler:
         0x67: ('BR_IF_TRUE', 's4'), 0x68: ('COND_OR', 's4'), 0x69: ('JUMP32', 's4'),
         0x6a: ('AND', 's4'), 0x6b: ('AND2', 's4'),
     }
+
+    def __init__(self, short_subr: bool = False):
+        """``short_subr``：紧凑 stub 格式下 USUBR/FUNC 为 3 字节
+        （``35 <argc> <idx>`` / ``51 <argc> <idx>``）。
+        """
+        self.short_subr = short_subr
 
     def disassemble(self, bytecode: bytes, nsyms: int) -> List[Instruction]:
         instructions = []
@@ -475,17 +491,37 @@ class Disassembler:
                     inst.size = 3
                 elif fmt == 'u':
                     argc = bytecode[i+1] if i+1 < len(bytecode) else 0
-                    idx = struct.unpack('<H', bytecode[i+2:i+4])[0] if i+3 < len(bytecode) else 0
-                    flags = bytecode[i+4] if i+4 < len(bytecode) else 0
-                    inst.operands = [argc, idx, flags]
-                    inst.size = 5
+                    if self.short_subr:
+                        idx = bytecode[i+2] if i+2 < len(bytecode) else 0
+                        inst.operands = [argc, idx]
+                        inst.size = min(3, len(bytecode) - i)
+                    else:
+                        if i+3 < len(bytecode):
+                            idx = struct.unpack('<H', bytecode[i+2:i+4])[0]
+                        elif i+2 < len(bytecode):
+                            idx = bytecode[i+2]
+                        else:
+                            idx = 0
+                        flags = bytecode[i+4] if i+4 < len(bytecode) else 0
+                        inst.operands = [argc, idx, flags]
+                        inst.size = min(5, len(bytecode) - i)
                 elif fmt == 'f':
                     argc = bytecode[i+1] if i+1 < len(bytecode) else 0
-                    idx = struct.unpack('<H', bytecode[i+2:i+4])[0] if i+3 < len(bytecode) else 0
-                    flags = bytecode[i+4] if i+4 < len(bytecode) else 0
-                    zero = bytecode[i+5] if i+5 < len(bytecode) else 0
-                    inst.operands = [argc, idx, flags, zero]
-                    inst.size = 6
+                    if self.short_subr:
+                        idx = bytecode[i+2] if i+2 < len(bytecode) else 0
+                        inst.operands = [argc, idx]
+                        inst.size = min(3, len(bytecode) - i)
+                    else:
+                        if i+3 < len(bytecode):
+                            idx = struct.unpack('<H', bytecode[i+2:i+4])[0]
+                        elif i+2 < len(bytecode):
+                            idx = bytecode[i+2]
+                        else:
+                            idx = 0
+                        flags = bytecode[i+4] if i+4 < len(bytecode) else 0
+                        zero = bytecode[i+5] if i+5 < len(bytecode) else 0
+                        inst.operands = [argc, idx, flags, zero]
+                        inst.size = min(6, len(bytecode) - i)
                 elif fmt == 'h':
                     values = [bytecode[i+j] if i+j < len(bytecode) else 0 for j in range(1, 5)]
                     inst.operands = values
@@ -736,6 +772,39 @@ class LispGenerator:
         self.function_names_by_index: Dict[int, str] = {}
         self.command_candidates: List[str] = []
         self._build_function_catalog()
+        self.symbol_slots = self.fas.symbol_slots or self._build_symbol_slots()
+        self.is_stub_format = self._detect_stub_format()
+
+    def _build_symbol_slots(self) -> List[Any]:
+        """Build the interleaved symbol/string/constant table from the
+        resource stream registration order.
+
+        Some FAS4 variants (e.g. compact stubs emitted by CAD compilers)
+        address symbol slots directly by registration index, and the
+        mvar-reconstructed gvar tables are not reliable for them.
+        """
+        slots: List[Any] = []
+        for item in self.fas.resource_items:
+            if item[0] in ('SYMBOL', 'STRING', 'REAL'):
+                slots.append(item)
+        return slots
+
+    def _detect_stub_format(self) -> bool:
+        """Detect the compact 'stub' layout where seg0 is only an entry
+        stub and the symbol table is addressed directly by registration
+        index (rather than through the mvar-reconstructed gvar tables).
+
+        AutoCAD 编译器产物（如 tests/fun-cad.fas）无函数目录且 seg0 很短，
+        使用 3 字节 Xsubr，符号按资源注册顺序（symbol_slots）编址。
+        """
+        if self.function_catalog():
+            return False
+        if len(self.fas.bytecode) >= 64:
+            return False
+        return len(self.symbol_slots) >= 2
+
+    def function_catalog(self) -> bool:
+        return bool(self.function_names_by_offset) or bool(self.function_names_by_index)
 
     def _infer_code_ref_bias(self) -> int:
         """Infer the leading holes in the runtime literal/call table.
@@ -1669,6 +1738,15 @@ class LispGenerator:
             return self.function_names_by_offset[start_offset]
         if func.sym_idx >= 0 and func.sym_idx in self.function_names_by_index:
             return self.function_names_by_index[func.sym_idx]
+        if not self.function_names_by_offset and not self.function_names_by_index and func.instructions:
+            for inst in func.instructions:
+                if inst.op_name == 'DEFUN' and inst.operands:
+                    idx = inst.operands[0]
+                    stub_name = self._gvar_symbol(idx)
+                    if not stub_name and 0 <= idx < len(self.symbol_slots):
+                        stub_name = self._extract_symbol_text(self.symbol_slots[idx])
+                    if stub_name:
+                        return stub_name
         if func.sym_idx < 0:
             return 'fas_init' if func_index == 0 else f'fas_init_{func_index}'
 
@@ -1687,6 +1765,10 @@ class LispGenerator:
         return f'fas_fn_{func_index + 1:04d}'
 
     def _gvar_item(self, idx: int) -> Any:
+        if self.is_stub_format:
+            if 0 <= idx < len(self.symbol_slots):
+                return self.symbol_slots[idx]
+            return None
         if 0 <= idx < len(self.fas.function_gvars) and self.fas.function_gvars[idx] is not None:
             return self.fas.function_gvars[idx]
         if 0 <= idx < len(self.fas.resource_gvars) and self.fas.resource_gvars[idx] is not None:
@@ -1696,6 +1778,8 @@ class LispGenerator:
         return None
 
     def _code_gvar_item(self, idx: int) -> Any:
+        if self.is_stub_format:
+            return self._gvar_item(idx)
         shifted_idx = idx + self.code_ref_bias
         if (
             self.code_ref_bias
@@ -1936,7 +2020,7 @@ class LispGenerator:
         In bib.fas, three zero-argument USUBR instructions point at the prompt
         string "Choix du point :". The nearest-symbol repair used to map those
         to RE_REL, but the file only uses RE_REL as data and as a three-arg
-        helper, so the fabricated ``(re_rel)`` crashes BricsCAD immediately.
+        helper, so the fabricated ``(re_rel)`` crashes the target CAD immediately.
         """
         if argc != 0:
             return False
@@ -2108,7 +2192,7 @@ class Fas4Decompiler:
     def decompile(self, filepath: str, output_path: str = None) -> str:
         parser = Fas4Parser()
         fas = parser.parse(filepath)
-        disasm = Disassembler()
+        disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
         instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
         cf = ControlFlowAnalyzer(instructions, fas.function_catalog)
         functions = cf.find_functions()

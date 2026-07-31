@@ -8,7 +8,7 @@ from compiler.ast import (
 from compiler.opcodes import (
     NAME_TO_OPCODE,
     encode_op_noarg, encode_op_u16,
-    encode_op_s32, encode_usubr, encode_func, encode_defun,
+    encode_op_s32, encode_usubr3, encode_func3, encode_defun,
     encode_real,
 )
 from compiler.symbol_table import SymbolTable
@@ -275,9 +275,9 @@ class CodeGenerator:
         for arg in args:
             self._emit_expr(buf, arg)
         if is_builtin:
-            buf.emit(encode_func(len(args), idx))
+            buf.emit(encode_func3(len(args), idx))
         else:
-            buf.emit(encode_usubr(len(args), idx))
+            buf.emit(encode_usubr3(len(args), idx))
 
     def _emit_setq_expr(self, buf: BytecodeBuffer, target: Node, value: Node):
         if isinstance(target, Symbol):
@@ -503,6 +503,8 @@ class CodeGenerator:
         buf.emit(encode_defun(idx, 0))
 
     def _emit_init_args(self, buf: BytecodeBuffer, args: List[str]):
+        if not args:
+            return
         for i, arg in enumerate(args):
             idx = self.symtab.get_or_add(arg)
             buf.emit(encode_op_u16(PUSH_G, idx))
@@ -563,7 +565,6 @@ class CodeGenerator:
             self._emit_expr(buf, func.body[-1], _tail=True)
 
         self._emit_clear_args(buf, func.args)
-        buf.emit(encode_op_noarg(END_DEFUN))
 
         buf.resolve()
 

@@ -3,7 +3,7 @@ import os
 import tempfile
 from compiler.linker import link_fas
 from compiler.cli import cmd_compile as compile_lsp
-from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator
+from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
 
 
 def _compile(source: str) -> str:
@@ -15,7 +15,7 @@ def _compile(source: str) -> str:
 def _decompile(path: str) -> str:
     parser = Fas4Parser()
     fas = parser.parse(path)
-    disasm = Disassembler()
+    disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
     instrs = disasm.disassemble(fas.bytecode, fas.nsyms)
     cfa = ControlFlowAnalyzer(instrs, fas.function_catalog)
     funcs = cfa.find_functions()
@@ -125,9 +125,10 @@ def test_link_result_is_valid_fas():
         link_fas([fas1, fas2], out)
         parser = Fas4Parser()
         fas = parser.parse(out)
+        from compiler.linker import _extract_functions
         assert fas.nsyms > 0
         assert len(fas.bytecode) > 0
-        assert len(fas.function_catalog) >= 2
+        assert len(_extract_functions(fas)) >= 2
     finally:
         for p in [fas1, fas2, out]:
             if os.path.exists(p):

@@ -14,8 +14,6 @@ atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]   # 构建 VLX �
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
 
-反编译器也可直接调用：`python fas4_decompiler.py <input.fas> [output.lsp]`
-
 ## 编译器管线
 
 ```

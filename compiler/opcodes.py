@@ -73,8 +73,18 @@ def encode_usubr(argc: int, idx: int, flags: int = 0) -> bytes:
     return struct.pack('<BBHB', 0x35, argc & 0xFF, idx & 0xFFFF, flags & 0xFF)
 
 
+def encode_usubr3(argc: int, idx: int) -> bytes:
+    """3 字节 Xsubr：``35 <argc> <idx>`` — AutoCAD 紧凑 stub 格式。"""
+    return struct.pack('<BBB', 0x35, argc & 0xFF, idx & 0xFF)
+
+
 def encode_func(argc: int, idx: int, flags: int = 0) -> bytes:
     return struct.pack('<BBHBB', 0x51, argc & 0xFF, idx & 0xFFFF, flags & 0xFF, 0)
+
+
+def encode_func3(argc: int, idx: int) -> bytes:
+    """3 字节 Func：``51 <argc> <idx>`` — AutoCAD 紧凑 stub 格式。"""
+    return struct.pack('<BBB', 0x51, argc & 0xFF, idx & 0xFF)
 
 
 def encode_defun(gvar_ref: int, offset: int = 0) -> bytes:

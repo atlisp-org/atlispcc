@@ -1,6 +1,6 @@
 # Fas2Lsp 使用说明
 
-Fas2Lsp 将 AutoCAD/BricsCAD 的 FAS4 加密字节码反编译为可读的 AutoLISP 源码。
+Fas2Lsp 将兼容 AutoLISP 的 CAD 平台的 FAS4 加密字节码反编译为可读的 AutoLISP 源码。
 
 **这不是完美的源码恢复工具**——FAS 格式不保留原始结构、变量名、注释和外部依赖。输出作为可编辑的起点，需人工复核后再使用。
 
@@ -141,7 +141,7 @@ python decrypt_fas4.py bib.fas
 python crack_key.py encrypted.fas
 ```
 
-## BricsCAD 兼容性
+## 兼容性
 
 反编译器自动加入包装函数以避免内建函数冲突：
 
@@ -151,7 +151,7 @@ python crack_key.py encrypted.fas
 - `in_param` / `fas-assoc-value`
 - `fas-select-entity` / `projet_pa_projet_ar_projet`
 
-BricsCAD 无法直接加载 AutoCAD 的 `.fas` 文件，因此本项目输出纯 `.lsp` 文本。
+不同 CAD 平台可能无法直接加载其他平台的 `.fas` 文件，因此本项目输出纯 `.lsp` 文本。
 
 ## 限制
 

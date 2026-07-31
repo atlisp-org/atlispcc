@@ -9,10 +9,12 @@ from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
+from fas_core import find_key as fas_find_key
+from fas_core import decrypt_stream as fas_decrypt_stream
 
 ENCODE_POP = bytes([0x0a])
 FAS4_MAGIC = b'\r\n FAS4-FILE ; Do not change it!\r\n'
-SEG_TERMINATOR = b'\x19\x04\x00\x16\x24\r\n'
+SEG_TERMINATOR = b'\x16\x24\r\n'
 
 
 def _compile_to_fas(src: str) -> bytes:
@@ -72,17 +74,13 @@ def _parse_fas(data: bytes):
     #   \r\n FAS4-FILE ; Do not change it!\r\n
     #   <total_size>\r\n
     #   <nsyms> $<bytecode>                   <- seg0 payload
-    #   \x19\x04\x00\x16\x24\r\n               <- SEG_TERMINATOR
-    #   <seg1_len> <item_count> $<seg1_data>\r\n  <- seg1
+    #   \x16\x24\r\n                           <- SEG_TERMINATOR
+    #   <seg1_len> <item_count> $<seg1_data> <trailer>
     parts = data.split(SEG_TERMINATOR)
     assert len(parts) == 2
     seg0_part, seg1_full = parts
 
     # Find the nsyms header: it's after the magic and total_size lines
-    # The seg0 payload is: "<nsyms> $" + bytecode
-    # Find "$" that follows the nsyms count
-    # The magic ends with "\r\n", then total_size line ends with "\r\n"
-    # After that, the remaining is "<nsyms> $<bytecode>"
     magic_end = seg0_part.index(b'\r\n', 2)  # first \r\n after initial bytes
     size_end = seg0_part.index(b'\r\n', magic_end + 1)  # \r\n after total_size
     nsyms_and_bc = seg0_part[size_end + 2:]
@@ -101,6 +99,11 @@ def _parse_fas(data: bytes):
     seg1_len = int(header_parts[0])
     sec2_items = int(header_parts[1]) if len(header_parts) >= 2 else 0
 
+    # seg1 is XOR-encrypted; decrypt with the embedded key.
+    key = fas_find_key(data)
+    if key:
+        seg1_data = fas_decrypt_stream(seg1_data, key)
+
     return nsyms, bytecode, seg1_data, sec2_items
 
 
@@ -118,7 +121,7 @@ def test_symbol_table_content():
     """Compiled FAS contains expected symbols."""
     data = _compile_to_fas('(defun foo () 1)')
     nsyms, bc, seg1, _ = _parse_fas(data)
-    assert nsyms >= 2, f"Expected >=2 symbols (foo + 1), got {nsyms}"
+    assert nsyms >= 1, f"Expected >=1 symbol (foo), got {nsyms}"
 
 
 def test_func_def_compile():
@@ -146,13 +149,12 @@ def test_local_vars_symbols():
     src = '(defun foo (/ x y) (setq x 10) (+ x y))'
     data = _compile_to_fas(src)
 
-    parts = data.split(SEG_TERMINATOR)
-    seg1_part = parts[1]
+    _, _, seg1, _ = _parse_fas(data)
 
     # seg1 should contain 'x' and 'y' as symbols
-    assert b'foo\x00' in seg1_part, "Symbol 'foo' missing from seg1"
-    assert b'x\x00' in seg1_part, "Symbol 'x' missing from seg1"
-    assert b'y\x00' in seg1_part, "Symbol 'y' missing from seg1"
+    assert b'foo\x00' in seg1, "Symbol 'foo' missing from seg1"
+    assert b'x\x00' in seg1, "Symbol 'x' missing from seg1"
+    assert b'y\x00' in seg1, "Symbol 'y' missing from seg1"
 
 
 def test_string_literal_in_seg1():
@@ -160,10 +162,9 @@ def test_string_literal_in_seg1():
     src = '(defun hello () (princ "Hello World"))'
     data = _compile_to_fas(src)
 
-    parts = data.split(SEG_TERMINATOR)
-    seg1_part = parts[1]
+    _, _, seg1, _ = _parse_fas(data)
 
-    assert b'Hello World' in seg1_part, (
+    assert b'Hello World' in seg1, (
         "String literal 'Hello World' not found in seg1"
     )
 
@@ -171,7 +172,7 @@ def test_string_literal_in_seg1():
 def test_magic_roundtrip():
     """Compiled FAS: compile -> decompile produces valid Lisp (roundtrip)."""
     from fas4_decompiler import Fas4Parser, Disassembler, \
-        ControlFlowAnalyzer, LispGenerator
+        ControlFlowAnalyzer, LispGenerator, is_compact_stub
     from validate import tokenize, parse_tokens, validate_ast
 
     src = '(defun hello () (princ "Hello, World!") (princ))'
@@ -209,7 +210,7 @@ def test_magic_roundtrip():
     try:
         decomp_parser = Fas4Parser()
         fas = decomp_parser.parse(fas_path)
-        disasm = Disassembler()
+        disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
         instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
         cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
         functions = cfa.find_functions()

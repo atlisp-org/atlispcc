@@ -10,7 +10,7 @@ from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
 from compiler.ast import Defun
-from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator
+from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
 from validate import tokenize, parse_tokens, validate_ast
 
 
@@ -69,7 +69,7 @@ def compile_and_decompile(src: str) -> str:
     try:
         decomp_parser = Fas4Parser()
         fas = decomp_parser.parse(fas_path)
-        disasm = Disassembler()
+        disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
         instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
         cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
         functions = cfa.find_functions()
@@ -262,7 +262,7 @@ def test_real_fas_decompile():
 
     decomp_parser = Fas4Parser()
     fas = decomp_parser.parse(fas_path)
-    disasm = Disassembler()
+    disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
     instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
     cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
     functions = cfa.find_functions()
@@ -299,3 +299,25 @@ def test_tail_recursive_factorial():
     # The tail call should be emitted as a loop back (JUMP) not a CALL
     assert '(fact ' not in result or '(while' in result, \
         'Tail recursion may be compiled as a loop'
+
+
+def test_decompile_reference_fun_fas():
+    """Decompiling tests/fun-cad.fas (compiled by a CAD AutoLISP compiler)
+    reproduces the original source."""
+    ref_path = os.path.join(os.path.dirname(__file__), 'fun-cad.fas')
+    if not os.path.exists(ref_path):
+        pytest.skip('tests/fun-cad.fas reference fixture not present')
+
+    decomp_parser = Fas4Parser()
+    fas = decomp_parser.parse(ref_path)
+    disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+    instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
+    cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
+    functions = cfa.find_functions()
+    gen = LispGenerator(fas)
+    result = gen.generate(functions, ref_path)
+
+    assert '(defun a ()' in result
+    assert '(alert "abc")' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'

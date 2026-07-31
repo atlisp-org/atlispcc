@@ -9,12 +9,12 @@ from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.ast import Defun, Defpackage, InPackage
 from compiler.opt import optimize
-from compiler.resource_builder import ResourceBuilder
+from compiler.resource_builder import ResourceBuilder, build_module_code, count_resource_records
 from compiler.fas_writer import FasWriter
 from compiler.analyzer import analyze
 from compiler.linker import link_fas
 from compiler.vlx_builder import build_vlx
-from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator
+from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
 from validate import validate_file
 
 
@@ -92,12 +92,14 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
 
     seg0 = bytes(all_bytecode.data)
 
+    module_code = build_module_code()
     resource = ResourceBuilder(symtab)
-    seg1 = resource.build(func_offsets)
+    seg1 = resource.build(func_offsets, module_code=module_code)
+    sec2_items = count_resource_records(seg1)
 
     output = output or source.replace('.lsp', '.fas')
     writer = FasWriter(symtab)
-    writer.write(output, seg0, seg1)
+    writer.write(output, seg0, seg1, sec2_items=sec2_items)
     print(f'Compiled to {output}')
     return output
 
@@ -105,7 +107,7 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
 def cmd_decompile(source: str, output: str = '') -> str:
     parser_obj = Fas4Parser()
     fas = parser_obj.parse(source)
-    disasm = Disassembler()
+    disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
     instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
     cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
     functions = cfa.find_functions()
@@ -132,7 +134,7 @@ def cmd_link(inputs: list, output: str, verbose: bool = False) -> str:
 def main():
     parser = argparse.ArgumentParser(
         prog='atlispcc',
-        description='FAS4 bytecode compiler/decompiler toolchain for AutoCAD/BricsCAD',
+        description='FAS4 bytecode compiler/decompiler toolchain for AutoLISP-compatible CAD platforms',
     )
     sub = parser.add_subparsers(dest='command', metavar='<command>')
 

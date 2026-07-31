@@ -2,7 +2,7 @@
 
 ## 项目
 
-FAS4 字节码编译器/反编译器：`.lsp` ↔ `.fas` (AutoCAD/BricsCAD)。
+FAS4 字节码编译器/反编译器：`.lsp` ↔ `.fas`（兼容 AutoLISP 的 CAD 平台）。
 
 `atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持四个子命令：
 
@@ -97,16 +97,27 @@ mypy .                                  # 类型检查
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格），共 47 个用例：
+**测试文件在 `tests/` 目录下**（pytest 风格）：
 - `test_parser.py` — AST 解析器（14 用例）
-- `test_compile_decompile.py` — 编译-反编译往返（11 用例）
+- `test_compile_decompile.py` — 编译-反编译往返（含 AutoCAD `fun.fas` 参考反编译回归）
 - `test_compiler_output.py` — FAS 输出正确性（8 用例）
 - `test_assembler.py` — 反汇编/汇编往返（4 用例）
 - `test_linker.py` — 多文件链接（8 用例）
 
 手动测试文件 `tests/test_*.lsp` 也在该目录。
 
-## BricsCAD 兼容性
+## 兼容性
+
+FAS4 输出格式与 AutoCAD 编译器一致：
+- seg0 = 函数字节码（`<nsyms> $...`），seg1 = 资源段（常量/符号/函数索引）
+- seg1 使用滚动 XOR 加密（`find_key`/`decrypt_stream`），尾部含密钥长度字节 + 密钥 + `;fas4 crunch` 标记
+- 段分隔符为 `16 24 0d 0a`，`nsyms` 为符号槽数（资源注册顺序）
+- seg1 资源流 = 模块头(`14 01 01 01 00`) + 代码引用 + 符号/字符串注册 + GVARINIT + DEFCODE + INIT_DONE + 模块代码；`seg1` 头 `items` = GVARINIT + INIT_DONE 计数
+- 反编译回归参考：AutoCAD 产物 `tests/fun-cad.fas`（对应 `tests/fun.lsp`）
+
+反编译器同时支持两种布局：
+- **自包含格式**（`bib.fas`/`PDI.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
+- **紧凑 stub 格式**（AutoCAD 编译器输出）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
 
 生成器会发出包装辅助函数以避免内建冲突：
 - `fas-polar1`、`fas-rtos1`、`fas-rtos3`、`fas-getvar2`、`fas-getvar3`

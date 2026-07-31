@@ -4,14 +4,16 @@ from typing import List, Dict, Tuple, Set, Any
 
 from fas4_decompiler import Fas4Parser, Disassembler
 from compiler.symbol_table import SymbolTable
-from compiler.resource_builder import ResourceBuilder
+from compiler.resource_builder import ResourceBuilder, build_module_code, count_resource_records
 from compiler.fas_writer import FasWriter
 from compiler.opcodes import (
     OPCODE_TO_NAME, OPCODE_FORMAT,
     encode_op_u16, encode_op_noarg,
     encode_op_u8, encode_op_s32, encode_op_u32, encode_bb,
-    encode_usubr, encode_func, encode_defun, encode_eval, encode_real,
+    encode_usubr, encode_usubr3, encode_func, encode_func3,
+    encode_defun, encode_eval, encode_real,
 )
+from fas4_decompiler import is_compact_stub
 
 
 _DATA_TYPES = {'SYMBOL', 'STRING', 'INT8', 'INT32', 'REAL'}
@@ -38,7 +40,7 @@ def _collect_global_data(parsed_fas_list: list) -> List[Tuple]:
     seen: Set[str] = set()
     merged: List[Tuple] = []
     for fas in parsed_fas_list:
-        for item in _data_items(fas.resource_items):
+        for item in _data_items_of(fas):
             key = _make_item_key(item)
             if key not in seen:
                 seen.add(key)
@@ -47,14 +49,14 @@ def _collect_global_data(parsed_fas_list: list) -> List[Tuple]:
 
 
 def _build_local_data_map(global_data: List[Tuple],
-                          local_items: List[Tuple]) -> Dict[int, int]:
+                          fas) -> Dict[int, int]:
     """Build local→global index map for data entries of one file."""
     g_by_key: Dict[str, int] = {}
     for g_idx, item in enumerate(global_data):
         key = _make_item_key(item)
         if key not in g_by_key:
             g_by_key[key] = g_idx
-    local_data = _data_items(local_items)
+    local_data = _data_items_of(fas)
     local_map: Dict[int, int] = {}
     for l_idx, item in enumerate(local_data):
         key = _make_item_key(item)
@@ -116,7 +118,8 @@ def _patch_operands(inst, file_sym_map: Dict[int, int],
     return ops
 
 
-def _encode_with_opcode(opcode: int, name: str, operands: List) -> bytes:
+def _encode_with_opcode(opcode: int, name: str, operands: List,
+                        short_subr: bool = False) -> bytes:
     fmt = OPCODE_FORMAT.get(opcode, '')
     if fmt == '':
         return encode_op_noarg(opcode)
@@ -131,11 +134,15 @@ def _encode_with_opcode(opcode: int, name: str, operands: List) -> bytes:
     elif fmt == 'bb':
         return encode_bb(opcode, int(operands[0]), int(operands[1]))
     elif fmt == 'u':
+        if short_subr:
+            return encode_usubr3(int(operands[0]), int(operands[1]))
         return encode_usubr(int(operands[0]), int(operands[1]),
-                           int(operands[2]) if len(operands) > 2 else 0)
+                            int(operands[2]) if len(operands) > 2 else 0)
     elif fmt == 'f':
+        if short_subr:
+            return encode_func3(int(operands[0]), int(operands[1]))
         return encode_func(int(operands[0]), int(operands[1]),
-                          int(operands[2]) if len(operands) > 2 else 0)
+                           int(operands[2]) if len(operands) > 2 else 0)
     elif fmt == 'h':
         gv, off = int(operands[0]), int(operands[1]) if len(operands) > 1 else 0
         return encode_defun(gv, off)
@@ -148,7 +155,30 @@ def _encode_with_opcode(opcode: int, name: str, operands: List) -> bytes:
 
 
 def _data_items_of(fas) -> List[Tuple]:
+    """按注册顺序提取符号槽条目（CAD 紧凑格式下直接用 symbol_slots）。"""
+    if getattr(fas, 'symbol_slots', None):
+        return [item for item in fas.symbol_slots if _is_data_item(item)]
     return _data_items(fas.resource_items)
+
+
+def _extract_functions(fas) -> List[Tuple[str, int]]:
+    """提取函数目录。优先用资源重建的目录；紧凑格式用 seg0 DEFUN 头。"""
+    if fas.function_catalog:
+        return fas.function_catalog
+    if not getattr(fas, 'symbol_slots', None):
+        return []
+    disassembler = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+    insts = disassembler.disassemble(fas.bytecode, fas.nsyms)
+    funcs: List[Tuple[str, int]] = []
+    for inst in insts:
+        if inst.op_name != 'DEFUN' or len(inst.operands) < 2:
+            continue
+        gv = inst.operands[0] | (inst.operands[1] << 8)
+        if 0 <= gv < len(fas.symbol_slots):
+            val = fas.symbol_slots[gv]
+            if isinstance(val, tuple) and len(val) == 2 and val[0] == 'SYMBOL':
+                funcs.append((str(val[1]), inst.offset))
+    return funcs
 
 
 def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) -> str:
@@ -177,7 +207,7 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
     seen_funcs: Set[str] = set()
     global_func_catalog: List[Tuple[str, int]] = []
     for fas in parsed:
-        for fname, foff in fas.function_catalog:
+        for fname, foff in _extract_functions(fas):
             if fname not in seen_funcs:
                 seen_funcs.add(fname)
                 global_func_catalog.append((fname, foff))
@@ -193,14 +223,17 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
     disassembler = Disassembler()
 
     for file_idx, fas in enumerate(parsed):
-        sm = _build_local_data_map(global_data, fas.resource_items)
+        sm = _build_local_data_map(global_data, fas)
+        short_subr = is_compact_stub(fas.bytecode, fas.function_catalog)
+        disassembler.short_subr = short_subr
         instructions = disassembler.disassemble(fas.bytecode, fas.nsyms)
         patched = bytearray()
 
         for inst in instructions:
             if _needs_symbol_patch(inst.op_name):
                 new_ops = _patch_operands(inst, sm, {})
-                bc = _encode_with_opcode(inst.opcode, inst.op_name, new_ops)
+                bc = _encode_with_opcode(inst.opcode, inst.op_name, new_ops,
+                                         short_subr=short_subr)
             else:
                 bc = fas.bytecode[inst.offset:inst.offset + inst.size]
             patched.extend(bc)
@@ -213,7 +246,7 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
     # ── Recalculate actual function catalog offsets ──
     final_offset = 0
     for fas in parsed:
-        for i, (fname, foff) in enumerate(fas.function_catalog):
+        for i, (fname, foff) in enumerate(_extract_functions(fas)):
             actual_off = final_offset + foff
             for j, (gfname, _) in enumerate(global_func_catalog):
                 if gfname == fname:
@@ -241,10 +274,12 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
 
     # ── Write output ──
     seg0 = bytes(merged_code)
+    module_code = build_module_code()
     resource = ResourceBuilder(symtab)
-    seg1 = resource.build(func_offsets)
+    seg1 = resource.build(func_offsets, module_code=module_code)
     writer = FasWriter(symtab)
-    writer.write(output_path, seg0, seg1)
+    writer.write(output_path, seg0, seg1,
+                 sec2_items=count_resource_records(seg1))
 
     if verbose:
         total = os.path.getsize(output_path)

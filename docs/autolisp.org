@@ -1,0 +1,206 @@
+* 读取块属性值
+  一般有两个方案
+** 用AutoLisp方案
+    首先用 取得图块这个图元，然后用 entnext 逐一找到属性块来找到其中length的属性，然后将它的值给找出来，然后进行运算，注意 entnext 的运用。这个很简单，你自己应该写吧。
+** 用VisualLisp方案
+   注意vla-getattributes，vlax-variant-value，vlax-safeArray->list这几个函数的运用，以下为 VisualLisp的例子
+#+BLOCK_SRC lisp
+   (Defun C:Test ()
+   (setq en0 (car (entsel)))
+   ;;此处请选有属性定义的图块
+   (setq vn0 (vlax-ename->vla-object en0))
+   (setq lstVar (vla-getattributes vn0))
+   (setq lstAttrs (vlax-safeArray->list (vlax-variant-value lstVar)))
+   (setq TextString nil)
+   (foreach attr lstAttrs
+   (setq TagString (vla-get-TagString attr))
+   (if (equal TagString "length") ;此处为你想要的元素
+   (setq TextString (vla-get-TextString attr))
+   )
+   )
+   (if TextString
+   (princ (strcat "The content of length = " TextString))
+   (princ "没有找到length ")
+   )
+   (prin1)
+   )
+#+END_SRC
+* AutoLISP 生成的出错代码的值。
+当导致 AutoCAD 检测到调用 AutoLISP 函数错误时，ERRNO 系统变量将设置为如下之一。 AutoLISP应用程序可以使用 (getvar "errno") 检查 ERRNO 的当前值。
+
+ERRNO 系统变量并不总是清零。 除非在 AutoLISP 函数报告错误后立即对其进行检查，否则其值指示的错误可能会引起误解。 此变量在启动或打开图形文件时始终清零。
+
+注意：ERRNO 的允许值及其含义可能会发生变化。
+
+
+0        没有错误
+
+1        无效的符号表名称
+
+2        无效的图元名或选择集名
+
+3        超过选择集的最大数量
+
+4        无效的选择集
+
+5        块定义使用不当
+
+6        外部参照使用不当
+
+7        对象选择：选择失败
+
+8        对象文件结尾
+
+9        块定义文件结尾
+
+10        找不到最后一个实体
+
+11        非法尝试删除视口对象
+
+12        PLINE 期间不允许操作
+
+13        无效的句柄
+
+14        句柄未启用
+
+15        坐标变换请求中的参数无效
+
+16        坐标变换请求中的空间无效
+
+17        无效使用已删除的实体
+
+18        无效的表符号名
+
+19        无效的表符号函数参数
+
+20        尝试设置只读变量
+
+21        不允许零值
+
+22        值超出范围
+
+23        正在进行复杂的 REGEN
+
+24        尝试更改对象类型
+
+25        无效的层名
+
+26        无效的线型名
+
+27        无效的颜色名
+
+28        无效的文字样式名
+
+29        无效的形名
+
+30        对象类型的无效字段
+
+31        尝试修改已删除的实体
+
+32        尝试修改子对象的"SEQEND"（注：例如重多段线顶点的结束标记的类型名就是"SEQEND"）
+
+33        尝试更改句柄
+
+34        尝试修改视口可见性
+
+35        对象在锁定的图层上
+
+36        错误的对象类型
+
+37        错误的 POLYLINE 对象
+
+38        块中不完整的复杂对象
+
+39        无效的块名字段
+
+40        块标记字段重复
+
+41        块名字段重复
+
+42        错误的法线向量
+
+43        找不到块名
+
+44        找不到块标志
+
+45        无效的匿名块
+
+46        无效的块定义
+
+47        找不到必要字段
+
+48        无法识别的扩展数据 (XDATA) 类型
+
+49        XDATA 中表的无效嵌套
+
+50        APPID 字段的位置不正确
+
+51        超出 XDATA 最大尺寸
+
+52        选择对象：空响应
+
+53        重复的 APPID
+
+54        尝试创建或修改视口对象
+
+55        尝试创建或修改 xref，xdef 或 xdep
+
+56        ssget 过滤器：表意外结束
+
+57        ssget 过滤器：缺少测试运算元
+
+58        ssget 过滤器：-4 指令的字符串无效
+
+59        ssget 过滤器：不正确的嵌套或空的条件子句
+
+60        ssget 过滤器：条件子句的开头和结尾不匹配
+
+61        ssget 过滤器：条件子句中的参数数量错误 (用于 NOT 或 XOR)
+
+62        ssget 过滤器：超出最大嵌套限制
+
+63        ssget 过滤器：无效的组码
+
+64        ssget 过滤器：无效的测试字符串
+
+65        ssget 过滤器：无效的测试向量
+
+66        ssget 过滤器：无效的测试实数
+
+67        ssget 过滤器：无效的测试整数
+
+68        数字化仪不是平板电脑
+
+69        平板电脑未校准
+
+70        平板电脑参数无效
+
+71        ADS 错误：无法分配新的结束缓冲区
+
+72        ADS 错误：检测到空指针
+
+73        无法打开可执行文件
+
+74        应用程序已加载
+
+75        已加载的最大应用程序数量
+
+76        无法执行应用程序
+
+77        版本号不兼容
+
+78        无法卸载嵌套的应用程序
+
+79        应用程序禁止卸载
+
+80        应用程序当前未加载
+
+81        没有足够的内存来加载应用程序
+
+82        ADS 错误：转换矩阵无效
+
+83        ADS 错误：无效的符号名
+
+84        ADS 错误：无效的符号值
+
+85        显示对话框时禁止 AutoLISP/ADS 操作
