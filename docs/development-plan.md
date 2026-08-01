@@ -132,6 +132,17 @@ f.optional`）打印警告（非阻断），提示建议 `(defun f (x &rest r))`
 未绑定（疑似模块代码的 `PUSH_G<2n+1-i> SETQ_G<n-i>` 引用槽或
 `01 00 16` 分隔符/`_func_ranges_bytes` 与 CAD 不一致）。
 
+**进展（分析）**：`add_force` 后 sum-squares 已注册（SUBR），但**调用
+卡死**（非未定义）。USUBR 索引经 `build_mvar_tables` 校验正确
+（square idx 1 → gvar 槽 2）；`build_mvar_tables` 对 AutoCAD 参考
+（cad_t01_math）验证准确。对比发现：cmd 跨调用（multi2：sq 槽 3）CAD
+全注册，link 跨调用（lk_comb：square 槽 2）卡死——**link 的符号布局与
+cmd 的 `derive_symbol_names` 顺序不同**（cmd：`[函数名, +内建, sq引用, 参数, *内建, 参数]`，
+link：square 因 `add_force` 在槽 2），导致 `build_module_code` 的
+`PUSH_G[3]`（cmd 布局=第一个函数 sq）在 link 输出指向非函数符号
+（`*`），CAD 绑定错→调用卡死。**待 CAD 实测**（patch USUBR/符号槽）
+确认后修复（link 符号顺序复刻 cmd，或模块代码按 link 布局参数化）。
+
 **技术路线**：
 - 用 CAD 实测链接输出的模块代码/函数注册，对比单文件多函数（cmd）
   的差异（cmd 多函数 CAD 全注册可用）
