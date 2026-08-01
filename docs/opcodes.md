@@ -6,7 +6,7 @@ FAS4 字节码由一系列操作码（opcode，单字节）及其可变长度操
 
 存在**两种字节码布局**，操作码编码差异见 [紧凑 stub 格式](#紧凑-stub-格式-cad)：
 
-- **自包含格式**（本项目 `stub_format=False` 生成，与 `bib.fas`/`PDI.fas` 一致）：seg0 含完整函数体 + `END_DEFUN`，函数目录来自 mvar 表重建；调用用 5 字节 `USUBR`/6 字节 `FUNC`。
+- **自包含格式**（本项目 `stub_format=False` 生成，与 `samples/bib.fas`/`samples/PDI.fas` 一致）：seg0 含完整函数体 + `END_DEFUN`，函数目录来自 mvar 表重建；调用用 5 字节 `USUBR`/6 字节 `FUNC`。
 - **紧凑 stub 格式**（CAD 编译器输出，本项目 `stub_format=True` 生成）：seg0 无 `END_DEFUN`，符号按资源注册顺序（`symbol_slots`）直接编址；调用用 3 字节 `USUBR`/`FUNC`，`DEFUN` 头为 argc 编码。
 
 操作数格式代码：

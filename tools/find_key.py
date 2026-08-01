@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Find the exact FAS4 encryption key in the file."""
 
-with open('PDI.fas', 'rb') as f:
+with open('samples/PDI.fas', 'rb') as f:
     data = f.read()
 
 # Find the crunch marker

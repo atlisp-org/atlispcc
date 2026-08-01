@@ -3,7 +3,9 @@
 Rosetta Stone analysis: Map PDI.fas bytecode against known PDI(test).lsp source.
 This will help us understand the EXACT FAS4 bytecode format.
 """
-
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import struct
 from fas4_decompiler import Fas4Parser
 

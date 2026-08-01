@@ -40,7 +40,7 @@ atlispcc compile -O3 --analyze input.lsp output.fas
 ```sh
 atlispcc decompile input.fas output.lsp
 # 或直接调用
-python fas4_decompiler.py bib.fas bib_generic.lsp
+python fas4_decompiler.py samples/bib.fas samples/bib_generic.lsp
 ```
 
 ### validate — 语法验证
@@ -119,10 +119,10 @@ atlispcc build-vlx app.fas lib.fas -o app.vlx --export main setup
 
 ```sh
 # 反编译
-python fas4_decompiler.py bib.fas bib_generic.lsp
+python fas4_decompiler.py samples/bib.fas samples/bib_generic.lsp
 
 # 验证语法
-python validate.py bib_generic.lsp
+python validate.py samples/bib_generic.lsp
 
 # 期望输出： [PASS] bib_generic.lsp
 ```
@@ -165,9 +165,9 @@ POLYCC
 ## 完整示例
 
 ```sh
-python fas4_decompiler.py bib.fas bib_generic.lsp
-python validate.py bib_generic.lsp
-python fas4_decompiler.py PDI.fas PDI_generic.lsp
+python fas4_decompiler.py samples/bib.fas samples/bib_generic.lsp
+python validate.py samples/bib_generic.lsp
+python fas4_decompiler.py samples/PDI.fas samples/PDI_generic.lsp
 python validate.py PDI_generic.lsp
 ```
 
@@ -177,24 +177,24 @@ python validate.py PDI_generic.lsp
 
 ```sh
 # FAS4 文件分析
-python fas-analyzer.py bib.fas
-python fas-analyzer.py bib.fas --dump
-python fas-analyzer.py bib.fas --json
+python -m tools.fas-analyzer samples/bib.fas
+python -m tools.fas-analyzer samples/bib.fas --dump
+python -m tools.fas-analyzer samples/bib.fas --json
 ```
 
 ### 函数分割
 
 ```sh
-python fas-split.py bib.fas
-python fas-split.py bib.fas --trim
-python fas-split.py bib.fas --outdir ./split_output
+python -m tools.fas-split samples/bib.fas
+python -m tools.fas-split samples/bib.fas --trim
+python -m tools.fas-split samples/bib.fas --outdir ./split_output
 ```
 
 ### 解密/破解
 
 ```sh
-python decrypt_fas4.py bib.fas
-python crack_key.py encrypted.fas
+python -m tools.decrypt_fas4 samples/bib.fas
+python -m tools.crack_key encrypted.fas
 ```
 
 ## 兼容性

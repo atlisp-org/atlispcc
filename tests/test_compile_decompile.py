@@ -348,7 +348,7 @@ def test_defun_q():
 
 def test_real_fas_decompile():
     """Decompile real FAS4 file (PDI.fas) and validate output."""
-    fas_path = os.path.join(os.path.dirname(__file__), '..', 'PDI.fas')
+    fas_path = os.path.join(os.path.dirname(__file__), '..', 'samples', 'PDI.fas')
     if not os.path.exists(fas_path):
         pytest.skip('PDI.fas not found')
 

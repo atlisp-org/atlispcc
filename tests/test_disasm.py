@@ -13,7 +13,7 @@ from fas4_decompiler import (
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(TESTS_DIR)
 
-PDI_FAS = os.path.join(ROOT_DIR, 'PDI.fas')
+PDI_FAS = os.path.join(ROOT_DIR, 'samples', 'PDI.fas')
 CAD_FAS = os.path.join(TESTS_DIR, 'fun-cad.fas')
 
 

@@ -4,10 +4,10 @@ __pycache__/
 venv/
 *.lsp
 !tests/*.lsp
+!samples/*.lsp
 *.fas
 !tests/*.fas
-!PDI.fas
-!bib.fas
+!samples/*.fas
 *.split/
 *.analysis.json
 dist/

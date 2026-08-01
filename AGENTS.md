@@ -63,7 +63,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | `compiler/vlx_builder.py` | VLX 容器构建器 |
 | `validate.py` | 生成的 `.lsp` 语法验证器 |
 
-工具脚本（`decrypt_fas4.py`、`fas-split.py`、`fas-analyzer.py`、`crack_key.py` 等）使用 `fas_core.py` 中的函数。
+工具脚本（`tools/decrypt_fas4.py`、`tools/fas-split.py`、`tools/fas-analyzer.py`、`tools/crack_key.py` 等）使用 `fas_core.py` 中的函数。
 
 ## 优化器（compiler/opt.py）
 
@@ -85,10 +85,10 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 atlispcc compile -O2 input.lsp output.fas
 
 # 反编译
-python fas4_decompiler.py bib.fas bib_generic.lsp
+python fas4_decompiler.py samples/bib.fas samples/bib_generic.lsp
 
 # 验证输出
-python validate.py bib_generic.lsp
+python validate.py samples/bib_generic.lsp
 
 # 链接
 atlispcc link lib.fas main.fas -o combined.fas
@@ -133,7 +133,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - 反编译回归参考：AutoCAD 产物 `tests/fun-cad.fas`（对应 `tests/fun.lsp`）
 
 反编译器同时支持两种布局：
-- **自包含格式**（`bib.fas`/`PDI.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
+- **自包含格式**（`samples/bib.fas`/`samples/PDI.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
 - **紧凑 stub 格式**（AutoCAD 编译器输出）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
 
 生成器会发出包装辅助函数以避免内建冲突：

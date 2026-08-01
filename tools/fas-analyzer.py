@@ -5,8 +5,11 @@ FAS4 分析器 — 识别格式类型，提取函数边界和分析报告。
 使用 fas_core.py 核心模块。
 
 用法:
-  python fas-analyzer.py <input.fas> [--dump] [--json]
+  python -m tools.fas-analyzer <input.fas> [--dump] [--json]
 """
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import sys
 import os

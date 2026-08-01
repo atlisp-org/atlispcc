@@ -5,16 +5,16 @@ FAS4 分割器 — 从双段加密 FAS 中提取每个函数，生成独立可�
 使用 fas_core.py 核心模块进行解析和符号表重建。
 
 用法:
-  python fas-split.py <input.fas> [--outdir <dir>] [--trim] [--verbose]
+  python -m tools.fas-split <input.fas> [--outdir <dir>] [--trim] [--verbose]
 
 选项:
   --outdir <dir>  输出目录（默认 <文件名>.split/）
   --trim          自包含桩输出 single-segment FAS（省略 seg1），减小文件体积
   --verbose       详细输出（含完整函数目录）
 """
-
-import sys
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fas_core import (
     parse_fas4, extract_stubs,
