@@ -156,6 +156,7 @@ python -m pytest tests/ -v   # 详细输出
 ## 文档
 
 - `docs/cad-stub-format.md` — AutoCAD 紧凑 stub 格式规范与兼容实现（核心）
+- `docs/development-plan.md` — 开发计划、遗留问题与路线图
 - `docs/fas-format.md` — FAS4 二进制文件格式详解
 - `docs/opcodes.md` — 操作码参考
 - `docs/development.md` — 架构详解、代码规范、调试指南
