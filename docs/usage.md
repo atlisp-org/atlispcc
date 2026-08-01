@@ -1,9 +1,3 @@
-# Fas2Lsp 使用说明
-
-Fas2Lsp 将兼容 AutoLISP 的 CAD 平台的 FAS4 加密字节码反编译为可读的 AutoLISP 源码。
-
-**这不是完美的源码恢复工具**——FAS 格式不保留原始结构、变量名、注释和外部依赖。输出作为可编辑的起点，需人工复核后再使用。
-
 ## atlispcc CLI
 
 统一命令行工具 `atlispcc`（`compiler/cli.py`），支持七个子命令：
