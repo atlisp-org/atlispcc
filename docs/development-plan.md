@@ -178,6 +178,26 @@ link：square 因 `add_force` 在槽 2），导致 `build_module_code` 的
 - 为 CAD 实测建立独立测试脚本与实例，避免破坏主会话
 - 测试流程：编译 → 本地字节码校验 → CAD 加载（独立实例）→ 环境检查
 
+### 3.8 `validate.py` 与 atlisp-lint 的关系（优先级：低/记录待决策）
+
+**现状**：`validate.py` 是反编译管线内的**合法性门禁**（自包含库、
+纯 Python、被 `tests/test_compile_decompile.py` 的 `_validate` 断言）。
+atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/风格
+审查工具**，`analyze_lisp_code` 实测**不依赖 CAD 连接**（可独立运行）。
+
+**能否代替**：技术上可行（lint 覆盖 validate 的合法性子集 + 90 条质量规则），
+但**不建议完全代替**：
+1. **CI/测试集成**：validate 是本地 import；lint 需 MCP subprocess（每测试慢、CI 依赖服务）
+2. **输出/断言**：lint 返回 `valid/errors/warnings/issues`，tests 的 `_validate` 断言需全部改
+3. **定位**：产物验证需「硬性结构检查」，lint 多为软性 `warn` 建议
+
+**待决策方案**：
+- A. validate.py 保持门禁 + 小幅补强（危险函数 quit/exit/startapp、未使用变量 ~5 条）
+- B. 移植 lint 核心语法规则（括号/符号/setq/c: 等 ~10 条）入 validate.py（保持自包含）
+- C. 反编译产物额外脚本化跑 `analyze_lisp_code` 做质量检查（非 CI）
+
+**建议**：A + C（validate 保持门禁并补强；质量检查用 lint 脚本化）。暂不实施，后续决策。
+
 ---
 
 ## 4. 开发计划
