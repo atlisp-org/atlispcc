@@ -990,14 +990,25 @@ class LispGenerator:
                 if off + 5 > len(bc) or bc[off] != 0x14:
                     return False
                 a, b_, c, d = bc[off + 1], bc[off + 2], bc[off + 3], bc[off + 4]
-                if not (a == b_ == c and d == 0):
+                # 有限参数：b1(参数+无名变量) == b3(大参数)；无限参数：d=01 且 b1==b2==b3
+                if d == 0:
+                    if a != c:
+                        return False
+                elif d == 1:
+                    if not (a == b_ == c):
+                        return False
+                else:
                     return False
             return True
         # 无目录：扫描首个 0x14（真 DEFUN 在字节码前部）
         for i in range(len(bc) - 4):
             if bc[i] == 0x14:
                 a, b_, c, d = bc[i + 1], bc[i + 2], bc[i + 3], bc[i + 4]
-                return a == b_ == c and d == 0
+                if d == 0:
+                    return a == c
+                if d == 1:
+                    return a == b_ == c
+                return False
         return False
     def _has_stub_defcode_seq(self) -> bool:
         d = getattr(self.fas, "sec2_data", b"") or b""
@@ -1198,6 +1209,8 @@ class LispGenerator:
             "original_name": original_name,
             "name": "",
             "args": arg_names,
+            "min_args": signature.get("min_args", len(arg_names)),
+            "has_rest": signature.get("has_rest", False),
             "arg_originals": arg_originals,
             "locals": local_names,
             "local_originals": local_originals,
@@ -1456,6 +1469,21 @@ class LispGenerator:
 
     def _emit_function(self, spec: Dict[str, Any]) -> List[str]:
         args = spec["args"]
+        min_args = spec.get("min_args", len(args))
+        has_rest = spec.get("has_rest", False)
+        if has_rest:
+            # 无限参数：固定 + (&optional ...) + &rest
+            fixed = list(args[:min_args])
+            mid = list(args[min_args:-1]) if len(args) > min_args + 1 else []
+            rest = args[-1] if args else "rest"
+            param_list = fixed
+            if mid:
+                param_list += ["&optional"] + mid
+            param_list += ["&rest", rest]
+            args = param_list
+        elif min_args < len(args):
+            # 有限可选参数：固定 + &optional
+            args = list(args[:min_args]) + ["&optional"] + list(args[min_args:])
         locals_list = spec["locals"]
         if spec["name"].lower().startswith("c:") and args:
             # AutoLISP command functions are invoked by AutoCAD with no
@@ -1781,7 +1809,9 @@ class LispGenerator:
             if name in ("PUSH_G", "PUSH_GLOBAL") and inst.operands:
                 stack.append(self._literal_from_gvar(inst.operands[0]))
             elif name == "PUSH_VALUE" and inst.operands:
-                stack.append(self._value_from_gvar(inst.operands[0], spec))
+                if not (self.is_stub_format and inst.size == 1):
+                    # stub 单字节 PUSH_VALUE[0]：调用后清理，不压栈
+                    stack.append(self._value_from_gvar(inst.operands[0], spec))
             elif name == "GET_LOCAL" and inst.operands:
                 stack.append(self._local_name(inst.operands[0], spec))
             elif name == "PUSH_NIL":
@@ -2121,11 +2151,29 @@ class LispGenerator:
                 args.append((right[1], raw_name))
                 arg_symbol_indices.append(left[1])
 
+        # DEFUN 头（0x14，仅真 stub）：b1=参数(总)/b2=最低参数/b3/b4=00有限|01无限
+        _read = False
+        if self._defun_headers_are_argc() and instructions and instructions[0].op_name == "DEFUN":
+            _ops = instructions[0].operands
+            if len(_ops) == 4 and _ops[3] in (0, 1):
+                _b1 = _ops[0]
+                # 全零头（b1=0, b4=0）且已有参数：非 stub（自包含 gv/off 误判）
+                if not (_b1 == 0 and _ops[3] == 0 and len(args) > 0):
+                    _read = True
+        if _read:
+            _rest = _ops[3] == 1
+            _min = _ops[1] if len(_ops) > 1 else len(args)
+        else:
+            _rest = False
+            _min = len(args)
+
         return {
             "args": args,
             "arg_symbol_indices": arg_symbol_indices,
             "body_start": init_idx + 1,
             "local_binding_names": local_binding_names,
+            "min_args": _min,
+            "has_rest": _rest,
         }
 
     def _referenced_symbols(self, instructions: List[Instruction]) -> List[str]:

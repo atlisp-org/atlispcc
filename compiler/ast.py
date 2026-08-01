@@ -47,6 +47,8 @@ class QuotedExpr(Node):
 class Defun(Node):
     name: str = ''
     args: List[str] = field(default_factory=list)
+    optional: List[str] = field(default_factory=list)
+    rest: Optional[str] = None
     locals: List[str] = field(default_factory=list)
     body: List['Node'] = field(default_factory=list)
     is_command: bool = False

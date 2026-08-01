@@ -255,7 +255,9 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     sec2_items = count_resource_records(seg1)
 
     # 修正 USUBR/参数槽索引：CAD 用 `gvar 槽 - 1`（gvar 表由资源段 GVARINIT 建立）。
-    seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, [f.args for f in defun_forms])
+    def _all_params(f):
+        return f.args + f.optional + ([f.rest] if f.rest else [])
+    seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, [_all_params(f) for f in defun_forms])
 
     output = output or source.replace('.lsp', '.fas')
     writer = FasWriter(symtab)

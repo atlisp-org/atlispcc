@@ -171,20 +171,39 @@ class Parser:
         else:
             name = raw_name
         args = []
+        optional_list = []
+        rest_var = None
         locals_list = []
         if self.peek()[0] == 'LPAREN':
             self.advance()
             seen_slash = False
+            in_optional = False
             while self.peek()[0] not in ('RPAREN', 'EOF'):
                 tok = self.peek()
                 if tok[0] == 'SYMBOL' and tok[1] == '/':
                     seen_slash = True
+                    in_optional = False
                     self.advance()
+                    continue
+                if tok[0] == 'SYMBOL' and tok[1].lower() == '&optional':
+                    in_optional = True
+                    self.advance()
+                    continue
+                if tok[0] == 'SYMBOL' and tok[1].lower() == '&rest':
+                    in_optional = False
+                    self.advance()
+                    a = self.parse_form()
+                    if isinstance(a, Symbol):
+                        rest_var = a.name
+                    elif rest_var is None:
+                        rest_var = 'args'
                     continue
                 a = self.parse_form()
                 if isinstance(a, Symbol):
                     if seen_slash:
                         locals_list.append(a.name)
+                    elif in_optional:
+                        optional_list.append(a.name)
                     else:
                         args.append(a.name)
             self.expect('RPAREN')
@@ -193,7 +212,8 @@ class Parser:
             body.append(self.parse_form())
         self.expect('RPAREN')
         is_cmd = name.upper().startswith('C:')
-        return Defun(name=name, args=args, locals=locals_list, body=body,
+        return Defun(name=name, args=args, optional=optional_list, rest=rest_var,
+                     locals=locals_list, body=body,
                      is_command=is_cmd, quoted=(kind == 'defun-q'))
 
     def _parse_defpackage(self) -> Defpackage:

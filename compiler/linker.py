@@ -334,22 +334,30 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
         # stub 多文件合并：参数绑定/读取槽按 CAD 规则 = nsyms-1-i，
         # 合并后需平移 (merged_nsyms - file_nsyms)。
         param_delta = merged_nsyms - fas.nsyms if short_subr else 0
-        cur_argc = 0
-        bind_i = 0
+        cur_argc = 0          # 全部参数数（DEFUN 后到 INIT_ARGS 的绑定）
+        in_param_bind = False
 
         for inst in instructions:
             if inst.op_name == "DEFUN":
-                cur_argc = inst.operands[0] if inst.operands else 0
-                bind_i = 0
+                # 0x14 头 4 字节：b1/b2/b3 与 b4；参数绑定数由 INIT_ARGS 推得
+                b1 = inst.operands[0] if len(inst.operands) > 0 else 0
+                b4 = inst.operands[3] if len(inst.operands) > 3 else 0
+                in_param_bind = (b1 > 0) or (b4 == 1)
+                cur_argc = 0
                 bc = fas.bytecode[inst.offset : inst.offset + inst.size]
-            elif short_subr and inst.op_name == "PUSH_G" and bind_i < cur_argc:
-                # 参数绑定：nsyms-1-i -> 合并 nsyms-1-i
+            elif short_subr and inst.op_name == "PUSH_G" and in_param_bind:
+                # 参数绑定（DEFUN 后到 INIT_ARGS，含 &optional/&rest）：平移
                 idx = inst.operands[0]
                 new_idx = idx + param_delta
                 bc = bytes([0x09, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
-                bind_i += 1
+            elif short_subr and inst.op_name == "INIT_ARGS":
+                # 参数绑定区结束；INIT_ARGS = 2*全部参数数 + 1
+                val = inst.operands[0] if inst.operands else 0
+                cur_argc = (val - 1) // 2 if val else 0
+                in_param_bind = False
+                bc = fas.bytecode[inst.offset : inst.offset + inst.size]
             elif short_subr and inst.op_name == "PUSH_VALUE" and inst.size > 1 and cur_argc:
-                # 参数读取：idx 在 [nsyms-argc, nsyms-1] 区间即参数
+                # 参数读取：idx 在 [nsyms-全部参数, nsyms-1] 区间即参数
                 idx = inst.operands[0]
                 if fas.nsyms - cur_argc <= idx < fas.nsyms:
                     new_idx = idx + param_delta

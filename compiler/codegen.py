@@ -635,7 +635,15 @@ class CodeGenerator:
     def _emit_defun_header(self, buf: BytecodeBuffer, func: Defun):
         if self.stub_format:
             argc = len(func.args)
-            buf.emit(bytes([0x14]) + bytes([argc & 0xFF] * 3 + [0]))
+            if func.rest:
+                # 无限参数：b4=01，b1/b2/b3 = 最小参数个数（必填）
+                buf.emit(bytes([0x14]) + bytes([argc & 0xFF] * 3 + [1]))
+            elif func.optional:
+                # 有限可选参数：b1=总参数(max)，b2=必填(min)，b3=max
+                total = argc + len(func.optional)
+                buf.emit(bytes([0x14, total & 0xFF, argc & 0xFF, total & 0xFF, 0]))
+            else:
+                buf.emit(bytes([0x14]) + bytes([argc & 0xFF] * 3 + [0]))
             return
         idx = self.symtab.idx_of(func.name) or self.symtab.get_or_add(func.name)
         buf.emit(encode_defun(idx, 0))
@@ -681,7 +689,8 @@ class CodeGenerator:
         saved_label = self._tail_entry_label
 
         self.current_func_name = func.name
-        self.current_func_args = func.args
+        all_args = func.args + func.optional + ([func.rest] if func.rest else [])
+        self.current_func_args = all_args
         self._tail_entry_label = f"_tail_entry_{func.name}_{id(func)}"
 
         buf = BytecodeBuffer()
@@ -690,20 +699,20 @@ class CodeGenerator:
         self._emit_defun_header(buf, func)
         start_offset = 3
 
-        for i, arg in enumerate(func.args):
+        for i, arg in enumerate(all_args):
             self.local_slots[arg] = i
-        self.next_slot = max(self.next_slot, len(func.args))
+        self.next_slot = max(self.next_slot, len(all_args))
 
-        self._emit_init_args(buf, func.args)
+        self._emit_init_args(buf, all_args)
 
         buf.label(self._tail_entry_label)
 
         for i, loc in enumerate(func.locals):
-            slot = i + len(func.args)
+            slot = i + len(all_args)
             self.local_slots[loc] = slot
             self.next_slot = max(self.next_slot, slot + 1)
 
-        arity_bound = func.args + func.locals
+        arity_bound = all_args + func.locals
         for name in set(self.local_slots.keys()) - set(arity_bound):
             pass
 
