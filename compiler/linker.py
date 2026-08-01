@@ -27,6 +27,15 @@ from compiler.opcodes import (
 )
 from fas4_decompiler import is_compact_stub
 
+
+def _fas_is_stub(fas) -> bool:
+    """用反编译器完整判定（is_compact_stub + DEFCODE/argc 头检测）。"""
+    try:
+        from fas4_decompiler import LispGenerator
+        return LispGenerator(fas).is_stub_format
+    except Exception:
+        return is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots))
+
 _DATA_TYPES = {"SYMBOL", "STRING", "INT8", "INT32", "REAL"}
 
 _SYM_REF_INSTS = {"PUSH_VALUE", "PUSH_G", "PUSH_GLOBAL", "SETQ_G"}
@@ -145,7 +154,22 @@ def _encode_with_opcode(opcode: int, name: str, operands: List, short_subr: bool
 def _data_items_of(fas) -> List[Tuple]:
     """按注册顺序提取符号槽条目（CAD 紧凑格式下直接用 symbol_slots）。"""
     if getattr(fas, "symbol_slots", None):
-        return [item for item in fas.symbol_slots if _is_data_item(item)]
+        items = [item for item in fas.symbol_slots if _is_data_item(item)]
+        if _fas_is_stub(fas):
+            # stub 符号表需含内建（如 strcat），symbol_slots 可能缺失
+            try:
+                from fas_core import build_mvar_tables
+                _, fg = build_mvar_tables(fas.sec2_data, fas.nsyms)
+                seen = {_make_item_key(it) for it in items}
+                for v in fg:
+                    if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
+                        it = (v[0], str(v[1]))
+                        if _make_item_key(it) not in seen:
+                            seen.add(_make_item_key(it))
+                            items.append(it)
+            except Exception:
+                pass
+        return items
     return _data_items(fas.resource_items)
 
 
@@ -157,7 +181,7 @@ def _extract_functions(fas) -> List[Tuple[str, int]]:
         return []
 
     # 紧凑 stub 格式：DEFCODE 序列 (PUSH_INT8 <off> + SYMBOL <name>)
-    is_stub = is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots))
+    is_stub = _fas_is_stub(fas)
     if is_stub:
         items = fas.resource_items_with_offsets
         stub_funcs: List[Tuple[str, int]] = []
@@ -229,31 +253,129 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
     if verbose:
         print(f"  Merged: {len(global_data)} data entries, " f"{len(global_func_catalog)} functions")
 
+    # ── Build SymbolTable from global data entries ──
+    # ResourceBuilder 假定 entries 前部为函数名（模块注册，skip_first 跳过），
+    # 故先注册函数名，再注册其余符号/字符串。
+    # 跨文件被调用的函数名须额外加重复槽（进入函数注册/GVARINIT），
+    # 否则模块代码 PUSH_G 无法引用、CAD 加载后函数未定义。
+    symtab = SymbolTable()
+    _func_names = {fname for fname, _ in global_func_catalog}
+    for fname, _ in global_func_catalog:
+        symtab.get_or_add(fname)
+    _cross_refs: Set[str] = set()
+    for file_idx, fas in enumerate(parsed):
+        own = {f for f, _ in _extract_functions(fas)}
+        for s in fas.symbol_slots:
+            if _is_data_item(s) and s[0] == "SYMBOL":
+                nm = str(s[1])
+                if nm in _func_names and nm not in own:
+                    _cross_refs.add(nm)
+    for nm in _cross_refs:
+        symtab.add_force(nm)
+    for item_type, item_val in global_data:
+        if item_type == "SYMBOL" and str(item_val) in _func_names:
+            continue
+        if item_type == "SYMBOL":
+            symtab.get_or_add(item_val)
+        elif item_type == "STRING":
+            symtab.add_string(item_val)
+        elif item_type in ("INT8", "INT32", "INT"):
+            symtab.add_int(int(item_val))
+        elif item_type == "REAL":
+            symtab.add_real(float(item_val))
+
+    # ── 初步资源段：确定合并后 gvar 槽（stub 字节码索引用槽-1） ──
+    _pre_func_offsets = {fname: foff for fname, foff in global_func_catalog}
+    for fname, foff in global_func_catalog:
+        symtab.add_func_ref(fname, foff)
+    _pre_module_code = build_module_code(len(_pre_func_offsets))
+    _pre_sec1 = ResourceBuilder(symtab).build(_pre_func_offsets, module_code=_pre_module_code, stub_format=True)
+    _pre_nsyms = len(symtab.entries)
+    from fas_core import build_mvar_tables
+    try:
+        _, _pre_fg = build_mvar_tables(_pre_sec1, _pre_nsyms)
+    except Exception:
+        _pre_fg = []
+    _pre_gvar: Dict[str, int] = {}
+    for _i, _v in enumerate(_pre_fg):
+        if isinstance(_v, tuple) and len(_v) == 2 and _v[0] in ("SYMBOL", "STRING"):
+            _pre_gvar.setdefault(str(_v[1]), _i)
+
     # ── Build index maps for each file ──
     # ── Patch bytecode ──
     merged_code = bytearray()
     disassembler = Disassembler()
+    merged_nsyms = len(symtab.entries) - len(global_func_catalog) + 1
 
     for file_idx, fas in enumerate(parsed):
-        sm = _build_local_data_map(global_data, fas)
-        short_subr = is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots))
+        short_subr = _fas_is_stub(fas)
+        if short_subr:
+            # stub 字节码索引 = gvar 槽-1：还原为 file 符号，再映射到合并 gvar 槽-1。
+            sym_by_idx = {}
+            for i, s in enumerate(fas.symbol_slots):
+                if _is_data_item(s) and s[0] in ("SYMBOL", "STRING"):
+                    sym_by_idx[i] = str(s[1])
+            sm = {}
+            for i, sym in sym_by_idx.items():
+                if sym in _pre_gvar:
+                    sm[i] = _pre_gvar[sym] - 1
+                else:
+                    # fg 外（nsyms 截断）符号：用合并 symtab 槽，反编译 fallback 到 symbol_slots
+                    for j, (et, ev) in enumerate(symtab.entries):
+                        if et in ("SYMBOL", "STRING") and str(ev) == sym:
+                            sm[i] = j
+                            break
+        else:
+            sm = _build_local_data_map(global_data, fas)
         disassembler.short_subr = short_subr
         instructions = disassembler.disassemble(fas.bytecode, fas.nsyms,
                                                 sym_count=len(fas.symbol_slots) if short_subr else None)
         patched = bytearray()
+        # stub 多文件合并：参数绑定/读取槽按 CAD 规则 = nsyms-1-i，
+        # 合并后需平移 (merged_nsyms - file_nsyms)。
+        param_delta = merged_nsyms - fas.nsyms if short_subr else 0
+        cur_argc = 0
+        bind_i = 0
 
         for inst in instructions:
-            # stub 格式 DEFUN 头为 argc 编码，无符号索引，不需 patch；
-            # 单字节 PUSH_VALUE[0]（调用后清理）同样原样保留。
-            skip_defun = short_subr and inst.op_name == "DEFUN"
-            skip_single = short_subr and inst.op_name == "PUSH_VALUE" and inst.size == 1
-            if _needs_symbol_patch(inst.op_name) and not skip_defun and not skip_single:
-                new_ops = _patch_operands(inst, sm)
-                bc = _encode_with_opcode(inst.opcode, inst.op_name, new_ops, short_subr=short_subr)
-            else:
+            if inst.op_name == "DEFUN":
+                cur_argc = inst.operands[0] if inst.operands else 0
+                bind_i = 0
                 bc = fas.bytecode[inst.offset : inst.offset + inst.size]
+            elif short_subr and inst.op_name == "PUSH_G" and bind_i < cur_argc:
+                # 参数绑定：nsyms-1-i -> 合并 nsyms-1-i
+                idx = inst.operands[0]
+                new_idx = idx + param_delta
+                bc = bytes([0x09, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                bind_i += 1
+            elif short_subr and inst.op_name == "PUSH_VALUE" and inst.size > 1 and cur_argc:
+                # 参数读取：idx 在 [nsyms-argc, nsyms-1] 区间即参数
+                idx = inst.operands[0]
+                if fas.nsyms - cur_argc <= idx < fas.nsyms:
+                    new_idx = idx + param_delta
+                    bc = bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                else:
+                    skip_single = False
+                    if _needs_symbol_patch(inst.op_name) and not skip_single:
+                        new_ops = _patch_operands(inst, sm)
+                        bc = _encode_with_opcode(inst.opcode, inst.op_name, new_ops, short_subr=short_subr)
+                    else:
+                        bc = fas.bytecode[inst.offset : inst.offset + inst.size]
+            else:
+                # stub 格式 DEFUN 头为 argc 编码，无符号索引，不需 patch；
+                # 单字节 PUSH_VALUE[0]（调用后清理）同样原样保留。
+                skip_defun = short_subr and inst.op_name == "DEFUN"
+                skip_single = short_subr and inst.op_name == "PUSH_VALUE" and inst.size == 1
+                if _needs_symbol_patch(inst.op_name) and not skip_defun and not skip_single:
+                    new_ops = _patch_operands(inst, sm)
+                    bc = _encode_with_opcode(inst.opcode, inst.op_name, new_ops, short_subr=short_subr)
+                else:
+                    bc = fas.bytecode[inst.offset : inst.offset + inst.size]
             patched.extend(bc)
 
+        if file_idx > 0:
+            # 多函数合并：函数间插入 DEFCODE 尾标记 + 分隔符（CAD stub 格式）
+            merged_code.extend(b'\x01\x00\x16')
         merged_code.extend(patched)
 
     # ── Recalculate actual function catalog offsets ──
@@ -268,33 +390,21 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
                 if gfname == fname:
                     global_func_catalog[j] = (gfname, actual_off)
                     break
-        final_offset += len(fas.bytecode)
-
-    # ── Build SymbolTable from global data entries ──
-    symtab = SymbolTable()
-    for item_type, item_val in global_data:
-        if item_type == "SYMBOL":
-            symtab.get_or_add(item_val)
-        elif item_type == "STRING":
-            symtab.add_string(item_val)
-        elif item_type in ("INT8", "INT32", "INT"):
-            symtab.add_int(int(item_val))
-        elif item_type == "REAL":
-            symtab.add_real(float(item_val))
-
-    # ── Build func_offsets from global catalog ──
-    func_offsets: Dict[str, int] = {}
-    for fname, foff in global_func_catalog:
-        func_offsets[fname] = foff
-        symtab.add_func_ref(fname, foff)
+        final_offset += len(fas.bytecode) + (3 if file_idx < len(parsed) - 1 else 0)
 
     # ── Write output ──
     seg0 = bytes(merged_code)
+    func_offsets = {fname: foff for fname, foff in global_func_catalog}
+    for fname, foff in func_offsets.items():
+        symtab.add_func_ref(fname, foff)
     module_code = build_module_code(len(func_offsets))
     resource = ResourceBuilder(symtab)
-    seg1 = resource.build(func_offsets, module_code=module_code)
+    nsyms = len(symtab.entries) - len(func_offsets) + 1
+    seg0_payload = f'{nsyms} $'.encode() + seg0
+    seg1 = resource.build(func_offsets, module_code=module_code,
+                          seg0_payload_len=len(seg0_payload), stub_format=True)
     writer = FasWriter(symtab)
-    writer.write(output_path, seg0, seg1, sec2_items=count_resource_records(seg1))
+    writer.write(output_path, seg0, seg1, sec2_items=count_resource_records(seg1), nsyms=nsyms)
 
     if verbose:
         total = os.path.getsize(output_path)

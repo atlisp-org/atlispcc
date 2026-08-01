@@ -302,7 +302,30 @@ for i in 0..len(data)-1:
   cond、局部变量、嵌套 if）
 - 参数绑定槽用 `nsyms-1-i`（CAD 执行正确；t07 等参数槽与 CAD 的
   `gvar 槽-1` 不完全逐字节一致，但功能等价）
-- 代码测试 158/161（3 个多函数反编译测试待适配）
+- 代码测试 161/161（含链接器多函数 gvar-1 适配）
+
+## 链接器多函数适配（本轮）
+
+- **stub 判定**：`_extract_functions`/patch 改用 `_fas_is_stub`
+  （is_compact_stub + DEFCODE/argc 检测），避免跨函数调用文件误判
+- **索引重映射**：stub_sym_map 还原 file 符号 → 合并 gvar 槽-1
+  （symbol_slots 含 STRING；fg 外符号用 symtab.entries 槽）
+- **函数分隔符**：多文件合并时函数间插入 `01 00 16`（DEFCODE 尾 + 分隔符）
+- **参数槽平移**：参数绑定/读取 PUSH_G/PUSH_VALUE 按 `nsyms-1-i` 平移
+  `(merged_nsyms - file_nsyms)`
+- **跨文件引用重复槽**：被其他文件调用的函数名 `add_force`
+  加重复槽（进入 GVARINIT），使模块代码可引用、CAD 加载后函数已定义
+- 链接输出通过 161/161 测试；CAD 执行验证：square 可用，sum-squares 待 CAD 恢复后复核
+
+## 反编译修复（本轮）
+
+- **USUBR/参数/符号索引用 gvar 表**：stub 反编译 `_gvar_item` 用
+  `build_mvar_tables` 的 gvar 槽 `idx+1`（编译端索引 = gvar 槽-1），
+  目录（CONS）排除，fallback 到 symbol_slots
+- `_call_name`/`_extract_signature` 参数绑定用 gvar 表恢复参数名
+- `_patch_usubr_idx` 对多函数统一修正 PUSH_VALUE/PUSH_G/SETQ_G/USUBR
+  为 gvar 槽-1（单函数保持 nsyms-1-i，避免破坏递归重复槽）
+- test_complex_lsp（O0-O3 复杂多函数）往返通过
 
 ---
 

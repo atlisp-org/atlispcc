@@ -77,11 +77,13 @@ def _collect_builtins_for_stub(symtab, node):
             _collect_builtins_for_stub(symtab, expr)
 
 
-def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int) -> bytes:
-    """修正 stub 字节码的 USUBR 索引为 CAD 的 gvar 槽 - 1。
+def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None) -> bytes:
+    """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
-    CAD 实测逆向：USUBR 调用符号的 gvar 槽 = idx + 1（idx = gvar 槽 - 1）。
-    codegen 用 entries 索引生成，此处用资源段 GVARINIT 重建的 gvar 表修正。
+    CAD 实测逆向：
+    - USUBR 调用符号的 gvar 槽 = idx + 1（idx = gvar 槽 - 1）
+    - 参数绑定/读取槽 = 参数符号的 gvar 槽 - 1（越界符号 gvar 槽假定 = nsyms）
+    codegen 用占位生成，此处用资源段 GVARINIT 重建的 gvar 表修正。
     """
     try:
         from fas_core import build_mvar_tables
@@ -90,7 +92,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int) -> bytes:
         return seg0
     gvar_map: dict = {}
     for idx, v in enumerate(fg):
-        if isinstance(v, tuple) and len(v) == 2 and v[0] == "SYMBOL":
+        if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
             gvar_map.setdefault(str(v[1]), idx)
     if not gvar_map:
         return seg0
@@ -100,13 +102,53 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int) -> bytes:
     except Exception:
         return seg0
 
+    def gvar_slot(name: str) -> int:
+        return gvar_map.get(name, nsyms)
+
+    def sym_of(idx: int):
+        if 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] in ("SYMBOL", "STRING"):
+            return str(symtab.entries[idx][1])
+        return None
+
     out = bytearray()
+    multi = bool(func_args) and len(func_args) > 1
+    func_iter = iter(func_args or [])
+    cur_args = None
+    arg_i = 0
     for inst in insts:
-        if inst.op_name == "USUBR" and len(inst.operands) >= 2:
+        if inst.op_name == "DEFUN":
+            cur_args = next(func_iter, None) if func_args else None
+            arg_i = 0
+        # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
+        if multi and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
+            arg = cur_args[arg_i]
+            new_idx = gvar_slot(arg) - 1
+            if 0 <= new_idx <= 0xFFFF:
+                out += bytes([0x09, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                arg_i += 1
+                continue
+        # 参数读取 PUSH_VALUE（槽 = nsyms-1-i，仅多函数）
+        elif multi and inst.op_name == "PUSH_VALUE" and cur_args is not None and inst.operands:
+            idx = inst.operands[0]
+            i = nsyms - 1 - idx
+            if 0 <= i < len(cur_args):
+                arg = cur_args[i]
+                new_idx = gvar_slot(arg) - 1
+                if 0 <= new_idx <= 0xFFFF:
+                    out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                    continue
+        # 其余符号引用（仅多函数）：统一用 gvar 槽 - 1
+        if multi and inst.op_name in ("PUSH_VALUE", "PUSH_G", "SETQ_G") and inst.operands:
+            sym = sym_of(inst.operands[0])
+            if sym and sym in gvar_map:
+                new_idx = gvar_map[sym] - 1
+                if 0 <= new_idx <= 0xFFFF:
+                    opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
+                    out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                    continue
+        elif inst.op_name == "USUBR" and len(inst.operands) >= 2:
             argc, idx = inst.operands[0], inst.operands[1]
-            sym = None
-            if 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
-                sym = str(symtab.entries[idx][1])
+            sym = sym_of(idx)
             if sym and sym in gvar_map:
                 new_idx = gvar_map[sym] - 1
                 out += bytes([0x35, argc & 0xFF, new_idx & 0xFF])
@@ -212,8 +254,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     seg1 = resource.build(func_offsets, module_code=module_code, seg0_payload_len=len(seg0_payload), stub_format=True)
     sec2_items = count_resource_records(seg1)
 
-    # 修正 USUBR 索引：CAD 用 `gvar 槽 - 1`（gvar 表由资源段 GVARINIT 建立）。
-    seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms)
+    # 修正 USUBR/参数槽索引：CAD 用 `gvar 槽 - 1`（gvar 表由资源段 GVARINIT 建立）。
+    seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, [f.args for f in defun_forms])
 
     output = output or source.replace('.lsp', '.fas')
     writer = FasWriter(symtab)

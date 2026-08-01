@@ -942,6 +942,13 @@ class LispGenerator:
         self._build_function_catalog()
         self.symbol_slots = self.fas.symbol_slots or self._build_symbol_slots()
         self.is_stub_format = self._detect_stub_format()
+        self.gvar_table: List[Any] = []
+        if self.is_stub_format:
+            try:
+                from fas_core import build_mvar_tables
+                _, self.gvar_table = build_mvar_tables(self.fas.sec2_data, self.fas.nsyms)
+            except Exception:
+                self.gvar_table = []
         if self.is_stub_format:
             self._collect_stub_defcode_names()
 
@@ -975,23 +982,23 @@ class LispGenerator:
         return False
 
     def _defun_headers_are_argc(self) -> bool:
-        try:
-            from fas4_decompiler import Disassembler
-            insts = Disassembler(short_subr=True).disassemble(self.fas.bytecode, 0)
-        except Exception:
-            return False
-        argc_count = 0
-        gvar_count = 0
-        for inst in insts:
-            if inst.op_name == "DEFUN" and len(inst.operands) >= 4:
-                a, b_, c, d = inst.operands[0], inst.operands[1], inst.operands[2], inst.operands[3]
-                if a == b_ == c and d == 0:
-                    argc_count += 1
-                else:
-                    gvar_count += 1
-        if argc_count == 0:
-            return False
-        return gvar_count == 0 or gvar_count < argc_count
+        bc = self.fas.bytecode
+        offsets = sorted(k for k in self.function_names_by_offset.keys() if isinstance(k, int))
+        if offsets:
+            # 用 DEFCODE 记录的真实函数偏移检查 DEFUN 头（避免操作数中的 0x14 误判）
+            for off in offsets:
+                if off + 5 > len(bc) or bc[off] != 0x14:
+                    return False
+                a, b_, c, d = bc[off + 1], bc[off + 2], bc[off + 3], bc[off + 4]
+                if not (a == b_ == c and d == 0):
+                    return False
+            return True
+        # 无目录：扫描首个 0x14（真 DEFUN 在字节码前部）
+        for i in range(len(bc) - 4):
+            if bc[i] == 0x14:
+                a, b_, c, d = bc[i + 1], bc[i + 2], bc[i + 3], bc[i + 4]
+                return a == b_ == c and d == 0
+        return False
     def _has_stub_defcode_seq(self) -> bool:
         d = getattr(self.fas, "sec2_data", b"") or b""
         i = 0
@@ -2110,7 +2117,7 @@ class LispGenerator:
                 if symbol_list:
                     local_binding_names.extend(symbol_list)
                     continue
-                raw_name = self._gvar_symbol(left[1]) or f"arg_{len(args) + 1}"
+                raw_name = self._gvar_symbol_gvar(left[1]) or f"arg_{len(args) + 1}"
                 args.append((right[1], raw_name))
                 arg_symbol_indices.append(left[1])
 
@@ -2188,6 +2195,12 @@ class LispGenerator:
 
     def _gvar_item(self, idx: int) -> Any:
         if self.is_stub_format:
+            # 编译端符号索引 = gvar 槽 - 1，故 gvar 槽 = idx + 1。
+            j = idx + 1
+            if 0 <= j < len(self.gvar_table):
+                v = self.gvar_table[j]
+                if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
+                    return v
             if 0 <= idx < len(self.symbol_slots):
                 return self.symbol_slots[idx]
             return None
@@ -2215,6 +2228,14 @@ class LispGenerator:
     def _gvar_symbol(self, idx: int) -> Optional[str]:
         value = self._gvar_item(idx)
         return self._extract_symbol_text(value)
+
+    def _gvar_symbol_gvar(self, idx: int) -> Optional[str]:
+        """stub 格式 USUBR 索引 = gvar 槽 - 1，调用名取自 gvar 表 idx+1。"""
+        if self.is_stub_format:
+            j = idx + 1
+            if 0 <= j < len(self.gvar_table):
+                return self._extract_symbol_text(self.gvar_table[j])
+        return self._gvar_symbol(idx)
 
     def _code_gvar_symbol(self, idx: int) -> Optional[str]:
         value = self._code_gvar_item(idx)
@@ -2253,8 +2274,8 @@ class LispGenerator:
     def _call_name(
         self, idx: int, argc: int = 0, spec: Optional[Dict[str, Any]] = None, args: Optional[List[str]] = None
     ) -> str:
-        raw_name = self._gvar_symbol(idx)
-        biased_name = self._code_gvar_symbol(idx)
+        raw_name = self._gvar_symbol_gvar(idx)
+        biased_name = self._gvar_symbol_gvar(idx)
         if argc == 1 and (
             (raw_name and raw_name.upper() == "POLAR") or (biased_name and biased_name.upper() == "POLAR")
         ):
