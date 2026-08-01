@@ -140,8 +140,12 @@ f.optional`）打印警告（非阻断），提示建议 `(defun f (x &rest r))`
 cmd 的 `derive_symbol_names` 顺序不同**（cmd：`[函数名, +内建, sq引用, 参数, *内建, 参数]`，
 link：square 因 `add_force` 在槽 2），导致 `build_module_code` 的
 `PUSH_G[3]`（cmd 布局=第一个函数 sq）在 link 输出指向非函数符号
-（`*`），CAD 绑定错→调用卡死。**待 CAD 实测**（patch USUBR/符号槽）
-确认后修复（link 符号顺序复刻 cmd，或模块代码按 link 布局参数化）。
+（`*`），CAD 绑定错→调用卡死。**已修复**：链接器符号顺序复刻 cmd 的 `derive_symbol_names`——
+函数名按源码逆序（文件逆序 + 文件内 DEFCODE）、跳过全重复文件、
+跨函数引用 `add_force` 去重、按文件 slots 顺序合并（去头尾模块槽）。
+验证：`fd_new == fd_cmd`（cmd 等价）**字节级一致**（bytecode + sec2）；
+`lk_comb` 与 `multi2`（cmd 跨调用，CAD 已验证全注册）sec2/USUBR **完全对齐**；
+166/166 测试通过。CAD 实测受 3.7 环境不稳定干扰，恢复后复核。
 
 **技术路线**：
 - 用 CAD 实测链接输出的模块代码/函数注册，对比单文件多函数（cmd）

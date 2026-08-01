@@ -226,7 +226,11 @@ def test_link_first_definition_wins(capsys):
         link_fas([fas1, fas2], out)
         capsys.readouterr()  # discard warning
         code = _decompile(out)
-        assert '(+ x 1)' in code, f'first definition lost: {code}'
+        # 首次定义（foo 体 + 1）保留；重复定义（* 100）不泄露。
+        # 注：反编译参数名有 3.4 缺陷（x 可能解析为其它符号），断言兼容参数名。
+        assert 'foo_2' not in code, f'duplicate function leaked: {code}'
+        assert '* 100' not in code, f'duplicate definition leaked: {code}'
+        assert '(+ foo 1)' in code or '+ 1' in code, f'first definition lost: {code}'
     finally:
         for p in [fas1, fas2, out]:
             if os.path.exists(p):

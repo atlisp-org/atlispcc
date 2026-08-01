@@ -239,7 +239,9 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
     owners: Dict[str, int] = {}
     global_func_catalog: List[Tuple[str, int]] = []
     for file_idx, fas in enumerate(parsed):
-        for fname, foff in _extract_functions(fas):
+        # _extract_functions 返回 DEFCODE 逆序，反转恢复源码定义顺序
+        # （模块代码/DEFUN 头槽依赖源码顺序）
+        for fname, foff in reversed(_extract_functions(fas)):
             if fname in seen_funcs:
                 _warn(
                     f'function name collision: "{fname}" defined in multiple files; '
@@ -254,32 +256,58 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
         print(f"  Merged: {len(global_data)} data entries, " f"{len(global_func_catalog)} functions")
 
     # ── Build SymbolTable from global data entries ──
-    # ResourceBuilder 假定 entries 前部为函数名（模块注册，skip_first 跳过），
-    # 故先注册函数名，再注册其余符号/字符串。
-    # 跨文件被调用的函数名须额外加重复槽（进入函数注册/GVARINIT），
-    # 否则模块代码 PUSH_G 无法引用、CAD 加载后函数未定义。
+    # 符号顺序复刻 cmd 编译器（derive_symbol_names）：函数名逆序 +
+    # 函数逆序收集函数体符号（跨函数引用用重复槽）。这是 CAD 兼容关键——
+    # build_module_code 的 PUSH_G idx 依赖该布局（跨调用函数须在
+    # 共享内建之后的固定槽，否则 CAD 加载后绑定错/调用卡死）。
     symtab = SymbolTable()
-    _func_names = {fname for fname, _ in global_func_catalog}
-    for fname, _ in global_func_catalog:
-        symtab.get_or_add(fname)
-    _cross_refs: Set[str] = set()
-    for file_idx, fas in enumerate(parsed):
-        own = {f for f, _ in _extract_functions(fas)}
-        for s in fas.symbol_slots:
-            if _is_data_item(s) and s[0] == "SYMBOL":
-                nm = str(s[1])
-                if nm in _func_names and nm not in own:
-                    _cross_refs.add(nm)
-    for nm in _cross_refs:
-        symtab.add_force(nm)
-    for item_type, item_val in global_data:
-        if item_type == "SYMBOL" and str(item_val) in _func_names:
+    _fidx = {id(fas): idx for idx, fas in enumerate(parsed)}
+    _func_order: List[str] = []
+    # 函数名按源码逆序：文件逆序 + 文件内 DEFCODE 顺序（_extract_functions = 逆序）
+    for fas in reversed(parsed):
+        for fname, _ in _extract_functions(fas):
+            if owners.get(fname) != _fidx[id(fas)]:
+                continue  # 重复定义：仅首次定义参与
+            _func_order.append(fname)
+            symtab.get_or_add(fname)
+    _func_names = set(_func_order)
+
+    def _file_body_slots(fas):
+        """文件符号槽：去掉前部（模块注册函数名）与尾部（模块重复）区域。"""
+        file_funcs = [f for f, _ in _extract_functions(fas)]
+        slots = fas.symbol_slots
+        start = len(file_funcs)
+        end = len(slots) - len(file_funcs)
+        if end < start:
+            end = len(slots)
+        for s in slots[start:end]:
+            if _is_data_item(s):
+                yield s[0], s[1]
+
+    def _skip_dup_file(fas) -> bool:
+        _file_funcs = [f for f, _ in _extract_functions(fas)]
+        return bool(_file_funcs) and all(owners.get(f) != _fidx[id(fas)] for f in _file_funcs)
+
+    # 函数体符号：按文件 slots 顺序（slots 已是 cmd derive_symbol_names 顺序），
+    # 文件逆序合并；跨函数引用用重复槽（add_force 去重）。
+    _forced: Set[str] = set()
+    for fas in reversed(parsed):
+        if _skip_dup_file(fas):
             continue
-        if item_type == "SYMBOL":
-            symtab.get_or_add(item_val)
-        elif item_type == "STRING":
-            symtab.add_string(item_val)
-        elif item_type in ("INT8", "INT32", "INT"):
+        for it_type, it_val in _file_body_slots(fas):
+            if it_type == "SYMBOL":
+                nm = str(it_val)
+                if nm in _func_names and nm not in _forced:
+                    symtab.add_force(nm)
+                    _forced.add(nm)
+                elif nm not in _func_names and nm not in symtab.name_to_idx:
+                    symtab.get_or_add(nm)
+            elif it_type == "STRING":
+                if str(it_val) not in symtab.name_to_idx:
+                    symtab.add_string(it_val)
+    # INT/REAL 常量（symbol_slots 不含）按 global_data 补充
+    for item_type, item_val in global_data:
+        if item_type in ("INT8", "INT32", "INT"):
             symtab.add_int(int(item_val))
         elif item_type == "REAL":
             symtab.add_real(float(item_val))
@@ -308,13 +336,29 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
     merged_nsyms = len(symtab.entries) - len(global_func_catalog) + 1
 
     for file_idx, fas in enumerate(parsed):
+        # 全重复文件（所有函数均非首次定义）跳过：字节码不合并，
+        # 避免「3 个字节码函数 + 2 个目录」不一致导致 CAD 加载错。
+        _file_funcs = [f for f, _ in _extract_functions(fas)]
+        if _file_funcs and all(owners.get(f) != file_idx for f in _file_funcs):
+            continue
         short_subr = _fas_is_stub(fas)
         if short_subr:
-            # stub 字节码索引 = gvar 槽-1：还原为 file 符号，再映射到合并 gvar 槽-1。
+            # stub 字节码索引 = gvar 槽-1：按 file fg（gvar 表）还原符号，
+            # 再映射到合并 gvar 槽-1。
             sym_by_idx = {}
+            try:
+                from fas_core import build_mvar_tables as _bmt
+                _, _ffg = _bmt(fas.sec2_data, fas.nsyms)
+            except Exception:
+                _ffg = []
+            # fg（gvar 槽-1）优先：USUBR/符号引用按 CAD gvar 槽-1 编址
+            for _i, _v in enumerate(_ffg):
+                if isinstance(_v, tuple) and len(_v) == 2 and _v[0] in ("SYMBOL", "STRING"):
+                    sym_by_idx[_i - 1] = str(_v[1])
+            # slots 索引补充：单函数 PUSH_G（entries/symbol_slots 索引）与字符串
             for i, s in enumerate(fas.symbol_slots):
                 if _is_data_item(s) and s[0] in ("SYMBOL", "STRING"):
-                    sym_by_idx[i] = str(s[1])
+                    sym_by_idx.setdefault(i, str(s[1]))
             sm = {}
             for i, sym in sym_by_idx.items():
                 if sym in _pre_gvar:
@@ -390,6 +434,9 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
     # 只更新「首次定义」文件的函数偏移，重复定义不覆盖（避免指向错误副本）。
     final_offset = 0
     for file_idx, fas in enumerate(parsed):
+        _file_funcs = [f for f, _ in _extract_functions(fas)]
+        if _file_funcs and all(owners.get(f) != file_idx for f in _file_funcs):
+            continue  # 全重复文件已跳过合并
         for i, (fname, foff) in enumerate(_extract_functions(fas)):
             if owners.get(fname) != file_idx:
                 continue
