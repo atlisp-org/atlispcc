@@ -205,6 +205,15 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
 
     symtab = SymbolTable(package_table=package_table)
     defun_forms = [f for f in program.forms if isinstance(f, Defun)]
+    # 纯 &rest（min=0）：CAD 实测不收集 rest（b4=01 需至少一个必填参数）
+    for f in defun_forms:
+        if f.rest and not f.args and not f.optional:
+            print(
+                f"Warning: function '{f.name}' uses bare &rest (min args = 0); "
+                f"CAD does not collect rest args for min=0 — consider adding "
+                f"a required param, e.g. (defun {f.name} (x &rest {f.rest}))",
+                file=sys.stderr,
+            )
     from compiler.cad_symbols import derive_symbol_names
     for sym in derive_symbol_names(program):
         if sym.startswith('"') and sym.endswith('"'):
