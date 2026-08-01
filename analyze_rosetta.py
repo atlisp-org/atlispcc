@@ -121,13 +121,13 @@ print("=== Trying XOR decryption on sec2 ===")
 # Compared to sec2 bytes:     3e 67 77 1e 8e 58 8a 03 7c 2d 2b 46 14 15 67 6b ...
 
 known_plain = b'\nCommon Dictionaries:\n'
-for idx, (p, c) in enumerate(zip(known_plain, s2)):
-    xor_key = p ^ c
-    print(f"  pos {idx:3d}: cipher=0x{c:02x} plain=0x{p:02x} ('{chr(p) if 32<=p<127 else '?'}') xor_key=0x{xor_key:02x} ({xor_key})")
+for idx, (pb, cb) in enumerate(zip(known_plain, s2)):
+    xor_key = pb ^ cb
+    print(f"  pos {idx:3d}: cipher=0x{cb:02x} plain=0x{pb:02x} ('{chr(pb) if 32<=pb<127 else '?'}') xor_key=0x{xor_key:02x} ({xor_key})")
 
 # Check if there's a pattern in the XOR keys
 print()
-xor_keys = [p ^ c for p, c in zip(known_plain, s2)]
+xor_keys = [pb ^ cb for pb, cb in zip(known_plain, s2)]
 print(f"XOR keys: {[f'0x{k:02x}' for k in xor_keys]}")
 
 # Check if keys form an arithmetic sequence (LCG)

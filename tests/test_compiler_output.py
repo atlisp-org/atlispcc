@@ -46,6 +46,7 @@ def _compile_to_fas(src: str) -> bytes:
     for name, offset in func_offsets.items():
         symtab.add_func_ref(name, offset)
 
+    all_bc.resolve()
     seg0 = bytes(all_bc.data)
     resource = ResourceBuilder(symtab)
     seg1 = resource.build(func_offsets)
@@ -55,8 +56,8 @@ def _compile_to_fas(src: str) -> bytes:
         writer = FasWriter(symtab)
         writer.write(fas_path, seg0, seg1)
 
-    with open(fas_path, 'rb') as f:
-        data = f.read()
+    with open(fas_path, 'rb') as fh:
+        data = fh.read()
     os.unlink(fas_path)
     return data
 
@@ -198,6 +199,7 @@ def test_magic_roundtrip():
     for name, offset in func_offsets.items():
         symtab.add_func_ref(name, offset)
 
+    all_bc.resolve()
     seg0 = bytes(all_bc.data)
     resource = ResourceBuilder(symtab)
     seg1 = resource.build(func_offsets)
@@ -224,7 +226,7 @@ def test_magic_roundtrip():
         assert not errs, f"Tokenization failed: {errs}"
         forms, errs = parse_tokens(tokens)
         assert not errs, f"Parsing failed: {errs}"
-        errs = validate_ast(forms, result)
+        errs = validate_ast(forms)
         assert not errs, f"Validation failed: {errs}"
     finally:
         os.unlink(fas_path)
@@ -236,3 +238,26 @@ def test_multi_setq():
     data = _compile_to_fas(src)
     assert data.startswith(FAS4_MAGIC)
     assert SEG_TERMINATOR in data
+
+
+def test_exit_emits_exit_opcode():
+    """(exit) compiles to PUSH_T + EXIT_IF_NOT_ZERO (0x3e), not a bogus USUBR call."""
+    data = _compile_to_fas('(defun foo () (exit))')
+    _, bc, _, _ = _parse_fas(data)
+    # PUSH_T (0x02) followed by EXIT_IF_NOT_ZERO (0x3e)
+    assert b'\x02\x3e' in bc, f'Expected PUSH_T; EXIT_IF_NOT_ZERO, got {bc!r}'
+
+
+def test_quit_emits_exit_opcode():
+    """(quit) also compiles to the EXIT mechanism."""
+    data = _compile_to_fas('(defun foo () (quit))')
+    _, bc, _, _ = _parse_fas(data)
+    assert b'\x02\x3e' in bc, f'Expected PUSH_T; EXIT_IF_NOT_ZERO, got {bc!r}'
+
+
+def test_exit_symbol_not_in_bytecode():
+    """exit/quit are builtins and must not appear as USUBR external calls."""
+    data = _compile_to_fas('(defun foo () (exit))')
+    _, bc, seg1, _ = _parse_fas(data)
+    # 0x35 = USUBR opcode; exit must not be encoded as one
+    assert b'\x35' not in bc, f'USUBR emitted for exit: {bc!r}'

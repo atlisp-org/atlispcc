@@ -6,16 +6,19 @@ Fas2Lsp 将兼容 AutoLISP 的 CAD 平台的 FAS4 加密字节码反编译为可
 
 ## atlispcc CLI
 
-统一命令行工具 `atlispcc`（`compiler/cli.py`），支持六个子命令：
+统一命令行工具 `atlispcc`（`compiler/cli.py`），支持七个子命令：
 
 ```
-atlispcc compile [-O {0,1,2}] <input.lsp> [output.fas]
+atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]
 atlispcc decompile <input.fas> [output.lsp]
 atlispcc disasm <input.fas> [output.lasm]
 atlispcc asm <input.lasm> [output.fas]
 atlispcc validate <input.lsp>
 atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]
+atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]
 ```
+
+无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
 
 ### compile — 编译 Lisp → FAS
 
@@ -23,12 +26,14 @@ atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]
 # 基本编译
 atlispcc compile input.lsp output.fas
 
-# 优化级别：0=无（默认），1=基本，2=激进
+# 优化级别：0=无（默认），1=基本，2=激进，3=极致
 atlispcc compile -O2 input.lsp output.fas
+atlispcc compile -O3 --analyze input.lsp output.fas
 ```
 
 -O1 优化：常量折叠、死分支消除、窥孔优化
 -O2 优化：增加常量传播、死赋值消除，并重复执行基础优化
+-O3 优化：增加跨函数常量替换、死代码消除、小函数内联
 
 ### decompile — 反编译 FAS → Lisp
 
@@ -47,7 +52,7 @@ python validate.py output.lsp
 ```
 
 验证器检查：括号平衡、顶层形式为 defun、C: 命令无必需参数、符号名合法性、
-常见结构问题（if 参数不足、setq 参数为奇数、空 progn 等）、无残留调试注释。
+常见结构问题（if 参数不足、setq 参数为奇数、空 progn 等）。
 
 验证通过输出：`[PASS] <文件名>`。失败则列出每条错误。
 
@@ -97,6 +102,18 @@ atlispcc link lib1.fas lib2.fas main.fas -o combined.fas
 ```
 
 至少需要 2 个输入文件。输出默认以最后一个输入为基础命名。
+
+### build-vlx — 构建 VLX 容器
+
+将 FAS 文件打包为 VLX 容器，支持独立命名空间隔离：
+
+```sh
+atlispcc build-vlx app.fas lib.fas -o app.vlx --export main setup
+```
+
+- 自动生成 `_VLX` 元数据条目（含 `vl-doc-export` 调用）
+- 加载 VLX 时 CAD 运行时创建隔离命名空间，仅导出的函数可被外部访问
+- VLX 格式基于逆向工程，标记为实验性
 
 ## 快速开始
 

@@ -15,24 +15,21 @@ Python >= 3.8。当前使用 Python 3.10.11。
 ## 项目结构
 
 ```
-fas4_decompiler.py   主反编译器（2136 行）
-fas_core.py          共享核心模块（690 行）— 加解密、解析、符号表重建
+fas4_decompiler.py   主反编译器（2331 行）
+fas_core.py          共享核心模块（691 行）— 加解密、解析、符号表重建
 validate.py          LSP 语法验证器
 decompile.py         简易包装入口
 
 compiler/
-  cli.py             CLI 入口（atlispcc），子命令：compile/decompile/validate/link
+  cli.py             CLI 入口（atlispcc），子命令：compile/decompile/disasm/asm/validate/link/build-vlx
   parser.py           Lisp 源码解析器 → AST
   symbol_table.py     符号表构建与作用域分析
   codegen.py          字节码生成器（AST → 指令流）
   resource_builder.py 常量/符号/函数索引 → 资源段
   fas_writer.py       指令流 → FAS4 二进制
-  opt.py              优化器（-O）：常量折叠、死分支消除、窥孔优化、常量传播、死赋值消除
+  opt.py              优化器（-O）：常量折叠、死分支消除、窥孔优化、常量传播、死赋值消除、
+                      跨函数常量传播、死代码消除、小函数内联
   ast.py              AST 节点定义
-
-debug/               FAS 调试工具
-
-server/              实验性 LSP 服务器，独立代码路径
 ```
 
 ## 架构管线
@@ -55,6 +52,7 @@ Lisp 源码 → Parser.parse() → AST
 - **O0**：无优化
 - **O1**：常量折叠 + 死分支消除 + 窥孔优化
 - **O2**：O1 + 常量传播 + 死赋值消除 + 重复 O1
+- **O3**：O2 + 跨函数常量传播 + 死代码消除 + 小函数内联
 
 每个优化是可组合的 Pass 类：
 
@@ -65,6 +63,9 @@ Lisp 源码 → Parser.parse() → AST
 | PeepholeOpt | `(progn x)` → `x`, `(list)` → `nil`, `(+ x)` → `x` |
 | ConstantPropagate | `(setq x 3) (+ x 1)` → `(setq x 3) (+ 3 1)` |
 | DeadAssignElim | 移除未使用的 `(setq x ...)` |
+| CrossFuncConstPropagate | 常量返回的 0 参函数替换为常量 |
+| DeadCodeElim | 删除 `exit`/`quit` 后的死代码 |
+| InlineSmallFuncs | 内联单次调用的小函数 |
 
 ### 反编译器管线（decompile）
 

@@ -4,6 +4,11 @@
 
 FAS4 字节码由一系列操作码（opcode，单字节）及其可变长度操作数组成。反编译器逐字节读取，将每个指令映射为 `Instruction` 对象。
 
+存在**两种字节码布局**，操作码编码差异见 [紧凑 stub 格式](#紧凑-stub-格式-cad)：
+
+- **自包含格式**（本项目 `stub_format=False` 生成，与 `bib.fas`/`PDI.fas` 一致）：seg0 含完整函数体 + `END_DEFUN`，函数目录来自 mvar 表重建；调用用 5 字节 `USUBR`/6 字节 `FUNC`。
+- **紧凑 stub 格式**（CAD 编译器输出，本项目 `stub_format=True` 生成）：seg0 无 `END_DEFUN`，符号按资源注册顺序（`symbol_slots`）直接编址；调用用 3 字节 `USUBR`/`FUNC`，`DEFUN` 头为 argc 编码。
+
 操作数格式代码：
 
 | 格式 | 长度 | 说明 |
@@ -87,7 +92,7 @@ USUBR/FUNC 的操作数字段：
 |----------|------|--------|------|--------|
 | 0x57 | JUMP | 's4' | 无条件跳转 | `jump_to(offset)` |
 | 0x69 | JUMP32 | 's4' | 无条件跳转（长距离） | `jump_to(offset)` |
-| 0x67 | BR_IF_TRUE | 's4' | 条件真跳转 | `if pop(): jump_to(offset)` |
+| 0x67 | BR_IF_TRUE | 's4' | 条件跳转。**注意**：CAD 紧凑 stub 格式中实际语义为"栈顶为假则跳转"（等效 IFNOT）；自包含格式为真跳转 | stub: `if not pop(): jump_to(offset)` |
 | 0x0d | JMP16_IFNOT | '2' | 条件假跳转（短） | `if not pop(): jump_to(offset)` |
 | 0x0e | JMP16_IF | '2' | 条件真跳转（短） | `if pop(): jump_to(offset)` |
 | 0x3c | JMP16_IFNOT_2 | '2' | 同 JMP16_IFNOT（备用） | `if not pop(): jump_to(offset)` |
@@ -172,3 +177,79 @@ loop_cond: → (JMP16_IFNOT exit) → body → (JUMP loop_cond) → exit
 ```
 (GET_LOCAL slot) → (CAR) → (SETQ_G item) → (GET_LOCAL slot) → (CDR) → (SET_LOCAL slot)
 ```
+
+---
+
+## 紧凑 stub 格式（CAD）
+
+AutoCAD 编译器输出（本项目 `stub_format=True`）的字节码编码差异。符号不通过 `function_gvars` 间接寻址，而是直接按**符号槽索引**（seg1 资源注册顺序）编址。
+
+### DEFUN 头
+
+自包含格式为 `14 <gvar_ref:2> <offset:2>`（`encode_defun`）；stub 格式为 **argc 编码**，与 CAD 逐字节一致：
+
+```
+14 <argc> <argc> <argc> 00
+```
+
+argc = 函数参数个数。例如 `(defun f2 (a b) ...)` → `14 02 02 02 00`。
+
+### 参数绑定
+
+```
+PUSH_G <槽:2>         # 每个参数：把符号槽字面量压栈
+GET_LOCAL <n:2>       # 槽位 n = 参数序号
+...
+INIT_ARGS <2*argc+1:2>  # 参数初始化计数 = 2*argc + 1
+```
+
+`GET_LOCAL` 用 3 字节形式 `5c <slot:2>`（`GET_LOCAL_16`），而非自包含格式的 `05 <slot:1>`。
+
+### 符号读取
+
+所有符号读取统一用 `PUSH_VALUE <槽:2>`（`03 <u16>`），从符号槽取字面量/值：
+- 全局变量、参数、函数名引用均通过符号槽索引
+- 字符串字面量用 `PUSH_G <槽:2>`（`09 <u16>`）
+
+### 调用（USUBR / FUNC）
+
+自包含格式为 5/6 字节长形式；stub 格式为 **3 字节短形式**：
+
+```
+35 <argc:1> <槽:1>     # USUBR（用户函数/内建）— encode_usubr3
+51 <argc:1> <槽:1>     # FUNC（系统子程序）— encode_func3
+```
+
+每次调用后追加结果清理序列 `NIL PUSH_VALUE`（`00 03`），保持栈状态与 CAD 一致。
+
+### setq
+
+`setq` 对符号变量统一用 `SETQ_G <槽:2>`（`06 <u16>`），不使用局部变量槽指令（stub 中无 `SET_LOCAL`）。
+
+### 控制流
+
+- `if` 布局：`cond → BR_IF_TRUE <else> → then → JUMP <end> → else`。
+  **BR_IF_TRUE 语义为假跳转**（栈顶为假则跳转到 else），配合 `JUMP` 实现分支。
+- 递归/跨函数调用**禁用尾递归循环优化**（不用 `JUMP` 回跳），改用 `USUBR` 递归调用自身；
+  递归引用使用符号槽中的**重复槽**（同一函数名在符号槽中出现多次）。
+- 函数末尾：有参函数以 `CLEAR_ARGS`（`19`）结尾；无参函数无清理。调用序列已含 `00 03`。
+
+### 示例
+
+`(defun f2 (a b) (+ a b))` 的 stub 字节码（与 CAD 逐字节一致）：
+
+```
+14 02 02 02 00   DEFUN argc=2
+09 03 00         PUSH_G 槽3 (a)
+5c 00 00         GET_LOCAL 0
+09 02 00         PUSH_G 槽2 (b)
+5c 01 00         GET_LOCAL 1
+18 05 00         INIT_ARGS 5
+03 03 00         PUSH_VALUE 槽3 (a)
+03 02 00         PUSH_VALUE 槽2 (b)
+35 02 01         USUBR argc=2 槽1 (+)
+00 03            NIL + PUSH_VALUE（调用后清理）
+19               CLEAR_ARGS
+```
+
+符号槽：`['f2', '+', 'b', 'a', 'f2']` → `+`=槽1，`b`=槽2，`a`=槽3。

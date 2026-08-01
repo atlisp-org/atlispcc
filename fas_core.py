@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+
 """
 FAS4 核心模块 — 统一解析、解密、符号表重建。
 
@@ -9,13 +10,14 @@ FAS4 核心模块 — 统一解析、解密、符号表重建。
 import struct
 import re
 import os
+from typing import Any, List, Tuple
 
 # ─── 常量 ──────────────────────────────────────────────────────────────────────
 
-FAS4_MAGIC = b'\r\n FAS4-FILE ; Do not change it!\r\n'
-CRUNCH_MARKER = b'\n;fas4 crunch\n;'
+FAS4_MAGIC = b"\r\n FAS4-FILE ; Do not change it!\r\n"
+CRUNCH_MARKER = b"\n;fas4 crunch\n;"
 FUNC_DEF_OPCODE = bytes([0x14, 0x01, 0x01, 0x01, 0x00])
-SEG_TERMINATOR = b'\x16\x24\r\n'
+SEG_TERMINATOR = b"\x16\x24\r\n"
 
 # ─── 加解密 ────────────────────────────────────────────────────────────────────
 
@@ -77,72 +79,72 @@ def parse_fas4(filepath: str, decrypt_seg1: bool = True) -> dict:
      - res_items: int           seg1 中变量/条目数
      - trailer: str             crunch 尾部
     """
-    with open(filepath, 'rb') as f:
+    with open(filepath, "rb") as f:
         data = f.read()
 
     hpos = data.find(FAS4_MAGIC)
     if hpos < 0:
-        raise ValueError('Not a valid FAS4 file')
+        raise ValueError("Not a valid FAS4 file")
 
     after = hpos + len(FAS4_MAGIC)
-    size_end = data.find(b'\r\n', after)
+    size_end = data.find(b"\r\n", after)
     total_size = int(data[after:size_end])
     payload_start = size_end + 2
-    payload = data[payload_start:payload_start + total_size]
+    payload = data[payload_start : payload_start + total_size]
 
-    m = re.match(rb'(\d+) \$', payload)
+    m = re.match(rb"(\d+) \$", payload)
     if not m:
-        raise ValueError('Cannot find nsyms header')
+        raise ValueError("Cannot find nsyms header")
     nsyms = int(m.group(1))
-    bytecode = payload[m.end():]
+    bytecode = payload[m.end() :]
 
     after_payload = payload_start + total_size
     rest = data[after_payload:]
 
     key = find_key(data)
-    trailer = ''
-    crunch_m = re.search(rb';fas4 crunch\n;\$;A([\d/]+)', data)
+    trailer = ""
+    crunch_m = re.search(rb";fas4 crunch\n;\$;A([\d/]+)", data)
     if crunch_m:
-        trailer = crunch_m.group(0).decode('ascii', errors='replace')
+        trailer = crunch_m.group(0).decode("ascii", errors="replace")
 
-    m2 = re.search(rb'(\d+) (\d+) \$', rest)
-    res_data_encrypted = b''
+    m2 = re.search(rb"(\d+) (\d+) \$", rest)
+    res_data_encrypted = b""
     res_items = 0
     if m2:
         res_size = int(m2.group(1))
         res_items = int(m2.group(2))
         res_start = after_payload + m2.end()
-        res_data_encrypted = data[res_start:res_start + res_size]
+        res_data_encrypted = data[res_start : res_start + res_size]
 
-    res_data_decrypted = b''
+    res_data_decrypted = b""
     if key and decrypt_seg1 and res_data_encrypted:
         res_data_decrypted = decrypt_stream(res_data_encrypted, key)
 
     segments = [
         {
-            'index': 0,
-            'data': bytecode,
-            'total_len': total_size - (m.end() - m.start()),
-            'sub_count': nsyms,
+            "index": 0,
+            "data": bytecode,
+            "total_len": total_size - (m.end() - m.start()),
+            "sub_count": nsyms,
         },
         {
-            'index': 1,
-            'data_encrypted': res_data_encrypted,
-            'data_decrypted': res_data_decrypted,
-            'total_len': len(res_data_encrypted),
-            'sub_count': res_items,
+            "index": 1,
+            "data_encrypted": res_data_encrypted,
+            "data_decrypted": res_data_decrypted,
+            "total_len": len(res_data_encrypted),
+            "sub_count": res_items,
         },
     ]
 
     return {
-        'nsyms': nsyms,
-        'bytecode': bytecode,
-        'segments': segments,
-        'key': key,
-        'res_data_encrypted': res_data_encrypted,
-        'res_data_decrypted': res_data_decrypted,
-        'res_items': res_items,
-        'trailer': trailer,
+        "nsyms": nsyms,
+        "bytecode": bytecode,
+        "segments": segments,
+        "key": key,
+        "res_data_encrypted": res_data_encrypted,
+        "res_data_decrypted": res_data_decrypted,
+        "res_items": res_items,
+        "trailer": trailer,
     }
 
 
@@ -157,17 +159,17 @@ def parse_resource_stream(res_data: bytes) -> tuple:
     strings:        [str, ...]  字符串字面量列表（按出现顺序）
     """
     pos = 0
-    items = []
+    items: List[Tuple[Any, ...]] = []
     symbols = []
     strings = []
 
     def decode_text(raw: bytes) -> str:
-        for enc in ('ascii', 'utf-8', 'cp1252', 'latin-1'):
+        for enc in ("ascii", "utf-8", "cp1252", "latin-1"):
             try:
                 return raw.decode(enc)
             except UnicodeDecodeError:
                 continue
-        return raw.decode('latin-1', errors='replace')
+        return raw.decode("latin-1", errors="replace")
 
     while pos < len(res_data):
         op = res_data[pos]
@@ -175,27 +177,27 @@ def parse_resource_stream(res_data: bytes) -> tuple:
 
         if op in (0x14, 0x15):  # defun 头
             pos += 2
-        elif op == 0x55:          # 字符串块
+        elif op == 0x55:  # 字符串块
             pos += 1
             if pos + 2 > len(res_data):
                 break
-            num_strings = struct.unpack('<H', res_data[pos:pos + 2])[0]
+            num_strings = struct.unpack("<H", res_data[pos : pos + 2])[0]
             pos += 2
             for _ in range(num_strings):
                 if pos + 2 > len(res_data):
                     break
-                slen = struct.unpack('<H', res_data[pos:pos + 2])[0]
+                slen = struct.unpack("<H", res_data[pos : pos + 2])[0]
                 pos += 2
                 if pos + slen > len(res_data):
                     break
-                s = decode_text(res_data[pos:pos + slen])
+                s = decode_text(res_data[pos : pos + slen])
                 pos += slen
-                items.append(('STRING', s))
+                items.append(("STRING", s))
                 strings.append(s)
-        elif op in (0x56, 0x5B):   # 符号块
+        elif op in (0x56, 0x5B):  # 符号块
             pos += 1
             while pos < len(res_data):
-                end = res_data.find(b'\x00', pos)
+                end = res_data.find(b"\x00", pos)
                 if end < 0:
                     break
                 sym = res_data[pos:end]
@@ -203,95 +205,96 @@ def parse_resource_stream(res_data: bytes) -> tuple:
                 if not sym:
                     break
                 name = decode_text(sym)
-                items.append(('SYMBOL', name))
+                items.append(("SYMBOL", name))
                 symbols.append(name)
-        elif op == 0x43:            # GVar init
+        elif op == 0x43:  # GVar init
             pos += 1
         elif op in (0x34, 0x35, 0x51):
             pos += 1
             if pos >= len(res_data):
                 break
-            argc = res_data[pos]; pos += 1
+            argc = res_data[pos]
+            pos += 1
             if op in (0x35, 0x51) and pos + 2 <= len(res_data):
-                idx = struct.unpack('<H', res_data[pos:pos + 2])[0]
+                idx = struct.unpack("<H", res_data[pos : pos + 2])[0]
                 pos += 2
-                items.append(('FUNC_REF', idx, argc))
+                items.append(("FUNC_REF", idx, argc))
             if pos < len(res_data):
                 pos += 1
-        elif op == 0x32:            # PUSH_INT8
+        elif op == 0x32:  # PUSH_INT8
             pos += 1
             if pos < len(res_data):
                 val = res_data[pos]
                 if val > 127:
                     val -= 256
                 pos += 1
-                items.append(('INT8', val))
-        elif op == 0x33:            # PUSH_INT32
+                items.append(("INT8", val))
+        elif op == 0x33:  # PUSH_INT32
             pos += 1
             if pos + 4 <= len(res_data):
-                val = struct.unpack('<i', res_data[pos:pos + 4])[0]
+                val = struct.unpack("<i", res_data[pos : pos + 4])[0]
                 pos += 4
-                items.append(('INT32', val))
-        elif op == 0x3B:            # PUSH_REAL
+                items.append(("INT32", val))
+        elif op == 0x3B:  # PUSH_REAL
             pos += 1
-            end = res_data.find(b'\x00', pos)
+            end = res_data.find(b"\x00", pos)
             if end >= 0:
-                items.append(('REAL', decode_text(res_data[pos:end])))
+                items.append(("REAL", decode_text(res_data[pos:end])))
                 pos = end + 1
             else:
                 break
-        elif op == 0x3A:            # DEFCODE (FUNC)
+        elif op == 0x3A:  # DEFCODE (FUNC)
             pos += 1
-        elif op in (0x09, 0x03):    # GVAR_PUSH
+        elif op in (0x09, 0x03):  # GVAR_PUSH
             pos += 1
             if pos + 2 <= len(res_data):
-                idx = struct.unpack('<H', res_data[pos:pos + 2])[0]
+                idx = struct.unpack("<H", res_data[pos : pos + 2])[0]
                 pos += 2
-                items.append(('GVAR_PUSH', idx))
+                items.append(("GVAR_PUSH", idx))
         elif op in (0x06, 0x1A, 0x1B, 0x0C):  # GVAR_STORE / 其他2字节索引
             pos += 1
             if pos + 2 <= len(res_data):
-                idx = struct.unpack('<H', res_data[pos:pos + 2])[0]
+                idx = struct.unpack("<H", res_data[pos : pos + 2])[0]
                 pos += 2
-                items.append(('GVAR_STORE', idx))
-        elif op == 0x0A:            # POP
+                items.append(("GVAR_STORE", idx))
+        elif op == 0x0A:  # POP
             pos += 1
-            items.append(('POP',))
-        elif op in (0x01, 0x00):     # PUSH_NIL
+            items.append(("POP",))
+        elif op in (0x01, 0x00):  # PUSH_NIL
             pos += 1
-            items.append(('NIL',))
-        elif op == 0x02:             # PUSH_T
+            items.append(("NIL",))
+        elif op == 0x02:  # PUSH_T
             pos += 1
-            items.append(('T',))
-        elif op == 0x16:             # END_DEFUN
+            items.append(("T",))
+        elif op == 0x16:  # END_DEFUN
             pos += 1
-            items.append(('END_DEFUN',))
-        elif op == 0x1C:             # INIT_DONE
+            items.append(("END_DEFUN",))
+        elif op == 0x1C:  # INIT_DONE
             pos += 1
-            items.append(('INIT_DONE',))
+            items.append(("INIT_DONE",))
         elif op in (0x18, 0x19, 0x39, 0x37):  # 计数操作
             pos += 1
             if pos + 2 <= len(res_data):
-                count = struct.unpack('<H', res_data[pos:pos + 2])[0]
+                count = struct.unpack("<H", res_data[pos : pos + 2])[0]
                 pos += 2
-                items.append(('OP_' + hex(op), count))
+                items.append(("OP_" + hex(op), count))
         elif op in (0x05, 0x5C, 0x5D, 0x5E):  # 局部变量
             pos += 1
             if pos + 2 <= len(res_data):
-                idx = struct.unpack('<H', res_data[pos:pos + 2])[0]
+                idx = struct.unpack("<H", res_data[pos : pos + 2])[0]
                 pos += 2
-                items.append(('LOCAL', idx))
+                items.append(("LOCAL", idx))
         elif op in (0x67, 0x57, 0x69, 0x6A, 0x68):  # 跳转
             pos += 1
             if pos + 4 <= len(res_data):
-                target = struct.unpack('<i', res_data[pos:pos + 4])[0]
+                target = struct.unpack("<i", res_data[pos : pos + 4])[0]
                 pos += 4
-                items.append(('JUMP', target))
+                items.append(("JUMP", target))
         elif op in (0x0D, 0x3C, 0x0E, 0x3D, 0x07):  # 短跳转
             pos += 1
             if pos + 2 <= len(res_data):
                 pos += 2
-        elif op in (0x1E, 0x1F):    # ALPHA/BETA
+        elif op in (0x1E, 0x1F):  # ALPHA/BETA
             pos += 1
             if pos < len(res_data):
                 pos += 1
@@ -299,7 +302,7 @@ def parse_resource_stream(res_data: bytes) -> tuple:
             pos += 1
         elif op in (0x0B, 0x23, 0x24, 0x10, 0x28, 0x29, 0x2A):
             pos += 1
-            items.append(('OP_' + hex(op),))
+            items.append(("OP_" + hex(op),))
         else:
             pos += 1
 
@@ -351,18 +354,18 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
         elif op in (0x14, 0x15):
             if pos + 5 > len(res_data):
                 break
-            stack.append(('DEFHDR', tuple(res_data[pos + 1:pos + 5])))
+            stack.append(("DEFHDR", tuple(res_data[pos + 1 : pos + 5])))
             pos += 5
         elif op in (0x03, 0x09):
             if pos + 3 > len(res_data):
                 break
-            idx = struct.unpack('<H', res_data[pos + 1:pos + 3])[0]
+            idx = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
             stack.append(table0(idx))
             pos += 3
         elif op == 0x06:
             if pos + 3 > len(res_data):
                 break
-            idx = struct.unpack('<H', res_data[pos + 1:pos + 3])[0]
+            idx = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
             if 0 <= idx < nsyms:
                 tables[0][idx] = pop_default()
             pos += 3
@@ -370,39 +373,39 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
             if len(stack) >= 2:
                 right = stack.pop()
                 left = stack.pop()
-                stack.append(('CONS', left, right))
+                stack.append(("CONS", left, right))
             pos += 1
         elif op in (0x28, 0x29):
             value = pop_default()
             if op == 0x28:
-                if isinstance(value, tuple) and len(value) == 3 and value[0] == 'CONS':
+                if isinstance(value, tuple) and len(value) == 3 and value[0] == "CONS":
                     stack.append(value[1])
                 elif isinstance(value, tuple) and value:
                     stack.append(value[0])
                 else:
-                    stack.append(('CAR', value))
+                    stack.append(("CAR", value))
             else:
-                if isinstance(value, tuple) and len(value) == 3 and value[0] == 'CONS':
+                if isinstance(value, tuple) and len(value) == 3 and value[0] == "CONS":
                     stack.append(value[2])
                 elif isinstance(value, tuple) and len(value) > 1:
                     stack.append(tuple(value[1:]))
                 else:
-                    stack.append(('CDR', value))
+                    stack.append(("CDR", value))
             pos += 1
         elif op == 0x32:
             if pos + 2 > len(res_data):
                 break
-            stack.append(struct.unpack('<b', res_data[pos + 1:pos + 2])[0])
+            stack.append(struct.unpack("<b", res_data[pos + 1 : pos + 2])[0])
             pos += 2
         elif op == 0x33:
             if pos + 5 > len(res_data):
                 break
-            stack.append(struct.unpack('<i', res_data[pos + 1:pos + 5])[0])
+            stack.append(struct.unpack("<i", res_data[pos + 1 : pos + 5])[0])
             pos += 5
         elif op == 0x39:
             if pos + 3 > len(res_data):
                 break
-            count = struct.unpack('<H', res_data[pos + 1:pos + 3])[0]
+            count = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
             stack.append(tuple(pop_many(count)))
             pos += 3
         elif op == 0x34:
@@ -411,70 +414,70 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
             argc = res_data[pos + 1]
             flags = res_data[pos + 2]
             args = pop_many(argc + 1)
-            stack.append(('EVAL', argc, flags, tuple(args)))
+            stack.append(("EVAL", argc, flags, tuple(args)))
             pos += 3
         elif op in (0x35, 0x51):
             if pos + 5 > len(res_data):
                 break
             argc = res_data[pos + 1]
-            idx = struct.unpack('<H', res_data[pos + 2:pos + 4])[0]
+            idx = struct.unpack("<H", res_data[pos + 2 : pos + 4])[0]
             flags = res_data[pos + 4]
             args = pop_many(argc)
-            stack.append(('CALL', table0(idx), idx, flags, tuple(args)))
+            stack.append(("CALL", table0(idx), idx, flags, tuple(args)))
             pos += 5
         elif op == 0x55:
             pos += 1
             if pos + 2 > len(res_data):
                 break
-            num_strings = struct.unpack('<H', res_data[pos:pos + 2])[0]
+            num_strings = struct.unpack("<H", res_data[pos : pos + 2])[0]
             pos += 2
             for _ in range(num_strings):
                 if pos + 2 > len(res_data):
                     break
-                slen = struct.unpack('<H', res_data[pos:pos + 2])[0]
+                slen = struct.unpack("<H", res_data[pos : pos + 2])[0]
                 pos += 2
                 if pos + slen > len(res_data):
                     break
-                s = res_data[pos:pos + slen]
+                s = res_data[pos : pos + slen]
                 pos += slen
-                for enc in ('ascii', 'utf-8', 'cp1252', 'latin-1'):
+                for enc in ("ascii", "utf-8", "cp1252", "latin-1"):
                     try:
-                        stack.append(('STRING', s.decode(enc)))
+                        stack.append(("STRING", s.decode(enc)))
                         break
                     except UnicodeDecodeError:
                         continue
                 else:
-                    stack.append(('STRING', s.decode('latin-1', errors='replace')))
+                    stack.append(("STRING", s.decode("latin-1", errors="replace")))
         elif op in (0x56, 0x5B):
             pos += 1
             while pos < len(res_data):
-                end = res_data.find(b'\x00', pos)
+                end = res_data.find(b"\x00", pos)
                 if end < 0:
                     break
                 sym = res_data[pos:end]
                 pos = end + 1
                 if not sym:
                     break
-                for enc in ('ascii', 'utf-8', 'cp1252', 'latin-1'):
+                for enc in ("ascii", "utf-8", "cp1252", "latin-1"):
                     try:
-                        stack.append(('SYMBOL', sym.decode(enc)))
+                        stack.append(("SYMBOL", sym.decode(enc)))
                         break
                     except UnicodeDecodeError:
                         continue
                 else:
-                    stack.append(('SYMBOL', sym.decode('latin-1', errors='replace')))
+                    stack.append(("SYMBOL", sym.decode("latin-1", errors="replace")))
         elif op == 0x3A:
             if len(stack) >= 3:
                 name = stack.pop()
                 start = stack.pop()
                 module = stack.pop()
-                stack.append(('FUNC', name, start, module))
+                stack.append(("FUNC", name, start, module))
             pos += 1
         elif op == 0x43:
             if pos + 5 > len(res_data):
                 break
-            var_pos = struct.unpack('<H', res_data[pos + 1:pos + 3])[0]
-            st_init = struct.unpack('<H', res_data[pos + 3:pos + 5])[0]
+            var_pos = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
+            st_init = struct.unpack("<H", res_data[pos + 3 : pos + 5])[0]
             module_id = stack.pop() if stack else None
             table_idx = 0 if module_id is None else 1
             for idx in range(var_pos + st_init - 1, var_pos - 1, -1):
@@ -485,32 +488,31 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
                     tables[table_idx][idx] = value
             pos += 5
         elif op == 0x23:
-            stack.append(('NOT', pop_default()))
+            stack.append(("NOT", pop_default()))
             pos += 1
         elif op == 0x24:
-            stack.append(('ATOM', pop_default()))
+            stack.append(("ATOM", pop_default()))
             pos += 1
         elif op in (0x57, 0x67, 0x68, 0x69, 0x6A, 0x6B):
             pos += 5
-        elif op in (0x05, 0x07, 0x0C, 0x0D, 0x0E, 0x1A, 0x1B,
-                    0x37, 0x3C, 0x3D, 0x5C, 0x5D, 0x5E):
+        elif op in (0x05, 0x07, 0x0C, 0x0D, 0x0E, 0x1A, 0x1B, 0x37, 0x3C, 0x3D, 0x5C, 0x5D, 0x5E):
             pos += 3
         elif op in (0x1E, 0x1F):
             pos += 2
         elif op in (0x16, 0x1C, 0x20, 0x62, 0x63):
             pos += 1
         elif op == 0x3B:
-            end = res_data.find(b'\x00', pos + 1)
+            end = res_data.find(b"\x00", pos + 1)
             if end < 0:
                 break
-            for enc in ('ascii', 'utf-8', 'cp1252', 'latin-1'):
+            for enc in ("ascii", "utf-8", "cp1252", "latin-1"):
                 try:
-                    stack.append(('REAL', res_data[pos + 1:end].decode(enc)))
+                    stack.append(("REAL", res_data[pos + 1 : end].decode(enc)))
                     break
                 except UnicodeDecodeError:
                     continue
             else:
-                stack.append(('REAL', res_data[pos + 1:end].decode('latin-1', errors='replace')))
+                stack.append(("REAL", res_data[pos + 1 : end].decode("latin-1", errors="replace")))
             pos = end + 1
         else:
             pos += 1
@@ -529,15 +531,15 @@ def build_function_catalog(resource_gvars: list, function_gvars: list) -> list:
     def extract_text(value):
         if isinstance(value, str):
             return value
-        if isinstance(value, tuple) and len(value) == 2 and value[0] in ('STRING', 'SYMBOL'):
+        if isinstance(value, tuple) and len(value) == 2 and value[0] in ("STRING", "SYMBOL"):
             return str(value[1])
         return None
 
     def walk(value):
         if not isinstance(value, tuple):
             return
-        if len(value) >= 4 and value[0] == 'FUNC':
-            raw_name = extract_text(value[1]) or ''
+        if len(value) >= 4 and value[0] == "FUNC":
+            raw_name = extract_text(value[1]) or ""
             start = value[2]
             if isinstance(start, int) and start not in seen:
                 seen.add(start)
@@ -595,7 +597,7 @@ def extract_symbol_names(res_data: bytes) -> list:
                     break
                 j += 1
             if buf and j > i + 1 and res_data[j] == 0:
-                names.append(buf.decode('utf-8', errors='replace'))
+                names.append(buf.decode("utf-8", errors="replace"))
                 i = j
         i += 1
     return names
@@ -630,8 +632,12 @@ def extract_stubs(bytecode: bytes) -> list:
         # 提取符号索引: 09 XX XX 5C 00 00
         sym_idx = None
         for j in range(len(stub_data) - 5):
-            if stub_data[j] == 0x09 and stub_data[j + 3] == 0x5C \
-               and stub_data[j + 4] == 0x00 and stub_data[j + 5] == 0x00:
+            if (
+                stub_data[j] == 0x09
+                and stub_data[j + 3] == 0x5C
+                and stub_data[j + 4] == 0x00
+                and stub_data[j + 5] == 0x00
+            ):
                 sym_idx = stub_data[j + 1] | (stub_data[j + 2] << 8)
                 break
 
@@ -644,13 +650,15 @@ def extract_stubs(bytecode: bytes) -> list:
                     selector = stub_data[j + 1]
                     break
 
-        stubs.append({
-            'offset': m,
-            'data': stub_data,
-            'sym_idx': sym_idx,
-            'selector': selector,
-            'is_dispatch': is_dispatch,
-        })
+        stubs.append(
+            {
+                "offset": m,
+                "data": stub_data,
+                "sym_idx": sym_idx,
+                "selector": selector,
+                "is_dispatch": is_dispatch,
+            }
+        )
         pos = m + 5
     return stubs
 
@@ -658,19 +666,19 @@ def extract_stubs(bytecode: bytes) -> list:
 # ─── FAS 构建 ──────────────────────────────────────────────────────────────────
 
 
-def build_single_function_fas(magic: bytes, stub_data: bytes,
-                              seg1_data: bytes | None, seg1_sub_count: int,
-                              trailer: bytes | str) -> bytes:
+def build_single_function_fas(
+    magic: bytes, stub_data: bytes, seg1_data: bytes | None, seg1_sub_count: int, trailer: bytes | str
+) -> bytes:
     """从桩构建单函数 FAS 文件。
 
     如果 seg1_data 为 None → 单段格式（自包含桩 trimmed）。
     否则 → 双段格式（含 seg1）。
     """
     if isinstance(trailer, str):
-        trailer = trailer.encode('ascii')
+        trailer = trailer.encode("ascii")
 
     seg0_total = len(stub_data)
-    seg0_header = f'{seg0_total}\r\n1 $'.encode('ascii')
+    seg0_header = f"{seg0_total}\r\n1 $".encode("ascii")
 
     out = bytearray()
     out.extend(magic)
@@ -678,14 +686,14 @@ def build_single_function_fas(magic: bytes, stub_data: bytes,
     out.extend(stub_data)
 
     if seg1_data is None:
-        out.extend(b'\r\n')
+        out.extend(b"\r\n")
         out.extend(trailer)
     else:
-        out.extend(b'\x16\x24\r\n')
-        seg1_header = f'{len(seg1_data)} {seg1_sub_count} $'.encode('ascii')
+        out.extend(b"\x16\x24\r\n")
+        seg1_header = f"{len(seg1_data)} {seg1_sub_count} $".encode("ascii")
         out.extend(seg1_header)
         out.extend(seg1_data)
-        out.extend(b'\r\n')
+        out.extend(b"\r\n")
         out.extend(trailer)
 
     return bytes(out)

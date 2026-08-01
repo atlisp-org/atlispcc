@@ -21,6 +21,102 @@ from validate import validate_file
 ENCODE_POP = bytes([0x0a])
 
 
+def _collect_builtins_for_stub(symtab, node):
+    """stub 模式下将调用到的内建函数注册为符号槽（CAD stub 用符号槽编址调用）。"""
+    from compiler.ast import (
+        Call, Defun, Setq, IfNode, WhileNode, ForeachNode,
+        RepeatNode, Progn, ListExpr, QuotedExpr, LambdaNode, Cond, Symbol,
+    )
+    if isinstance(node, Defun):
+        for expr in node.body:
+            _collect_builtins_for_stub(symtab, expr)
+    elif isinstance(node, Call):
+        if symtab.is_builtin(node.name) and node.name not in ('T', 'nil'):
+            symtab.get_or_add(node.name)
+        for a in node.args:
+            _collect_builtins_for_stub(symtab, a)
+    elif isinstance(node, (Setq,)):
+        for target, value in node.pairs:
+            _collect_builtins_for_stub(symtab, target)
+            if value:
+                _collect_builtins_for_stub(symtab, value)
+    elif isinstance(node, IfNode):
+        for child in (node.cond, node.then, node.else_expr):
+            if child:
+                _collect_builtins_for_stub(symtab, child)
+    elif isinstance(node, WhileNode):
+        if node.cond:
+            _collect_builtins_for_stub(symtab, node.cond)
+        for expr in node.body:
+            _collect_builtins_for_stub(symtab, expr)
+    elif isinstance(node, ForeachNode):
+        if node.list_expr:
+            _collect_builtins_for_stub(symtab, node.list_expr)
+        for expr in node.body:
+            _collect_builtins_for_stub(symtab, expr)
+    elif isinstance(node, RepeatNode):
+        if node.count:
+            _collect_builtins_for_stub(symtab, node.count)
+        for expr in node.body:
+            _collect_builtins_for_stub(symtab, expr)
+    elif isinstance(node, Progn):
+        for form in node.forms:
+            _collect_builtins_for_stub(symtab, form)
+    elif isinstance(node, Cond):
+        for clause in node.clauses:
+            for item in clause:
+                _collect_builtins_for_stub(symtab, item)
+    elif isinstance(node, ListExpr):
+        for item in node.items:
+            _collect_builtins_for_stub(symtab, item)
+    elif isinstance(node, QuotedExpr):
+        if node.expr:
+            _collect_builtins_for_stub(symtab, node.expr)
+    elif isinstance(node, LambdaNode):
+        for expr in node.body:
+            _collect_builtins_for_stub(symtab, expr)
+
+
+def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int) -> bytes:
+    """修正 stub 字节码的 USUBR 索引为 CAD 的 gvar 槽 - 1。
+
+    CAD 实测逆向：USUBR 调用符号的 gvar 槽 = idx + 1（idx = gvar 槽 - 1）。
+    codegen 用 entries 索引生成，此处用资源段 GVARINIT 重建的 gvar 表修正。
+    """
+    try:
+        from fas_core import build_mvar_tables
+        rg, fg = build_mvar_tables(seg1, nsyms)
+    except Exception:
+        return seg0
+    gvar_map: dict = {}
+    for idx, v in enumerate(fg):
+        if isinstance(v, tuple) and len(v) == 2 and v[0] == "SYMBOL":
+            gvar_map.setdefault(str(v[1]), idx)
+    if not gvar_map:
+        return seg0
+    from fas4_decompiler import Disassembler
+    try:
+        insts = Disassembler(short_subr=True).disassemble(seg0, nsyms, sym_count=len(symtab.entries))
+    except Exception:
+        return seg0
+
+    out = bytearray()
+    for inst in insts:
+        if inst.op_name == "USUBR" and len(inst.operands) >= 2:
+            argc, idx = inst.operands[0], inst.operands[1]
+            sym = None
+            if 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
+                sym = str(symtab.entries[idx][1])
+            if sym and sym in gvar_map:
+                new_idx = gvar_map[sym] - 1
+                out += bytes([0x35, argc & 0xFF, new_idx & 0xFF])
+            else:
+                out += seg0[inst.offset:inst.offset + inst.size]
+            continue
+        out += seg0[inst.offset:inst.offset + inst.size]
+    return bytes(out)
+
+
 def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis: bool = False) -> str:
     if os.path.exists(source):
         with open(source, 'r', encoding='utf-8') as f:
@@ -50,9 +146,9 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
         print(f'  External/builtin calls:  {len(stats["builtin_calls"])}')
         for fd in stats['functions_detail']:
             tr = ' [tail-recursive]' if fd['tail_recursive'] else ''
-            print(f'    {fd["name"]}: {fd["instructions"]} instr, '
-                  f'{fd["args"]} args, {fd["locals"]} locals, '
-                  f'calls {fd["calls"]}{tr}')
+        print(f'    {fd["name"]}: {fd["instructions"]} instr, '
+              f'{fd["args"]} args, {fd["locals"]} locals, '
+              f'calls {fd["calls"]}{tr}')
         print()
 
     if opt_level:
@@ -66,14 +162,24 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
             print()
 
     symtab = SymbolTable(package_table=package_table)
-    symtab.collect_symbols(program)
+    defun_forms = [f for f in program.forms if isinstance(f, Defun)]
+    from compiler.cad_symbols import derive_symbol_names
+    for sym in derive_symbol_names(program):
+        if sym.startswith('"') and sym.endswith('"'):
+            symtab.add_string(sym[1:-1])
+        elif sym in symtab.name_to_idx:
+            # CAD stub：允许符号重复（递归/跨函数引用产生重复槽）
+            symtab.add_force(sym)
+        else:
+            symtab.get_or_add(sym)
 
-    codegen = CodeGenerator(symtab)
+    codegen = CodeGenerator(symtab, stub_format=True,
+                            defined_funcs=[f.name for f in defun_forms],
+                            nsyms=len(symtab.entries) - len(defun_forms) + 1)
 
     all_bytecode = BytecodeBuffer()
     func_offsets = {}
 
-    defun_forms = [f for f in program.forms if isinstance(f, Defun)]
     other_forms = [f for f in program.forms
                    if not isinstance(f, (Defun, Defpackage, InPackage))]
 
@@ -81,25 +187,39 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
         codegen._emit_expr(all_bytecode, form)
         all_bytecode.emit(ENCODE_POP)
 
-    for form in defun_forms:
+    for i, form in enumerate(defun_forms):
         offset = len(all_bytecode.data)
         func_bytecode, _ = codegen.generate_function(form)
         func_offsets[form.name] = offset
         all_bytecode.emit(func_bytecode)
+        if i < len(defun_forms) - 1:
+            # CAD stub: 函数间分隔符。有参函数 `<argc> 00 16`，无参函数 `16`。
+            argc = len(form.args)
+            sep = bytes([argc & 0xFF, 0x00, 0x16]) if argc > 0 else bytes([0x16])
+            all_bytecode.emit(sep)
 
     for name, offset in func_offsets.items():
         symtab.add_func_ref(name, offset)
 
+    all_bytecode.resolve()
     seg0 = bytes(all_bytecode.data)
 
-    module_code = build_module_code()
+    module_code = build_module_code(len(defun_forms))
     resource = ResourceBuilder(symtab)
-    seg1 = resource.build(func_offsets, module_code=module_code)
+    # nsyms = len(entries) - 函数数 + 1（CAD 实测：函数注册 GVARINIT st_init）
+    fas_nsyms = len(symtab.entries) - len(defun_forms) + 1
+    seg0_payload = f'{fas_nsyms} $'.encode() + seg0
+    seg1 = resource.build(func_offsets, module_code=module_code, seg0_payload_len=len(seg0_payload), stub_format=True)
     sec2_items = count_resource_records(seg1)
+
+    # 修正 USUBR 索引：CAD 用 `gvar 槽 - 1`（gvar 表由资源段 GVARINIT 建立）。
+    seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms)
 
     output = output or source.replace('.lsp', '.fas')
     writer = FasWriter(symtab)
-    writer.write(output, seg0, seg1, sec2_items=sec2_items)
+    first_argc = len(defun_forms[-1].args) if defun_forms else 0
+    writer.write(output, seg0, seg1, sec2_items=sec2_items, first_argc=first_argc,
+                 nsyms=fas_nsyms)
     print(f'Compiled to {output}')
     return output
 
@@ -212,17 +332,21 @@ def main():
         return 0
 
     if args.command in ('compile', 'c'):
-        return cmd_compile(args.source, args.output, opt_level=args.O,
-                           show_analysis=args.analyze)
+        cmd_compile(args.source, args.output, opt_level=args.O,
+                    show_analysis=args.analyze)
+        return 0
 
     if args.command in ('decompile', 'd'):
-        return cmd_decompile(args.source, args.output)
+        cmd_decompile(args.source, args.output)
+        return 0
 
     if args.command in ('disasm', 'disassemble'):
-        return cmd_disassemble(args.source, args.output)
+        cmd_disassemble(args.source, args.output)
+        return 0
 
     if args.command in ('asm', 'assemble'):
-        return cmd_assemble(args.source, args.output)
+        cmd_assemble(args.source, args.output)
+        return 0
 
     if args.command in ('validate', 'v'):
         return cmd_validate(args.source)
@@ -235,7 +359,8 @@ def main():
         if not output:
             base = args.inputs[-1].rsplit('.', 1)[0]
             output = f'{base}_linked.fas'
-        return cmd_link(args.inputs, output, args.verbose)
+        cmd_link(args.inputs, output, args.verbose)
+        return 0
 
     if args.command == 'build-vlx':
         output = args.output

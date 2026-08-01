@@ -1,8 +1,23 @@
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Optional
 from compiler.ast import (
-    Node, Program, Symbol, Integer, Real, String,
-    ListExpr, QuotedExpr, Defun, Setq, IfNode, WhileNode,
-    ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
+    Node,
+    Program,
+    Symbol,
+    Integer,
+    Real,
+    String,
+    ListExpr,
+    QuotedExpr,
+    Defun,
+    Setq,
+    IfNode,
+    WhileNode,
+    ForeachNode,
+    RepeatNode,
+    Call,
+    Progn,
+    LambdaNode,
+    Cond,
 )
 from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.symbol_table import SymbolTable
@@ -14,7 +29,9 @@ def count_instructions(func: Defun, symtab: SymbolTable) -> int:
     return len(bytecode)
 
 
-def _collect_call_names(node: Node, calls: Set[str]):
+def _collect_call_names(node: Optional[Node], calls: Set[str]):
+    if node is None:
+        return
     if isinstance(node, Call):
         calls.add(node.name)
         for a in node.args:
@@ -85,8 +102,10 @@ def find_tail_recursive(func: Defun) -> bool:
 def estimate_constants(program: Program) -> int:
     count = 0
 
-    def walk(node: Node):
+    def walk(node: Optional[Node]):
         nonlocal count
+        if node is None:
+            return
         if isinstance(node, (Integer, Real, String)):
             count += 1
         elif isinstance(node, Call):
@@ -154,7 +173,7 @@ def analyze(program: Program) -> Dict:
     for f in defuns:
         inst_count = count_instructions(f, symtab)
         total_instructions += inst_count
-        calls = set()
+        calls: Set[str] = set()
         for e in f.body:
             _collect_call_names(e, calls)
 
@@ -162,14 +181,16 @@ def analyze(program: Program) -> Dict:
         if is_tail_rec:
             tail_recursive.append(f.name)
 
-        func_stats.append({
-            'name': f.name,
-            'args': len(f.args),
-            'locals': len(f.locals),
-            'instructions': inst_count,
-            'calls': sorted(calls) if calls else [],
-            'tail_recursive': is_tail_rec,
-        })
+        func_stats.append(
+            {
+                "name": f.name,
+                "args": len(f.args),
+                "locals": len(f.locals),
+                "instructions": inst_count,
+                "calls": sorted(calls) if calls else [],
+                "tail_recursive": is_tail_rec,
+            }
+        )
 
     all_calls: Set[str] = set()
     for f in defuns:
@@ -178,19 +199,19 @@ def analyze(program: Program) -> Dict:
     for e in other:
         _collect_call_names(e, all_calls)
 
-    builtin_calls = {c for c in all_calls if c[0].islower() and c != 'setq'}
+    builtin_calls = {c for c in all_calls if c[0].islower() and c != "setq"}
     user_funcs = {f.name for f in defuns}
     extern_calls = builtin_calls - user_funcs
 
     return {
-        'functions': len(defuns),
-        'top_level_forms': len(other),
-        'total_instructions': total_instructions,
-        'constants_estimate': estimate_constants(program),
-        'symbol_table_entries': len(symtab.entries),
-        'function_offsets': len(symtab.function_offsets),
-        'locals': sum(len(f.locals) for f in defuns),
-        'tail_recursive_functions': tail_recursive,
-        'functions_detail': func_stats,
-        'builtin_calls': sorted(extern_calls),
+        "functions": len(defuns),
+        "top_level_forms": len(other),
+        "total_instructions": total_instructions,
+        "constants_estimate": estimate_constants(program),
+        "symbol_table_entries": len(symtab.entries),
+        "function_offsets": len(symtab.function_offsets),
+        "locals": sum(len(f.locals) for f in defuns),
+        "tail_recursive_functions": tail_recursive,
+        "functions_detail": func_stats,
+        "builtin_calls": sorted(extern_calls),
     }

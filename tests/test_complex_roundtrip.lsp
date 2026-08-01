@@ -1,0 +1,53 @@
+(defun *string:pad* (s width / pad result)
+  (setq pad (- width (strlen s)))
+  (if (> pad 0)
+    (progn
+      (setq result s)
+      (repeat pad
+        (setq result (strcat result " "))
+      )
+    )
+    (setq result s)
+  )
+  result
+)
+
+(defun c:process-rows (rows / total i item)
+  (setq total 0)
+  (setq i 0)
+  (while (< i (length rows))
+    (setq item (nth i rows))
+    (if (numberp item)
+      (setq total (+ total item))
+    )
+    (setq i (1+ i))
+  )
+  (princ (strcat "total: " (itoa total)))
+  (princ)
+)
+
+(defun *helper* (lst)
+  (mapcar #'1+ (vl-remove-if (function (lambda (x) (< x 0))) lst))
+)
+
+(defun *build-pair* (a b)
+  (cons a b)
+)
+
+(defun c:demo ()
+  (setq *data* (list 1 2 3))
+  (foreach v *data*
+    (princ v)
+    (princ " ")
+  )
+  (princ)
+  (apply '+ *data*)
+  (cond
+    ((> (length *data*) 2) (princ "many"))
+    ((= (length *data*) 1) (princ "one"))
+    (T (princ "few"))
+  )
+  (princ)
+  (princ (*helper* *data*))
+  (princ)
+)

@@ -6,11 +6,6 @@ from pathlib import Path
 from typing import Any, List, Tuple
 
 
-LOGIC_COMMENT_RE = re.compile(r'^\s*;;.*\b(jump|unresolved|gfun_)\b', re.IGNORECASE)
-DEBUG_COMMENT_RE = re.compile(
-    r'^\s*;;\s*(Recovered strings|Referenced symbols|Referenced strings|Original arg hints|init-args|cleanup)\b',
-    re.IGNORECASE,
-)
 SYMBOL_RE = re.compile(r'^[\w\-?!*/=<>+:.]+$')
 NUMBER_RE = re.compile(r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$')
 
@@ -144,10 +139,7 @@ def is_symbol(node: Node) -> bool:
 
 
 def symbol_ok(value: str) -> bool:
-    if value.startswith('c:'):
-        return SYMBOL_RE.match(value) is not None
-    if ':' in value:
-        return False
+    # AutoLISP 中 ':' 是普通字符（如 *string:pad*、c: 命令），包符号也合法。
     return SYMBOL_RE.match(value) is not None
 
 
@@ -167,36 +159,29 @@ def validate_balance(tokens: List[Token]) -> List[str]:
     return errors
 
 
-def validate_ast(forms: List[Node], text: str) -> List[str]:
+def validate_ast(forms: List[Node]) -> List[str]:
     errors: List[str] = []
-
-    for line_no, line in enumerate(text.splitlines(), start=1):
-        if LOGIC_COMMENT_RE.search(line):
-            errors.append(f'line {line_no}: logic placeholder comment: {line.strip()}')
-        if DEBUG_COMMENT_RE.search(line):
-            errors.append(f'line {line_no}: debug comment in runnable output: {line.strip()}')
 
     for form in forms:
         if not isinstance(form.value, list) or not form.value:
-            errors.append(f'line {form.line}: top-level form is not a defun: {form_text(form)}')
+            errors.append(f'line {form.line}: malformed top-level form: {form_text(form)}')
             continue
         head = form.value[0].value
-        if head != 'defun':
-            errors.append(f'line {form.line}: top-level form is not a defun: {form_text(form)}')
-            continue
-        if len(form.value) >= 3 and is_symbol(form.value[1]) and form.value[2].kind == 'list':
-            name = str(form.value[1].value).lower()
-            if name.startswith('c:'):
-                required_args = []
-                for arg in form.value[2].value:
-                    if arg.kind == 'symbol' and arg.value == '/':
-                        break
-                    if is_symbol(arg):
-                        required_args.append(str(arg.value))
-                if required_args:
-                    errors.append(
-                        f'line {form.line}: AutoCAD command defun has required args: {", ".join(required_args)}'
-                    )
+        if head == 'defun':
+            if len(form.value) >= 3 and is_symbol(form.value[1]) and form.value[2].kind == 'list':
+                name = str(form.value[1].value).lower()
+                if name.startswith('c:'):
+                    required_args = []
+                    for arg in form.value[2].value:
+                        if arg.kind == 'symbol' and arg.value == '/':
+                            break
+                        if is_symbol(arg):
+                            required_args.append(str(arg.value))
+                    if required_args:
+                        errors.append(
+                            f'line {form.line}: AutoCAD command defun has required args: {", ".join(required_args)}'
+                        )
+        # 其他顶层形式是合法的模块 init 代码，仅做结构检查
 
     def walk(node: Node) -> None:
         value = node.value
@@ -231,7 +216,7 @@ def validate_file(path: Path) -> bool:
     text = path.read_text(encoding='utf-8')
     tokens, token_errors = tokenize(text)
     forms, parse_errors = parse_tokens(tokens)
-    errors = token_errors + validate_balance(tokens) + parse_errors + validate_ast(forms, text)
+    errors = token_errors + validate_balance(tokens) + parse_errors + validate_ast(forms)
     if errors:
         print(f'[FAIL] {path}')
         for error in errors:

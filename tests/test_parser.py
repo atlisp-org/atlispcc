@@ -140,3 +140,76 @@ def test_lexer_1plus_1minus():
     toks = tokenize("(mapcar '1+ l)")
     vals = [v for _, v, _, _ in toks]
     assert '1+' in vals, f'Expected 1+ in tokens, got {vals}'
+
+
+def test_lexer_function_macro():
+    """Lexer recognizes #' as the function reader macro (not a '#' symbol)."""
+    from compiler.lexer import tokenize
+    toks = tokenize("#'car")
+    kinds = [k for k, _, _, _ in toks]
+    assert kinds[0] == 'FUNCTION', f'Expected FUNCTION token, got {kinds[0]}'
+    assert kinds[1] == 'SYMBOL'
+    assert kinds[2] == 'EOF'
+
+
+def test_parse_function_macro_symbol():
+    """#'foo parses to QuotedExpr(Symbol foo), same as (function foo)."""
+    from compiler.ast import QuotedExpr, Symbol
+    p = Parser("(defun f () #'car)")
+    f = p.parse().forms[0]
+    q = f.body[0]
+    assert isinstance(q, QuotedExpr)
+    assert isinstance(q.expr, Symbol)
+    assert q.expr.name == 'car'
+
+
+def test_parse_function_macro_lambda():
+    """#'(lambda ...) parses to QuotedExpr containing a lambda form."""
+    from compiler.ast import QuotedExpr, LambdaNode
+    p = Parser("(defun f () #'(lambda (x) (1+ x)))")
+    f = p.parse().forms[0]
+    q = f.body[0]
+    assert isinstance(q, QuotedExpr)
+    assert isinstance(q.expr, LambdaNode)
+    assert q.expr.args == ['x']
+
+
+def test_parse_function_macro_in_mapcar():
+    """mapcar #'1+ compiles correctly via round-trip semantics."""
+    from compiler.ast import Call, QuotedExpr, Symbol
+    p = Parser("(defun f (l) (mapcar #'1+ l))")
+    f = p.parse().forms[0]
+    call = f.body[0]
+    assert isinstance(call, Call)
+    assert call.name == 'mapcar'
+    q = call.args[0]
+    assert isinstance(q, QuotedExpr)
+    assert isinstance(q.expr, Symbol)
+    assert q.expr.name == '1+'
+
+
+def test_parse_dotted_call():
+    """(cons 1 . 2) in call position parses to Call with the dotted tail as arg."""
+    from compiler.ast import Call, Integer
+    p = Parser("(defun f () (cons 1 . 2))")
+    f = p.parse().forms[0]
+    call = f.body[0]
+    assert isinstance(call, Call)
+    assert call.name == 'cons'
+    assert len(call.args) == 2
+    assert isinstance(call.args[0], Integer) and call.args[0].value == 1
+    assert isinstance(call.args[1], Integer) and call.args[1].value == 2
+
+
+def test_parse_quoted_dotted_data():
+    """'(a . b) in data position stays a dotted ListExpr (not a call)."""
+    from compiler.ast import QuotedExpr, ListExpr, Symbol
+    p = Parser("(defun f () (setq x '(a . b)))")
+    f = p.parse().forms[0]
+    val = f.body[0].pairs[0][1]
+    assert isinstance(val, QuotedExpr)
+    inner = val.expr
+    assert isinstance(inner, ListExpr)
+    assert inner.dotted is not None
+    assert isinstance(inner.dotted, Symbol) and inner.dotted.name == 'b'
+    assert len(inner.items) == 1 and inner.items[0].name == 'a'

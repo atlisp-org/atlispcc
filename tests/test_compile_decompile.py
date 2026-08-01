@@ -24,7 +24,7 @@ def _validate(source: str) -> tuple:
     forms, errs = parse_tokens(tokens)
     if errs:
         return False, errs
-    errs = validate_ast(forms, source)
+    errs = validate_ast(forms)
     return (False, errs) if errs else (True, [])
 
 
@@ -57,6 +57,7 @@ def compile_and_decompile(src: str) -> str:
     for name, offset in func_offsets.items():
         symtab.add_func_ref(name, offset)
 
+    all_bc.resolve()
     seg0 = bytes(all_bc.data)
     resource = ResourceBuilder(symtab)
     seg1 = resource.build(func_offsets)
@@ -88,6 +89,101 @@ def test_minimal_compile_decompile():
     assert '(princ "Hello, World!")' in result
     ok, errs = _validate(result)
     assert ok, f'Validation failed: {errs}'
+
+
+def test_exit_compile_decompile():
+    src = '(defun f (x) (if (> x 10) (exit)) (if (= x 0) (quit)) (princ x))'
+    result = compile_and_decompile(src)
+    assert '(exit)' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_hash_quote_roundtrip():
+    src = "(defun f (l) (mapcar #'1+ l))"
+    result = compile_and_decompile(src)
+    assert '(mapcar' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_dotted_call_roundtrip():
+    src = '(defun f () (cons 1 . 2))'
+    result = compile_and_decompile(src)
+    assert '(cons 1 2)' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_function_ref_user_func_roundtrip():
+    src = '(defun helper (x) (1+ x)) (defun f (lst) (mapcar (function helper) lst))'
+    result = compile_and_decompile(src)
+    assert '(defun helper' in result
+    assert 'mapcar' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_init_code_preserved_as_top_level():
+    src = '(setq *ver* "1.0")\n(princ "loading...")\n(defun c:run () (princ *ver*))'
+    result = compile_and_decompile(src)
+    assert '(setq *ver* "1.0")' in result
+    assert '(princ "loading...")' in result
+    assert '(defun c:run' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_init_control_flow_preserved():
+    src = ('(setq *mode* 2)\n'
+           '(if (> *mode* 1) (setq *level* 5) (setq *level* 1))\n'
+           '(while (< *level* 3) (setq *level* (1+ *level*)))\n'
+           '(defun c:go () (princ *level*))')
+    result = compile_and_decompile(src)
+    assert '(if (> *mode* 1)' in result
+    assert '(while (< *level* 3)' in result
+    assert '(setq *level* 5)' in result
+    assert '(defun c:go' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_init_referenced_helper_kept():
+    src = ('(setq x (double 5))\n'
+           '(defun double (n) (* n 2))\n'
+           '(defun c:run () (princ x))')
+    result = compile_and_decompile(src)
+    assert '(defun double' in result, f'helper dropped: {result}'
+    assert '(setq x' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_complex_lsp_roundtrip_opt_levels():
+    """Round-trip a real complex LSP file at O2 and O3."""
+    from compiler.cli import cmd_compile
+    src_path = os.path.join(os.path.dirname(__file__), 'test_complex_roundtrip.lsp')
+    with open(src_path, encoding='utf-8') as f:
+        src = f.read()
+    for level in (2, 3):
+        out_path = os.path.join(tempfile.gettempdir(), f'cx_rt_{level}_{os.urandom(4).hex()}.fas')
+        try:
+            cmd_compile(src, out_path, opt_level=level)
+            parser = Fas4Parser()
+            fas = parser.parse(out_path)
+            disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+            insts = disasm.disassemble(fas.bytecode, fas.nsyms)
+            cfa = ControlFlowAnalyzer(insts, fas.function_catalog)
+            funcs = cfa.find_functions()
+            gen = LispGenerator(fas)
+            result = gen.generate(funcs, out_path)
+            ok, errs = _validate(result)
+            assert ok, f'O{level} validation failed: {errs}'
+            assert 'while' in result.lower()
+            assert 'foreach' in result.lower()
+        finally:
+            if os.path.exists(out_path):
+                os.unlink(out_path)
 
 
 def test_args_preserved():

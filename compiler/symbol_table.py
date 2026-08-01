@@ -29,6 +29,7 @@ BUILTIN_FUNCTIONS = {
     'vl-cmdf', 'command', 'vl-bt',
     'princ', 'print', 'prin1', 'prompt', 'terpri', 'read', 'read-char',
     'write-line', 'write-char', 'load', 'eval',
+    'exit', 'quit', 'abort',
     'entmake', 'entmakex', 'entget', 'entmod', 'entdel', 'entlast', 'entnext',
     'entsel', 'nentsel', 'nentselp', 'ssget', 'sslength', 'ssname', 'ssadd', 'ssdel', 'ssmemb',
     'tblnext', 'tblobjname', 'tblsearch', 'handent',
@@ -60,6 +61,22 @@ class SymbolTable:
             self.name_to_idx[name] = idx
             self.entries.append(('SYMBOL', name))
         return self.name_to_idx[name]
+
+    def add_force(self, name: str) -> int:
+        """强制加入符号（允许重复），用于 CAD stub 的递归引用重复槽。"""
+        name = str(name)
+        idx = len(self.entries)
+        self.entries.append(('SYMBOL', name))
+        return idx
+
+    def repeat_slots(self, name: str) -> List[int]:
+        """返回 name 出现的所有符号槽（含重复）。"""
+        return [i for i, (t, v) in enumerate(self.entries) if t == 'SYMBOL' and str(v) == str(name)]
+
+    def next_repeat_slot(self, name: str) -> int:
+        """返回 name 的下一个重复槽（跳过首个）。若不存在返回 -1。"""
+        slots = self.repeat_slots(name)
+        return slots[1] if len(slots) > 1 else -1
 
     def add_string(self, s: str) -> int:
         if isinstance(s, int) or s.lstrip('-').isdigit():
@@ -146,7 +163,8 @@ class SymbolTable:
             if node.else_expr:
                 self.collect_symbols(node.else_expr)
         elif isinstance(node, WhileNode):
-            self.collect_symbols(node.cond)
+            if node.cond:
+                self.collect_symbols(node.cond)
             for expr in node.body:
                 self.collect_symbols(expr)
         elif isinstance(node, ForeachNode):
@@ -168,8 +186,8 @@ class SymbolTable:
                 node.name = call_name
             if not self.is_builtin(call_name) and call_name not in ('T', 'nil'):
                 self.get_or_add(call_name)
-            for arg in node.args:
-                self.collect_symbols(arg)
+            for a in node.args:
+                self.collect_symbols(a)
         elif isinstance(node, Symbol):
             if node.name not in ('T', 'nil') and ':' in node.name:
                 resolved = self.resolve_name(node.name)

@@ -8,6 +8,7 @@ TOKEN_SPEC = [
     ('LPAREN', r'\('),
     ('RPAREN', r'\)'),
     ('QUOTE', r"'"),
+    ('FUNCTION', r"#'"),
     ('DOT', r'\.'),
     ('STRING', r'"[^"\\]*(?:\\.[^"\\]*)*"'),
     ('REAL', r'-?\d+\.\d+(?:[eE][+-]?\d+)?'),
@@ -86,7 +87,7 @@ def tokenize(source: str) -> List[Token]:
             continue
         m = TOKEN_RE.match(source, pos)
         if m:
-            kind = m.lastgroup
+            kind = m.lastgroup or ''
             val = m.group()
             if kind == 'STRING':
                 val = unescape_string(val)

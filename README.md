@@ -134,22 +134,30 @@ pip install -e ".[dev]"      # 开发模式（含 dev 工具）
 ## 测试
 
 ```sh
-python -m pytest              # 运行所有测试（82+ 用例）
+python -m pytest              # 运行所有测试（161 用例）
 python -m pytest tests/ -v   # 详细输出
 ```
 
 测试文件在 `tests/` 目录：
-- `test_parser.py` — AST 解析器（14 用例）
-- `test_compile_decompile.py` — 编译-反编译往返（15 用例）
-- `test_compiler_output.py` — FAS 输出正确性（8 用例）
+- `test_parser.py` — AST 解析器（19 用例）
+- `test_lexer.py` — 词法分析（11 用例）
+- `test_symbol_table.py` — 符号表/作用域（10 用例）
+- `test_analyzer.py` — 编译分析/尾递归（9 用例）
+- `test_cli.py` — CLI 路径（10 用例）
+- `test_compile_decompile.py` — 编译-反编译往返（28 用例）
+- `test_compiler_output.py` — FAS 输出正确性（12 用例）
+- `test_optimizer.py` — 所有优化 pass（32 用例）
+- `test_linker.py` — 多文件链接（10 用例）
 - `test_assembler.py` — 反汇编/汇编往返（5 用例）
-- `test_linker.py` — 多文件链接（8 用例）
-- `test_optimizer.py` — 所有优化 pass（26 用例）
+- `test_disasm.py` — 反汇编健壮性（8 用例）
 - `test_packages.py` — 包系统（4 用例）
 - `test_vlx_builder.py` — VLX 容器（3 用例）
 
 ## 文档
 
+- `docs/cad-stub-format.md` — AutoCAD 紧凑 stub 格式规范与兼容实现（核心）
+- `docs/fas-format.md` — FAS4 二进制文件格式详解
+- `docs/opcodes.md` — 操作码参考
 - `docs/development.md` — 架构详解、代码规范、调试指南
 - `docs/usage.md` — 用户安装、编译/反编译工作流、工具参考
 

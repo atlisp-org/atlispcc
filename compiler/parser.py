@@ -39,14 +39,17 @@ class Parser:
             forms.append(self.parse_form())
         return Program(forms=forms)
 
-    def parse_form(self) -> Node:
+    def parse_form(self, quoted: bool = False) -> Node:
         tok = self.peek()
         kind, val, _, _ = tok
         if kind == 'LPAREN':
-            return self.parse_list()
+            return self.parse_list(quoted)
         elif kind == 'QUOTE':
             self.advance()
-            return QuotedExpr(expr=self.parse_form())
+            return QuotedExpr(expr=self.parse_form(quoted=True))
+        elif kind == 'FUNCTION':
+            self.advance()
+            return QuotedExpr(expr=self.parse_form(quoted=True))
         elif kind == 'SYMBOL':
             self.advance()
             return Symbol(name=val)
@@ -62,98 +65,100 @@ class Parser:
         else:
             raise ParseError(f'Unexpected token {kind}: {val} at line {tok[2]}, col {tok[3]}')
 
-    def parse_list(self) -> Node:
+    def parse_list(self, quoted: bool = False) -> Node:
         self.expect('LPAREN')
         if self.peek()[0] == 'RPAREN':
             self.advance()
             return ListExpr()
-        head = self.parse_form()
+        head = self.parse_form(quoted)
         if isinstance(head, Symbol):
             name = head.name
             if name == 'defun' or name == 'defun-q':
                 return self._parse_defun(name)
             elif name == 'setq':
-                pairs = []
+                pairs: List[tuple] = []
                 while self.peek()[0] != 'RPAREN':
-                    target = self.parse_form()
+                    target = self.parse_form(quoted)
                     if self.peek()[0] == 'RPAREN':
                         pairs.append((target, None))
                     else:
-                        pairs.append((target, self.parse_form()))
+                        pairs.append((target, self.parse_form(quoted)))
                 self.expect('RPAREN')
                 return Setq(pairs=pairs)
             elif name == 'if':
-                cond = self.parse_form()
-                then_expr = self.parse_form()
-                else_expr = None if self.peek()[0] == 'RPAREN' else self.parse_form()
+                cond = self.parse_form(quoted)
+                then_expr = self.parse_form(quoted)
+                else_expr = None if self.peek()[0] == 'RPAREN' else self.parse_form(quoted)
                 self.expect('RPAREN')
                 return IfNode(cond=cond, then=then_expr, else_expr=else_expr)
             elif name == 'while':
-                cond = self.parse_form()
-                body = self._parse_forms_until_rparen()
+                cond = self.parse_form(quoted)
+                body = self._parse_forms_until_rparen(quoted)
                 return WhileNode(cond=cond, body=body)
             elif name == 'foreach':
-                var = self.parse_form()
-                list_expr = self.parse_form()
-                body = self._parse_forms_until_rparen()
+                var = self.parse_form(quoted)
+                list_expr = self.parse_form(quoted)
+                body = self._parse_forms_until_rparen(quoted)
                 return ForeachNode(var=var, list_expr=list_expr, body=body)
             elif name == 'repeat':
-                count = self.parse_form()
-                body = self._parse_forms_until_rparen()
+                count = self.parse_form(quoted)
+                body = self._parse_forms_until_rparen(quoted)
                 return RepeatNode(count=count, body=body)
             elif name == 'progn':
-                return Progn(forms=self._parse_forms_until_rparen())
+                return Progn(forms=self._parse_forms_until_rparen(quoted))
             elif name == 'lambda':
                 args_tok = self.peek()
                 args = []
                 if args_tok[0] == 'LPAREN':
                     self.advance()
                     while self.peek()[0] not in ('RPAREN', 'EOF'):
-                        arg = self.parse_form()
+                        arg = self.parse_form(quoted)
                         if isinstance(arg, Symbol):
                             args.append(arg.name)
                     self.expect('RPAREN')
-                body = self._parse_forms_until_rparen()
+                body = self._parse_forms_until_rparen(quoted)
                 return LambdaNode(args=args, body=body)
             elif name == 'cond':
-                return self._parse_cond()
+                return self._parse_cond(quoted)
             elif name == 'defpackage':
                 return self._parse_defpackage()
             elif name == 'in-package':
-                name_tok = self.parse_form()
+                name_tok = self.parse_form(quoted)
                 pkg_name = name_tok.name if isinstance(name_tok, Symbol) else str(name_tok)
                 self.expect('RPAREN')
                 self.packages.set_current(pkg_name)
                 return InPackage(name=pkg_name)
             elif name in ('quote', 'function'):
-                expr = self.parse_form()
+                expr = self.parse_form(quoted=True)
                 self.expect('RPAREN')
                 return QuotedExpr(expr=expr)
             else:
-                items, dotted = self._parse_items_until_rparen()
+                items, dotted = self._parse_items_until_rparen(quoted)
                 if dotted is not None:
-                    return ListExpr(items=[head] + items, dotted=dotted)
+                    if quoted:
+                        return ListExpr(items=[head] + items, dotted=dotted)
+                    return Call(name=name, args=items + [dotted])
                 return Call(name=name, args=items)
-        items, dotted = self._parse_items_until_rparen()
+        items, dotted = self._parse_items_until_rparen(quoted)
         return ListExpr(items=[head] + items, dotted=dotted)
 
-    def _parse_forms_until_rparen(self) -> List[Node]:
-        items, dotted = self._parse_items_until_rparen()
+    def _parse_forms_until_rparen(self, quoted: bool = False) -> List[Node]:
+        items, dotted = self._parse_items_until_rparen(quoted)
         if dotted is not None:
             raise ParseError('Unexpected dotted pair')
         return items
 
-    def _parse_items_until_rparen(self) -> "tuple[List[Node], Optional[Node]]":
+    def _parse_items_until_rparen(self, quoted: bool = False) -> "tuple[List[Node], Optional[Node]]":
         items: List[Node] = []
         dotted: Optional[Node] = None
         while self.peek()[0] not in ('RPAREN', 'EOF'):
             if self.peek()[0] == 'DOT':
                 self.advance()
-                dotted = self.parse_form()
+                dotted = self.parse_form(quoted)
                 if self.peek()[0] != 'RPAREN':
                     raise ParseError('Dotted pair must be the last element')
                 break
-            items.append(self.parse_form())
+            items.append(self.parse_form(quoted))
         self.expect('RPAREN')
         return items, dotted
 
@@ -234,14 +239,14 @@ class Parser:
         self.packages.add_package(pkg_name, use, export)
         return Defpackage(name=pkg_name, use=use, export=export)
 
-    def _parse_cond(self) -> Cond:
+    def _parse_cond(self, quoted: bool = False) -> Cond:
         clauses = []
         while self.peek()[0] != 'RPAREN':
             if self.peek()[0] == 'LPAREN':
                 self.advance()
                 clause_items = []
                 while self.peek()[0] not in ('RPAREN', 'EOF'):
-                    clause_items.append(self.parse_form())
+                    clause_items.append(self.parse_form(quoted))
                 self.expect('RPAREN')
                 clauses.append(tuple(clause_items))
             else:

@@ -4,13 +4,16 @@
 
 FAS4 字节码编译器/反编译器：`.lsp` ↔ `.fas`（兼容 AutoLISP 的 CAD 平台）。
 
-`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持四个子命令：
+`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持七个子命令：
 
 ```
-atlispcc compile [-O {0,1,2}] <input.lsp> [output.fas]    # 编译 Lisp → FAS
+atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]    # 编译 Lisp → FAS
 atlispcc decompile <input.fas> [output.lsp]                # 反编译 FAS → Lisp
+atlispcc disasm <input.fas> [output.lasm]                  # 反汇编 FAS → 字节码指令列表
+atlispcc asm <input.lasm> [output.fas]                     # 汇编 .lasm → FAS
 atlispcc validate <input.lsp>                              # 语法验证
 atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]    # 多文件链接
+atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]  # VLX 容器
 ```
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
@@ -23,7 +26,7 @@ atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]    # 多文件链接
 Lisp 源码 → Parser.parse() → AST
          → SymbolTableBuilder.build() → SymbolTable
          → Codegen.generate() → List[FunctionDef]（指令流）
-         → [OptPipeline.optimize()  # 可选：-O1/-O2]
+         → [OptPipeline.optimize()  # 可选：-O1/-O2/-O3]
          → ResourceBuilder.build() → 资源段
          → FasWriter.write() → FAS4 二进制
 ```
@@ -44,8 +47,8 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 
 | 文件 | 作用 |
 |---|---|
-| `fas4_decompiler.py` (2136 行) | 主反编译器：解析 + 反汇编 + 分析 + 生成 |
-| `fas_core.py` (690 行) | 共享加密/解析/符号 — 被工具脚本使用，主反编译器通过 import 复用其 `find_key`/`decrypt_stream`/`build_mvar_tables`/`build_function_catalog` |
+| `fas4_decompiler.py` (2331 行) | 主反编译器：解析 + 反汇编 + 分析 + 生成 |
+| `fas_core.py` (691 行) | 共享加密/解析/符号 — 被工具脚本使用，主反编译器通过 import 复用其 `find_key`/`decrypt_stream`/`build_mvar_tables`/`build_function_catalog` |
 | `compiler/cli.py` | CLI 入口，子命令 dispatch |
 | `compiler/parser.py` | Lisp 源码解析器 → AST |
 | `compiler/ast.py` | AST 节点定义 |
@@ -53,9 +56,12 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | `compiler/codegen.py` | 字节码生成器（AST → 指令流） |
 | `compiler/resource_builder.py` | 常量/符号/函数索引 → 资源段 |
 | `compiler/fas_writer.py` | 指令流 → FAS4 二进制 |
-| `compiler/opt.py` | 优化器：常量折叠、死分支消除、窥孔优化、常量传播、死赋值消除 |
+| `compiler/opt.py` | 优化器：8 个 pass 跨 O1-O3 级别 |
+| `compiler/analyzer.py` | 编译分析与统计（--analyze） |
+| `compiler/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
+| `compiler/linker.py` | 多文件 FAS 链接器 |
+| `compiler/vlx_builder.py` | VLX 容器构建器 |
 | `validate.py` | 生成的 `.lsp` 语法验证器 |
-| `server/` | 实验性 pygls LSP 服务器（较不成熟，独立代码路径） |
 
 工具脚本（`decrypt_fas4.py`、`fas-split.py`、`fas-analyzer.py`、`crack_key.py` 等）使用 `fas_core.py` 中的函数。
 
@@ -68,6 +74,9 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | PeepholeOpt | `(progn x)` → `x`, `(list)` → `nil` | O1+ |
 | ConstantPropagate | `(setq x 3) (+ x 1)` → `(setq x 3) (+ 3 1)` | O2 |
 | DeadAssignElim | 移除未使用的 `(setq x ...)` | O2 |
+| CrossFuncConstPropagate | 常量返回的 0 参函数替换为常量 | O3 |
+| DeadCodeElim | 删除 `exit`/`quit` 后的死代码 | O3 |
+| InlineSmallFuncs | 内联单次调用的小函数 | O3 |
 
 ## 命令
 
@@ -97,12 +106,20 @@ mypy .                                  # 类型检查
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格）：
-- `test_parser.py` — AST 解析器（14 用例）
-- `test_compile_decompile.py` — 编译-反编译往返（含 AutoCAD `fun.fas` 参考反编译回归）
-- `test_compiler_output.py` — FAS 输出正确性（8 用例）
-- `test_assembler.py` — 反汇编/汇编往返（4 用例）
-- `test_linker.py` — 多文件链接（8 用例）
+**测试文件在 `tests/` 目录下**（pytest 风格，共 161 用例）：
+- `test_parser.py` — AST 解析器（19 用例）
+- `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
+- `test_symbol_table.py` — 符号表/作用域（10 用例）
+- `test_analyzer.py` — 编译分析/尾递归（9 用例）
+- `test_cli.py` — CLI 路径（10 用例：compile/-O/--analyze/validate/link/vlx/dispatch）
+- `test_compile_decompile.py` — 编译-反编译往返（28 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返）
+- `test_compiler_output.py` — FAS 输出正确性（12 用例）
+- `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
+- `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
+- `test_assembler.py` — 反汇编/汇编往返（5 用例）
+- `test_disasm.py` — 反汇编健壮性（8 用例，含未处理操作码降级）
+- `test_packages.py` — CL 风格包系统（4 用例）
+- `test_vlx_builder.py` — VLX 容器（3 用例）
 
 手动测试文件 `tests/test_*.lsp` 也在该目录。
 

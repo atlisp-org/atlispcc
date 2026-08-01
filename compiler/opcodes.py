@@ -7,14 +7,16 @@ OPCODES = {
     0x03: ('PUSH_VALUE', '2'), 0x05: ('GET_LOCAL', '1'), 0x06: ('SETQ_G', '2'), 0x07: ('COPY_ELEM', 'bb'),
     0x09: ('PUSH_G', '2'), 0x0a: ('POP', ''), 0x0b: ('DUP', ''),
     0x0c: ('PUSH_GLOBAL', '2'), 0x0d: ('JMP16_IFNOT', '2'), 0x0e: ('JMP16_IF', '2'),
-    0x14: ('DEFUN', 'h'), 0x16: ('END_DEFUN', ''), 0x18: ('INIT_ARGS', '2'),
-    0x19: ('CLEAR_ARGS', '2'), 0x1c: ('INIT_DONE', ''), 0x1e: ('ALPHA', '1'), 0x1f: ('BETA', '1'),
+    0x10: ('OP_10', ''), 0x14: ('DEFUN', 'h'), 0x15: ('DEFUN2', 'h'), 0x16: ('END_DEFUN', ''),
+    0x18: ('INIT_ARGS', '2'),
+    0x19: ('CLEAR_ARGS', '2'), 0x1a: ('OP_1A', '2'), 0x1b: ('OP_1B', '2'), 0x1c: ('INIT_DONE', ''),
+    0x1e: ('ALPHA', '1'), 0x1f: ('BETA', '1'),
     0x20: ('NOP', ''), 0x21: ('END_DEFUN_CLEANUP', '2'), 0x23: ('NOT', ''), 0x24: ('ATOM', ''),
      0x28: ('CAR', ''), 0x29: ('CDR', ''), 0x2A: ('CONS', ''), 0x32: ('PUSH_INT8', '1'), 0x33: ('PUSH_INT32', '4'),
-    0x34: ('EVAL', 'e'), 0x37: ('LIST_OBJ', '2'), 0x39: ('BUILD_LIST', '2'),
+    0x34: ('EVAL', 'e'), 0x37: ('LIST_OBJ', '2'), 0x38: ('OP_38', ''), 0x39: ('BUILD_LIST', '2'),
     0x3a: ('DEFCODE', ''), 0x3b: ('PUSH_REAL', 'z'), 0x3c: ('JMP16_IFNOT_2', '2'),
     0x3d: ('JMP16_IF_2', '2'), 0x3e: ('EXIT_IF_NOT_ZERO', ''), 0x3f: ('EXIT_IF_ZERO', ''),
-    0x40: ('UNK_40', ''),
+    0x40: ('OP_40', ''),
     0x35: ('USUBR', 'u'),
     0x46: ('FIX_ADD', ''), 0x47: ('FIX_SUB', ''), 0x48: ('FIX_MUL', ''), 0x49: ('FIX_DIV', ''),
     0x4a: ('FIX_MOD', ''), 0x4b: ('FIX_LEQ', ''), 0x4c: ('FIX_GEQ', ''), 0x4d: ('FIX_LT', ''),
@@ -98,13 +100,6 @@ def encode_eval(argc: int, flag: int = 0) -> bytes:
 def encode_real(value: float) -> bytes:
     s = f'{value:g}'.encode('ascii')
     return bytes([0x3b]) + s + b'\x00'
-
-
-def encode_jump(op: int, offset: int) -> bytes:
-    if op in (0x0d, 0x0e, 0x3c, 0x3d):
-        return encode_op_u16(op, offset & 0xFFFF)
-    else:
-        return encode_op_s32(op, offset)
 
 
 def encode_instruction(name: str, operands: List[Any]) -> bytes:

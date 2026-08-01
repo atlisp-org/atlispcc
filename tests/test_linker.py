@@ -162,3 +162,72 @@ def test_link_needs_two_inputs():
     import pytest
     with pytest.raises(ValueError):
         link_fas(['single.fas'], '/dev/null')
+
+
+def test_link_function_name_collision_warns(capsys):
+    """Duplicate function names across files emit a warning."""
+    src1 = """(defun foo (x) (+ x 1))
+"""
+    src2 = """(defun foo (x) (* x 100))
+"""
+    fas1 = _compile(src1)
+    fas2 = _compile(src2)
+
+    out = os.path.join(tempfile.gettempdir(), 'test_lk_collision.fas')
+
+    try:
+        link_fas([fas1, fas2], out)
+        captured = capsys.readouterr()
+        assert 'function name collision' in captured.err
+        assert 'foo' in captured.err
+        code = _decompile(out)
+        assert 'defun foo' in code or '(foo' in code.lower()
+    finally:
+        for p in [fas1, fas2, out]:
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def test_link_command_name_collision_warns(capsys):
+    """Duplicate C: command names across files emit a warning."""
+    src1 = """(defun c:run () (princ "one"))
+"""
+    src2 = """(defun c:run () (princ "two"))
+"""
+    fas1 = _compile(src1)
+    fas2 = _compile(src2)
+
+    out = os.path.join(tempfile.gettempdir(), 'test_lk_cmd.fas')
+
+    try:
+        link_fas([fas1, fas2], out)
+        captured = capsys.readouterr()
+        assert 'function name collision' in captured.err
+        assert 'c:run' in captured.err
+    finally:
+        for p in [fas1, fas2, out]:
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def test_link_first_definition_wins(capsys):
+    """Colliding function keeps the FIRST definition's behavior."""
+    src1 = """(defun foo (x) (+ x 1))
+(defun call-foo (x) (foo x))
+"""
+    src2 = """(defun foo (x) (* x 100))
+"""
+    fas1 = _compile(src1)
+    fas2 = _compile(src2)
+
+    out = os.path.join(tempfile.gettempdir(), 'test_lk_first.fas')
+
+    try:
+        link_fas([fas1, fas2], out)
+        capsys.readouterr()  # discard warning
+        code = _decompile(out)
+        assert '(+ x 1)' in code, f'first definition lost: {code}'
+    finally:
+        for p in [fas1, fas2, out]:
+            if os.path.exists(p):
+                os.unlink(p)

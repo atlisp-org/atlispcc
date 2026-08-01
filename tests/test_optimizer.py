@@ -11,6 +11,7 @@ from compiler.opt import (
     constant_fold, dead_branch_elim, peephole,
     dead_assign_elim, const_propagate, dead_code_elim,
     inline_small_funcs, cross_func_const_propagate, optimize,
+    remove_dead_functions,
 )
 from compiler.analyzer import analyze, find_tail_recursive
 
@@ -271,3 +272,134 @@ def test_o3_with_cross_func_const():
     assert foo is not None
     assert isinstance(foo.body[0], Integer)
     assert foo.body[0].value == 8
+
+
+# ─── Dead function removal (O3) ────────────────────────────────────────
+
+
+def test_remove_dead_uncalled():
+    src = '''
+(defun helper () 1)
+(defun orphan () 2)
+(defun c:run () (helper))
+'''
+    prog = parse(src)
+    result = remove_dead_functions(prog)
+    assert [f.name for f in result.forms if isinstance(f, Defun)] == ['helper', 'c:run']
+
+
+def test_remove_dead_keeps_called_and_command():
+    src = '''
+(defun used () 1)
+(defun c:cmd () (used))
+(defun orphan () 2)
+'''
+    prog = parse(src)
+    result = remove_dead_functions(prog)
+    names = {f.name for f in result.forms if isinstance(f, Defun)}
+    assert names == {'used', 'c:cmd'}
+
+
+def test_remove_dead_keeps_quoted_ref():
+    src = '''
+(defun helper (x) (1+ x))
+(defun main (lst) (mapcar 'helper lst))
+(defun c:go () (main nil))
+'''
+    prog = parse(src)
+    result = remove_dead_functions(prog)
+    names = {f.name for f in result.forms if isinstance(f, Defun)}
+    assert names == {'helper', 'main', 'c:go'}
+
+
+def test_remove_dead_keeps_quoted_list_head():
+    src = '''
+(defun cb () 1)
+(defun c:go () (apply 'cb nil))
+'''
+    prog = parse(src)
+    result = remove_dead_functions(prog)
+    names = {f.name for f in result.forms if isinstance(f, Defun)}
+    assert names == {'cb', 'c:go'}
+
+
+def test_remove_dead_library_keeps_all():
+    src = '''
+(defun a () 1)
+(defun b () (a))
+'''
+    prog = parse(src)
+    result = remove_dead_functions(prog)
+    assert {f.name for f in result.forms if isinstance(f, Defun)} == {'a', 'b'}
+
+
+def test_const_propagate_loop_carried():
+    """Loop-carried variables must NOT be const-propagated into the loop."""
+    src = '''
+(defun f (rows / i n)
+  (setq i 0)
+  (setq n (length rows))
+  (while (< i n)
+    (setq i (1+ i))
+  )
+  i
+)'''
+    prog = parse(src)
+    result = const_propagate(prog)
+    f = result.forms[0]
+    while_node = f.body[2]
+    assert isinstance(while_node, WhileNode)
+    assert isinstance(while_node.cond.args[0], Symbol)
+    assert while_node.cond.args[0].name == 'i'
+    body_setq = while_node.body[0]
+    assert isinstance(body_setq, Setq)
+    assert isinstance(body_setq.pairs[0][0], Symbol)
+
+
+def test_const_propagate_branch_assigned_invalidated():
+    """A variable assigned inside an if-branch loses its constant afterward."""
+    src = '''
+(defun f (x / y)
+  (setq y 0)
+  (if x (setq y 5) (setq y 6))
+  (+ y 1)
+)'''
+    prog = parse(src)
+    result = const_propagate(prog)
+    f = result.forms[0]
+    last = f.body[-1]
+    assert isinstance(last, Call)
+    assert isinstance(last.args[0], Symbol)
+    assert last.args[0].name == 'y'
+
+
+def test_const_propagate_repeat_loop_carried():
+    src = '''
+(defun f (n / acc)
+  (setq acc 0)
+  (repeat n
+    (setq acc (1+ acc))
+  )
+  acc
+)'''
+    prog = parse(src)
+    result = const_propagate(prog)
+    f = result.forms[0]
+    repeat_node = f.body[1]
+    assert isinstance(repeat_node, RepeatNode)
+    body_setq = repeat_node.body[0]
+    assert isinstance(body_setq.pairs[0][0], Symbol)
+    assert body_setq.pairs[0][0].name == 'acc'
+
+
+def test_remove_dead_wired_in_o3():
+    src = '''
+(defun keep (x) (1+ x))
+(defun c:run () (keep 1))
+(defun unused (x) (* x 2))
+'''
+    prog = parse(src)
+    result = optimize(prog, level=3)
+    names = {f.name for f in result.forms if isinstance(f, Defun)}
+    assert 'unused' not in names
+    assert 'c:run' in names
