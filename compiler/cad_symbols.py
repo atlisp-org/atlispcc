@@ -1,10 +1,12 @@
 """CAD stub 符号槽顺序推导（AutoCAD 从右到左收集算法）。
 
-CAD 紧凑 stub 格式按符号槽编址，符号槽注册顺序由 AutoCAD 编译器
-的"从右到左"扫描决定：
-1. 所有函数名逆序（最后一个函数名在前）
-2. 从最后一个函数往前，收集函数体符号（内建/字符串逆序，参数最后）
-3. 函数名重复（逆序）
+CAD 紧凑 stub 格式按符号槽编址，符号槽注册顺序 = **首次字节码引用序的逆序**：
+
+1. 所有函数名逆序（最后一个函数名在前，槽 0）
+2. 函数体符号按"首次字节码引用序"逆序收集（调用内参数先于函数名
+   出现在字节码中：`PUSH_G arg… → USUBR func`，故逆序后函数名在前）
+3. 唯一参数（只被一个函数使用）随后，共享参数最后
+4. 递归/跨函数调用产生重复函数名槽
 """
 from compiler.ast import (
     Symbol, String, Integer, Real, ListExpr, QuotedExpr,
@@ -25,10 +27,11 @@ class CadSymbolCollector:
         if force or name not in self.names:
             self.names.append(name)
 
-    def collect_func_names(self, defuns):
-        """收集所有函数名（逆序）。"""
-        for f in reversed(defuns):
-            self.add(f.name)
+    @staticmethod
+    def _seen(out, name=None):
+        if name is None:
+            return out
+        return any(n == name for n, _ in out)
 
     def collect_program(self, program):
         defuns = [f for f in program.forms if isinstance(f, Defun)]
@@ -42,96 +45,104 @@ class CadSymbolCollector:
         # 1. 函数名逆序
         for f in reversed(defuns):
             self.add(f.name)
-        # 2. 从后往前收集函数体符号；每个函数的"唯一参数"紧跟其内建
+        # 2. 函数体符号：按"首次字节码引用序"逆序收集
+        for f in defuns:
+            arg_names = set(f.args)
+            refs = []
+            for expr in f.body:
+                self._collect_forward(expr, refs, arg_names)
+            for name, force in reversed(refs):
+                self.add(name, force=force)
+        # 3. 唯一参数（只被一个函数使用）紧跟函数体内建/字符串
         for f in reversed(defuns):
-            self.arg_names = set(f.args)
-            for expr in reversed(f.body):
-                self.collect_expr(expr)
             for arg in reversed(f.args):
                 if arg_usage.get(arg, 0) == 1:
                     self.add(arg)
             for loc in reversed(f.locals):
                 self.add(loc)
-        # 3. 共享参数（被多函数使用）统一最后
-        self.arg_names = set()
+        # 4. 共享参数（被多函数使用）统一最后
         for f in reversed(defuns):
             for arg in reversed(f.args):
                 if arg_usage.get(arg, 0) > 1:
                     self.add(arg)
-        # 4. 顶层代码
-        for form in reversed(others):
-            self.collect_expr(form)
-        # 5. 函数名重复（逆序）——由 DEFCODE 补充，此处不重复
+        # 5. 顶层代码
+        refs = []
+        for form in others:
+            self._collect_forward(form, refs, set())
+        for name, force in reversed(refs):
+            self.add(name, force=force)
         return self.names
 
-    def collect_expr(self, node):
+    def _collect_forward(self, node, out, arg_names):
+        """按字节码首次引用序向前收集 (name, forced) 列表。"""
         if isinstance(node, Symbol):
-            if node.name not in self.arg_names:
-                self.add(node.name)
+            if node.name not in arg_names and not self._seen(out, node.name):
+                out.append((node.name, False))
         elif isinstance(node, Call):
-            if node.name in self.func_names and node.name not in self.forced:
-                # 递归/跨函数调用：首次引用时重复注册（CAD 行为），后续去重
-                self.add(node.name, force=True)
-                self.forced.add(node.name)
-            elif node.name not in self.arg_names:
-                self.add(node.name)
-            for a in reversed(node.args):
-                self.collect_expr(a)
+            for a in node.args:
+                self._collect_forward(a, out, arg_names)
+            if node.name in self.func_names:
+                # 递归/跨函数调用：首次引用分配重复槽（CAD 行为）
+                out.append((node.name, True))
+            elif node.name not in arg_names and not self._seen(out, node.name):
+                out.append((node.name, False))
         elif isinstance(node, Setq):
-            for target, value in reversed(node.pairs):
+            for target, value in node.pairs:
                 if value:
-                    self.collect_expr(value)
-                if isinstance(target, Symbol) and target.name not in self.arg_names:
-                    self.add(target.name)
-                elif not isinstance(target, Symbol):
-                    self.collect_expr(target)
+                    self._collect_forward(value, out, arg_names)
+                if isinstance(target, Symbol):
+                    if target.name not in arg_names and not self._seen(out, target.name):
+                        out.append((target.name, False))
+                else:
+                    self._collect_forward(target, out, arg_names)
         elif isinstance(node, IfNode):
-            if node.else_expr:
-                self.collect_expr(node.else_expr)
+            if node.cond:
+                self._collect_forward(node.cond, out, arg_names)
             if node.then:
-                self.collect_expr(node.then)
-            if node.cond:
-                self.collect_expr(node.cond)
+                self._collect_forward(node.then, out, arg_names)
+            if node.else_expr:
+                self._collect_forward(node.else_expr, out, arg_names)
         elif isinstance(node, WhileNode):
-            for expr in reversed(node.body):
-                self.collect_expr(expr)
             if node.cond:
-                self.collect_expr(node.cond)
+                self._collect_forward(node.cond, out, arg_names)
+            for expr in node.body:
+                self._collect_forward(expr, out, arg_names)
         elif isinstance(node, Progn):
-            for form in reversed(node.forms):
-                self.collect_expr(form)
+            for form in node.forms:
+                self._collect_forward(form, out, arg_names)
         elif isinstance(node, ForeachNode):
-            self.add("foreach")
-            for expr in reversed(node.body):
-                self.collect_expr(expr)
+            out.append(("foreach", False))
+            for expr in node.body:
+                self._collect_forward(expr, out, arg_names)
             if node.list_expr:
-                self.collect_expr(node.list_expr)
+                self._collect_forward(node.list_expr, out, arg_names)
             if node.var is not None:
-                self.collect_expr(node.var)
+                self._collect_forward(node.var, out, arg_names)
         elif isinstance(node, RepeatNode):
-            self.add("repeat")
-            for expr in reversed(node.body):
-                self.collect_expr(expr)
+            out.append(("repeat", False))
+            for expr in node.body:
+                self._collect_forward(expr, out, arg_names)
             if node.count:
-                self.collect_expr(node.count)
+                self._collect_forward(node.count, out, arg_names)
         elif isinstance(node, Cond):
-            for clause in reversed(node.clauses):
-                for item in reversed(clause):
-                    self.collect_expr(item)
+            for clause in node.clauses:
+                for item in clause:
+                    self._collect_forward(item, out, arg_names)
         elif isinstance(node, ListExpr):
-            for item in reversed(node.items):
-                self.collect_expr(item)
+            for item in node.items:
+                self._collect_forward(item, out, arg_names)
         elif isinstance(node, QuotedExpr):
             if node.expr:
-                self.collect_expr(node.expr)
+                self._collect_forward(node.expr, out, arg_names)
         elif isinstance(node, LambdaNode):
-            self.add("lambda")
-            for arg in reversed(node.args):
-                self.add(arg)
-            for expr in reversed(node.body):
-                self.collect_expr(expr)
+            out.append(("lambda", False))
+            for arg in node.args:
+                out.append((arg, False))
+            for expr in node.body:
+                self._collect_forward(expr, out, arg_names)
         elif isinstance(node, String):
-            self.add('"' + node.value + '"')
+            if not self._seen(out, '"' + node.value + '"'):
+                out.append(('"' + node.value + '"', False))
         elif isinstance(node, (Integer, Real)):
             pass
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import struct
 import os
 import datetime
@@ -80,14 +82,19 @@ class FasWriter:
         self.symtab = symtab
 
     def write(self, filepath: str, seg0: bytes, seg1: bytes, sec2_items: int = 0,
-              encrypt: bool = True, key_len: int = 23, first_argc: int = 0,
-              nsyms: int = -1):
+              encrypt: bool = True, key_len: int = 23, nsyms: int = -1,
+              compact: bool = False):
         if nsyms < 0:
             nsyms = len(self.symtab.entries)
 
         seg0_header = f'{nsyms} $'.encode('ascii')
         seg0_payload = seg0_header + seg0
-        total_size = len(seg0_payload)
+        if compact:
+            # CAD 紧凑 stub：total_size 覆盖 seg0_payload 前 len-2 字节，
+            # seg0 末尾 2 字节在 total_size 区域之外（CAD 实测 rest-ts=2）。
+            total_size = len(seg0_payload) - 2
+        else:
+            total_size = len(seg0_payload)
 
         file_header = FAS4_MAGIC
         file_header += str(total_size).encode('ascii') + b'\r\n'
@@ -101,17 +108,9 @@ class FasWriter:
 
         seg1_header = f'{len(seg1_data)} {sec2_items} $'.encode('ascii')
 
-        # seg0 尾部 2 字节：CAD 编码首个函数的参数数。
-        # argc>0 时 = <argc> 0x00；argc=0 时 = 0x00 0x03。
-        if first_argc > 0:
-            tail = bytes([first_argc & 0xFF, 0x00])
-        else:
-            tail = b'\x00\x03'
-
         output = bytearray()
         output.extend(file_header)
         output.extend(seg0_payload)
-        output.extend(tail)
         output.extend(SEG_TERMINATOR)
         output.extend(seg1_header)
         output.extend(seg1_data)

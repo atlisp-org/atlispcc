@@ -1,0 +1,4 @@
+# tests/cad/ 下的 .lsp/.fas 是 CAD 兼容性测试的输入与参考产物，
+# 需被 git 跟踪（父目录 .gitignore 的 *.lsp/*.fas 规则例外）
+!*.lsp
+!*.fas

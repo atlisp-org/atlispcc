@@ -1,6 +1,14 @@
 import struct
 from typing import List, Dict, Any, Tuple, Optional
+from fas_core import get_ansi_encoding
 from compiler.symbol_table import SymbolTable
+
+
+def resolve_encoding(enc: Optional[str]) -> str:
+    """将 'ansi'/'auto'/'system' 解析为实际编码。"""
+    if not enc or enc.lower() in ('ansi', 'auto', 'system'):
+        return get_ansi_encoding()
+    return enc
 
 
 def res_u16(v: int) -> bytes:
@@ -74,13 +82,17 @@ def count_resource_records(res_stream: bytes) -> int:
 
 
 class ResourceBuilder:
-    def __init__(self, symtab: SymbolTable):
+    def __init__(self, symtab: SymbolTable, encoding: Optional[str] = None):
         self.symtab = symtab
+        self.encoding = resolve_encoding(encoding)
         self.data = bytearray()
+
+    def _enc(self, s: str) -> bytes:
+        return str(s).encode(self.encoding, errors='replace')
 
     def _push_single_symbol(self, name: str):
         self.data.append(0x5B)
-        self.data.extend(name.encode('utf-8', errors='replace'))
+        self.data.extend(self._enc(name))
         self.data.append(0)
         self.data.append(0)
 
@@ -122,7 +134,7 @@ class ResourceBuilder:
             # CAD 模块注册：所有函数名（源码逆序）+ PUSH_NIL + GVARINIT。
             fn_bytes = bytearray()
             for fname in reversed(func_names_all):
-                fn_bytes += str(fname).encode('utf-8', errors='replace') + b'\x00'
+                fn_bytes += self._enc(fname) + b'\x00'
             out += b'\x5b' + bytes(fn_bytes) + b'\x00'
             out += b'\x01' * 2
             out += res_gvar_init(0, len(func_names_all) + 2) + b'\x0a'
@@ -146,7 +158,7 @@ class ResourceBuilder:
                 if i < skip_first - 1 and entry_type == 'SYMBOL':
                     continue
                 if entry_type == 'SYMBOL':
-                    symbol_bytes += str(entry_val).encode('utf-8', errors='replace') + b'\x00'
+                    symbol_bytes += self._enc(entry_val) + b'\x00'
                 elif entry_type == 'STRING':
                     if symbol_bytes:
                         out += b'\x5b' + bytes(symbol_bytes) + b'\x00'
@@ -187,7 +199,7 @@ class ResourceBuilder:
                     out += b'\x5c\x00\x00\x32' + bytes([off & 0xFF])
                 else:
                     out += b'\x5c\x00\x00' + res_int32(off)
-                out += b'\x5b' + str(fname).encode('utf-8', errors='replace') + b'\x00\x00'
+                out += b'\x5b' + self._enc(fname) + b'\x00\x00'
                 # CAD 只有最后一个 DEFCODE 追加 01（stub 格式）。
                 out += b'\x3a\x01' if fi == len(func_names) - 1 else b'\x3a'
             else:
@@ -195,7 +207,7 @@ class ResourceBuilder:
                     out += b'\x5c\x00\x00\x32' + bytes([off & 0xFF])
                 else:
                     out += b'\x5c\x00\x00' + res_int32(off)
-                out += b'\x5b' + str(fname).encode('utf-8', errors='replace') + b'\x00\x00'
+                out += b'\x5b' + self._enc(fname) + b'\x00\x00'
                 out += b'\x3a\x01'
         out += res_gvar_init(len(func_names) + 2 if stub_format else max(0, entry_count - 1),
                              len(func_names) if stub_format else len(func_names))
@@ -206,13 +218,12 @@ class ResourceBuilder:
 
         return bytes(out)
 
-    @staticmethod
-    def _push_entry(out: bytearray, entry: Tuple[str, Any]):
+    def _push_entry(self, out: bytearray, entry: Tuple[str, Any]):
         entry_type, entry_val = entry
         if entry_type == 'SYMBOL':
-            out += b'\x5b' + str(entry_val).encode('utf-8', errors='replace') + b'\x00\x00'
+            out += b'\x5b' + self._enc(entry_val) + b'\x00\x00'
         elif entry_type == 'STRING':
-            encoded = str(entry_val).encode('utf-8', errors='replace')
+            encoded = self._enc(entry_val)
             out += b'\x55\x01\x00' + res_u16(len(encoded)) + encoded
         elif entry_type == 'INT':
             val = int(entry_val)

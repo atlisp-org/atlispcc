@@ -9,7 +9,7 @@ from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.ast import Defun, Defpackage, InPackage
 from compiler.opt import optimize
-from compiler.resource_builder import ResourceBuilder, build_module_code, count_resource_records
+from compiler.resource_builder import ResourceBuilder, build_module_code, count_resource_records, resolve_encoding
 from compiler.fas_writer import FasWriter
 from compiler.analyzer import analyze
 from compiler.linker import link_fas
@@ -159,7 +159,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     return bytes(out)
 
 
-def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis: bool = False) -> str:
+def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis: bool = False,
+                encoding: str = 'ansi') -> str:
     if os.path.exists(source):
         with open(source, 'r', encoding='utf-8') as f:
             source_code = f.read()
@@ -256,7 +257,7 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     seg0 = bytes(all_bytecode.data)
 
     module_code = build_module_code(len(defun_forms))
-    resource = ResourceBuilder(symtab)
+    resource = ResourceBuilder(symtab, encoding=encoding)
     # nsyms = len(entries) - 函数数 + 1（CAD 实测：函数注册 GVARINIT st_init）
     fas_nsyms = len(symtab.entries) - len(defun_forms) + 1
     seg0_payload = f'{fas_nsyms} $'.encode() + seg0
@@ -270,9 +271,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
 
     output = output or source.replace('.lsp', '.fas')
     writer = FasWriter(symtab)
-    first_argc = len(defun_forms[-1].args) if defun_forms else 0
-    writer.write(output, seg0, seg1, sec2_items=sec2_items, first_argc=first_argc,
-                 nsyms=fas_nsyms)
+    writer.write(output, seg0, seg1, sec2_items=sec2_items, nsyms=fas_nsyms,
+                 compact=True)
     print(f'Compiled to {output}')
     return output
 
@@ -322,8 +322,8 @@ def cmd_validate(source: str) -> int:
     return 0 if ok else 1
 
 
-def cmd_link(inputs: list, output: str, verbose: bool = False) -> str:
-    return link_fas(inputs, output, verbose)
+def cmd_link(inputs: list, output: str, verbose: bool = False, encoding: str = 'ansi') -> str:
+    return link_fas(inputs, output, verbose, encoding=encoding)
 
 
 def main():
@@ -341,6 +341,9 @@ def main():
                            help='optimization level (0=none, 1=basic, 2=aggressive, 3=extreme)')
     p_compile.add_argument('--analyze', action='store_true',
                            help='show compilation analysis report')
+    p_compile.add_argument('--encoding', default='ansi',
+                           help='string/symbol encoding for FAS output '
+                                '(ansi=system codepage on Windows, default; or utf-8, gbk, cp936, ...)')
 
     # decompile
     p_decompile = sub.add_parser('decompile', aliases=['d'], help='Decompile .fas → .lsp')
@@ -368,6 +371,8 @@ def main():
     p_link.add_argument('inputs', nargs='+', help='input .fas files (2 or more)')
     p_link.add_argument('-o', '--output', default='', help='output .fas file')
     p_link.add_argument('--verbose', '-v', action='store_true', help='verbose output')
+    p_link.add_argument('--encoding', default='ansi',
+                        help='string/symbol encoding for linked FAS output (default: ansi=system codepage)')
 
     # build-vlx
     p_vlx = sub.add_parser('build-vlx', help='Build VLX container from .fas files')
@@ -386,7 +391,7 @@ def main():
 
     if args.command in ('compile', 'c'):
         cmd_compile(args.source, args.output, opt_level=args.O,
-                    show_analysis=args.analyze)
+                    show_analysis=args.analyze, encoding=args.encoding)
         return 0
 
     if args.command in ('decompile', 'd'):
@@ -412,7 +417,7 @@ def main():
         if not output:
             base = args.inputs[-1].rsplit('.', 1)[0]
             output = f'{base}_linked.fas'
-        cmd_link(args.inputs, output, args.verbose)
+        cmd_link(args.inputs, output, args.verbose, args.encoding)
         return 0
 
     if args.command == 'build-vlx':

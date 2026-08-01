@@ -1,8 +1,8 @@
-# Fas2Lsp - Agent 指南
+# atlispcc - Agent 指南
 
 ## 项目
 
-FAS4 字节码编译器/反编译器：`.lsp` ↔ `.fas`（兼容 AutoLISP 的 CAD 平台）。
+**atlispcc** = **A**uto**L**ISP **C**ompiler **C**ollection，FAS4 字节码编译器套件：`.lsp` ↔ `.fas`（兼容 AutoLISP 的 CAD 平台）。
 
 `atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持七个子命令：
 
@@ -127,9 +127,12 @@ mypy .                                  # 类型检查
 
 FAS4 输出格式与 AutoCAD 编译器一致：
 - seg0 = 函数字节码（`<nsyms> $...`），seg1 = 资源段（常量/符号/函数索引）
+- 紧凑 stub 格式 `total_size = len(seg0_payload) - 2`（CAD 实测恒等；末尾 2 字节为末段指令尾部，位于 total_size 之外、终止符之前）；自包含格式 `total_size = len(seg0_payload)`。`FasWriter.write(..., compact=True)` 走前者（CLI/链接器），自包含走后者（汇编/测试）
+- 紧凑 stub 生成规则（与 CAD 逐字节一致）：中间 setq 无 POP、尾 setq 先 DUP、无 else 的 `if` 补 PUSH_NIL
 - seg1 使用滚动 XOR 加密（`find_key`/`decrypt_stream`），尾部含密钥长度字节 + 密钥 + `;fas4 crunch` 标记
 - 段分隔符为 `16 24 0d 0a`，`nsyms` 为符号槽数（资源注册顺序）
 - seg1 资源流 = 模块头(`14 01 01 01 00`) + 代码引用 + 符号/字符串注册 + GVARINIT + DEFCODE + INIT_DONE + 模块代码；`seg1` 头 `items` = GVARINIT + INIT_DONE 计数
+- 符号槽顺序 = 字节码首次引用序**整体逆序**（`compiler/cad_symbols.py`）
 - 反编译回归参考：AutoCAD 产物 `tests/fun-cad.fas`（对应 `tests/fun.lsp`）
 
 反编译器同时支持两种布局：
@@ -145,5 +148,6 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 
 ## 文档
 
+- `README.md` — 使用者文档（安装、CLI 用法、工作流、工具参考）
+- `docs/lasm.md` — LASM 汇编语言参考（disasm/asm）
 - `docs/development.md` — 架构详解、代码规范、调试指南
-- `docs/usage.md` — 用户安装、编译/反编译工作流、工具参考

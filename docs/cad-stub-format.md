@@ -5,8 +5,8 @@
 > AutoCAD 24.1s 实测验证与 `tests/fun-cad.fas`、`samples/PDI.fas`、`samples/bib.fas` 等
 > 参考文件逐字节对比。
 >
-> 实测成果：本项目编译的单函数与**多函数** LSP 均可在 AutoCAD 中加载并
-> 正确执行（14/14 用例通过）。
+> 实测成果：本项目编译的单函数 LSP 的 seg0 字节码与 AutoCAD 产物**逐字节一致**
+> （t1–t11），且可在 CAD 中加载并正确执行（alert/if/setq/list/中文 全部通过）。
 
 ---
 
@@ -33,7 +33,6 @@
 ├──────────────────────────────────────────────┤
 │ ② seg0（明文）                                │
 │    <nsyms> $ + 函数字节码                      │
-│    + seg0 尾部 2 字节                          │
 │    + 段分隔符 16 24 0d 0a                     │
 ├──────────────────────────────────────────────┤
 │ ③ seg1（加密）                                │
@@ -42,6 +41,11 @@
 │ ④ trailer  <key_len> + 密钥 + $; + 日期       │
 └──────────────────────────────────────────────┘
 ```
+
+**total_size（紧凑 stub 格式，CAD 实测恒等）**：`total_size = len(seg0_payload) - 2`，
+其中 `seg0_payload = <nsyms> $ + 字节码`。即 CAD 的 `total_size` 比 seg0 实际长度**少 2**：
+seg0 末尾 2 字节（末段指令尾部）位于 total_size 统计之外、`16 24 0d 0a` 终止符之前。
+`FasWriter.write(..., compact=True)` 按此规则写盘。
 
 ---
 
@@ -112,6 +116,8 @@ PUSH_G <idx:2>         # 09 xx xx（字符串字面量）
 
 ### 2.4 调用（USUBR）
 
+**USUBR 即 CAD 内部的 Xsubr 指令**（调用函数，见 `docs/opcodes.md`）。
+
 3 字节短形式：
 
 ```
@@ -145,6 +151,19 @@ JUMP <end>               # 57 s4
 else 分支
 ```
 
+**无 else 的 if**（`(if cond then)`）：else 标签处补隐式 `PUSH_NIL`（cond 假返回 nil），
+then 分支末尾的 `JUMP` 跳过它。例 t9 `(if (> 1 2) (alert "yes"))` 尾部：
+`... 57 01 00 00 00 01`（JUMP +1 跳过 PUSH_NIL `01`）。
+
+**setq（紧凑 stub，CAD 实测）**：
+
+- 中间 setq：`SETQ_G <槽:2>` 后**不追加 POP**（SETQ_G 自身消费栈顶，与自包含格式不同）
+- 尾 setq（函数体最后一句）：先 `DUP`（`0b`）再 `SETQ_G`，保留返回值
+- 中间非 setq 调用表达式仍以 `POP`（`0a`）清理
+
+例 t10 `(defun a () (setq x (alert "m")) x)` 尾部：
+`... 00 03 06 01 00 03 01 00`（SETQ_G 1 后 PUSH_VALUE 1，无 POP）。
+
 **递归**：禁用尾递归循环优化（不用 JUMP 回跳），用 USUBR 递归调用自身；
 递归引用使用符号槽中的**重复槽**（同一函数名出现多次）。
 
@@ -154,14 +173,18 @@ else 分支
 - 无参函数末尾：`00 03`
 - **多函数间分隔符**：有参 `<argc> 00 16`；无参 `00 16`
 
-### 2.8 seg0 尾部 2 字节
+### 2.8 seg0 末尾 2 字节（total_size 之外）
 
-CAD 编码**源码最后一个函数**的参数数：
+紧凑 stub 文件的 seg0 比 `total_size` 长 2 字节。这 2 字节是**最后一个函数指令序列
+末尾的字节**（非独立 argc 编码），位于 `16 24 0d 0a` 终止符之前：
 
-| 函数 argc | tail |
-|-----------|------|
-| argc > 0  | `<argc> 00` |
-| argc = 0  | `00 03` |
+| 示例 | 末尾指令 | total_size 外 2 字节 |
+|------|---------|---------------------|
+| t9（无 else if） | `JUMP +1` + `PUSH_NIL` | `00 01` |
+| t10（setq 尾） | `PUSH_VALUE [1]` | `01 00` |
+| t11（有参 list） | `PUSH_NIL` + `NIL` | `01 00` |
+
+> 历史描述「尾部编码源码最后一个函数的参数数」为误判，已由 AutoCAD 逐字节对比纠正。
 
 ---
 
@@ -239,13 +262,12 @@ nsyms = len(entries) - 函数数 + 1
 
 ## 4. 符号槽顺序算法
 
-`compiler/cad_symbols.py` 复刻 AutoCAD 从右到左收集：
+`compiler/cad_symbols.py` 复刻 AutoCAD 的**字节码首次引用序逆序**收集：
 
-1. **函数名源码逆序**（最后一个函数名在槽 0）
-2. 从最后一个函数往前收集函数体符号（内建/字符串逆序）
-3. **唯一参数紧跟其函数**（仅一个函数使用的参数）
-4. **共享参数最后**（被多函数使用的参数）
-5. **递归/跨函数引用产生重复函数名槽**
+1. 按源码顺序逐函数生成字节码，记录每个符号**首次引用顺序**
+2. 调用中参数先于函数名压栈，故逆序后**函数名排在参数之前**
+3. 收集结果为**整体逆序**，唯一参数紧跟其函数（仅一个函数使用），共享参数最后
+4. **递归/跨函数引用产生重复函数名槽**（CAD 行为）
 
 例 t01：`[multiply, add, *, +, b, a]`；t07：`[pair, build-list, get-rest, get-first, cons, b, a, list, cdr, car, lst]`。
 
@@ -283,6 +305,13 @@ for i in 0..len(data)-1:
 
 ## 7. 已验证成果（AutoCAD 24.1s 实测 14/14）
 
+> **最新（本轮）**：单函数 t1–t11 的 seg0 字节码与 AutoCAD 产物**逐字节一致**，
+> CAD 运行结果全部正确（t7→(1 2 3)、t8→5、t9→nil、t10→nil、t11→(5)、
+> t2/t3/t4→alert、t5/t6→alert）。此前与 CAD 的 DIFF（多余 POP、writer 尾字节、
+> total_size、无 else if、字符串符号槽顺序）已全部修复。
+>
+> 下表为更早一轮（多函数/递归/while/cond，14/14）的历史记录：
+
 | 测试 | 调用 | 结果 |
 |------|------|------|
 | t01 多函数 | `(add 3 4)` | 7 |
@@ -309,7 +338,7 @@ for i in 0..len(data)-1:
 | `compiler/codegen.py` | stub 字节码生成（DEFUN/参数/USUBR/if/递归） |
 | `compiler/cad_symbols.py` | 符号槽顺序推导 |
 | `compiler/resource_builder.py` | seg1 资源段（GVARINIT/DEFCODE/模块代码） |
-| `compiler/fas_writer.py` | seg0 tail、文件头、加密、trailer |
+| `compiler/fas_writer.py` | total_size（stub 减 2）、文件头、加密、trailer |
 | `compiler/cli.py` | 编译管线、`_patch_usubr_idx` |
 | `compiler/symbol_table.py` | add_force（重复槽）、repeat_slots |
 | `compiler/linker.py` | stub 链接适配 |
@@ -320,6 +349,10 @@ for i in 0..len(data)-1:
 
 ## 9. 遗留问题
 
+- **`Fas4Parser.parse` total_size 截断**：反编译器按 `total_size` 切 seg0 字节码，
+  紧凑 stub 文件因此丢掉末尾 2 字节（`bytecode = payload[m.end():]` 少 2）。
+  对 CAD 产物与 atlispcc 产物截断一致，反编译回归（fun-cad/i18n）仍通过；
+  但解析器应改为按 `16 24 0d 0a` 终止符界定字节码更准确。
 - **多函数 stub 反编译符号槽映射**：参数绑定/读取槽（`nsyms-1-i`）与
   symbol_slots 的对应适配（需反编译器重建 gvar 表；影响 compile→decompile
   往返质量，不影响 CAD 兼容/编译输出）
@@ -327,11 +360,11 @@ for i in 0..len(data)-1:
 
 ## 实测结论
 
-- **编译输出 CAD 兼容**：14/14 执行正确（含多函数 t01/t07、递归、while、
-  cond、局部变量、嵌套 if）
-- 参数绑定槽用 `nsyms-1-i`（CAD 执行正确；t07 等参数槽与 CAD 的
-  `gvar 槽-1` 不完全逐字节一致，但功能等价）
-- 代码测试 161/161（含链接器多函数 gvar-1 适配）
+- **编译输出 CAD 兼容**：t1–t11 seg0 字节码与 AutoCAD 逐字节一致，
+  CAD 运行结果全部正确（t7→(1 2 3)、t8→5、t11→(5)、t2/t3/t4 alert、t10 setq 尾等）
+- `total_size = len(seg0_payload) - 2`（紧凑 stub，CAD 实测恒等）；末尾 2 字节为指令尾部
+- 中间 setq 无 POP、尾 setq 用 DUP、无 else if 补 PUSH_NIL（与 CAD 一致）
+- 代码测试 167/167（含链接器多函数 gvar-1 适配）
 
 ## 链接器多函数适配（本轮）
 

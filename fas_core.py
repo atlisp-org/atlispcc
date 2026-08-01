@@ -151,6 +151,40 @@ def parse_fas4(filepath: str, decrypt_seg1: bool = True) -> dict:
 # ─── 资源流（seg1）解析 ──────────────────────────────────────────────────────────
 
 
+def get_ansi_encoding() -> str:
+    """返回 Windows 系统 ANSI 代码页编码（如中文系统 cp936/GBK）。
+
+    非 Windows 平台回退 UTF-8（无 ANSI 概念）。
+    """
+    if os.name == 'nt':
+        try:
+            import ctypes
+            return f'cp{ctypes.windll.kernel32.GetACP()}'
+        except Exception:
+            pass
+    return 'utf-8'
+
+
+def decode_fas_text(raw: bytes) -> str:
+    """FAS 字符串解码：ascii → utf-8 → 系统 ANSI → gbk → cp1252 → latin-1。
+
+    CAD 编译器将字符串按系统 ANSI 代码页写入（中文系统=GBK，法语=cp1252）。
+    先尝试 ASCII/UTF-8（本编译器历史输出），再按本机 ANSI 代码页解，
+    最后回退 gbk/cp1252/latin-1。
+    """
+    chain = ["ascii", "utf-8", get_ansi_encoding(), "gbk", "cp1252", "latin-1"]
+    seen = set()
+    for enc in chain:
+        if enc in seen:
+            continue
+        seen.add(enc)
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", errors="replace")
+
+
 def parse_resource_stream(res_data: bytes) -> tuple:
     """解析解密后的 seg1 资源流，返回 (items, symbols, strings)。
 
@@ -164,12 +198,7 @@ def parse_resource_stream(res_data: bytes) -> tuple:
     strings = []
 
     def decode_text(raw: bytes) -> str:
-        for enc in ("ascii", "utf-8", "cp1252", "latin-1"):
-            try:
-                return raw.decode(enc)
-            except UnicodeDecodeError:
-                continue
-        return raw.decode("latin-1", errors="replace")
+        return decode_fas_text(raw)
 
     while pos < len(res_data):
         op = res_data[pos]
@@ -440,14 +469,7 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
                     break
                 s = res_data[pos : pos + slen]
                 pos += slen
-                for enc in ("ascii", "utf-8", "cp1252", "latin-1"):
-                    try:
-                        stack.append(("STRING", s.decode(enc)))
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                else:
-                    stack.append(("STRING", s.decode("latin-1", errors="replace")))
+                stack.append(("STRING", decode_fas_text(s)))
         elif op in (0x56, 0x5B):
             pos += 1
             while pos < len(res_data):
@@ -458,14 +480,7 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
                 pos = end + 1
                 if not sym:
                     break
-                for enc in ("ascii", "utf-8", "cp1252", "latin-1"):
-                    try:
-                        stack.append(("SYMBOL", sym.decode(enc)))
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                else:
-                    stack.append(("SYMBOL", sym.decode("latin-1", errors="replace")))
+                stack.append(("SYMBOL", decode_fas_text(sym)))
         elif op == 0x3A:
             if len(stack) >= 3:
                 name = stack.pop()
@@ -505,14 +520,7 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
             end = res_data.find(b"\x00", pos + 1)
             if end < 0:
                 break
-            for enc in ("ascii", "utf-8", "cp1252", "latin-1"):
-                try:
-                    stack.append(("REAL", res_data[pos + 1 : end].decode(enc)))
-                    break
-                except UnicodeDecodeError:
-                    continue
-            else:
-                stack.append(("REAL", res_data[pos + 1 : end].decode("latin-1", errors="replace")))
+            stack.append(("REAL", decode_fas_text(res_data[pos + 1 : end])))
             pos = end + 1
         else:
             pos += 1

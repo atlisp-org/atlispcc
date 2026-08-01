@@ -387,6 +387,8 @@ class CodeGenerator:
         if isinstance(target, Symbol):
             self._emit_expr(buf, value)
             if self.stub_format:
+                if self._in_tail_context:
+                    buf.emit(encode_op_noarg(DUP))
                 idx = self.symtab.get_or_add(target.name)
                 buf.emit(encode_op_u16(SETQ_G, idx))
             elif target.name in self.local_slots:
@@ -401,10 +403,14 @@ class CodeGenerator:
             buf.emit(encode_func(1, self.symtab.get_or_add("set")))
 
     def _emit_setq(self, buf: BytecodeBuffer, node: Setq):
-        for target, value in node.pairs:
+        pairs = list(node.pairs)
+        n = len(pairs)
+        for i, (target, value) in enumerate(pairs):
             if isinstance(target, Symbol) and value:
                 self._emit_expr(buf, value)
                 if self.stub_format:
+                    if self._in_tail_context and i == n - 1:
+                        buf.emit(encode_op_noarg(DUP))
                     idx = self.symtab.get_or_add(target.name)
                     buf.emit(encode_op_u16(SETQ_G, idx))
                 elif target.name in self.local_slots:
@@ -423,6 +429,7 @@ class CodeGenerator:
         if self.stub_format:
             # CAD stub: cond + BR_IF_TRUE <else> + then + JUMP <end> + else。
             # 注意：CAD 的 BR_IF_TRUE(0x67) 语义为"栈顶为假则跳转"(IFNOT)。
+            # 无 else 分支时 CAD 不生成 else 代码，label_else 与 label_end 重合于 JUMP 之后。
             jmp_pos = buf.pos()
             buf.emit(encode_op_s32(BR_IF_TRUE, 0))
             buf.add_patch(jmp_pos + 1, label_else, 4)
@@ -431,7 +438,12 @@ class CodeGenerator:
             buf.emit(encode_op_s32(JUMP, 0))
             buf.add_patch(jmp2_pos + 1, label_end, 4)
             buf.patch_label(label_else, buf.pos())
-            self._emit_expr(buf, node.else_expr or Symbol("nil"), _tail=self._in_tail_context)
+            if node.else_expr:
+                self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
+            else:
+                # CAD stub：无 else 分支时在 else 标签处补隐式 PUSH_NIL
+                # （cond 为假时返回 nil），then 分支的 JUMP 跳过它（t9 实测）。
+                buf.emit(encode_op_noarg(PUSH_NIL))
             buf.patch_label(label_end, buf.pos())
             return
 
@@ -718,7 +730,9 @@ class CodeGenerator:
 
         for expr in func.body[:-1]:
             self._emit_expr(buf, expr)
-            buf.emit(encode_op_noarg(POP))
+            # CAD stub: SETQ_G 自身消费栈顶值，中间 setq 后无 POP（v10/v11 实测）。
+            if not (self.stub_format and isinstance(expr, Setq)):
+                buf.emit(encode_op_noarg(POP))
         if func.body:
             self._emit_expr(buf, func.body[-1], _tail=True)
         elif self.stub_format:

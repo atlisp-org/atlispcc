@@ -107,6 +107,59 @@ def test_hash_quote_roundtrip():
     assert ok, f'Validation failed: {errs}'
 
 
+def test_chinese_string_roundtrip_gbk():
+    """GBK 编码往返：编译 (alert "中文") → FAS，反编译应还原 中文。"""
+    src = '(defun a () (alert "中文"))'
+    parser = Parser(src)
+    program = parser.parse()
+
+    symtab = SymbolTable()
+    symtab.collect_symbols(program)
+    from compiler.cad_symbols import derive_symbol_names
+    for sym in derive_symbol_names(program):
+        if sym.startswith('"') and sym.endswith('"'):
+            symtab.add_string(sym[1:-1])
+        else:
+            symtab.get_or_add(sym)
+
+    codegen = CodeGenerator(symtab)
+    all_bc = BytecodeBuffer()
+    func_offsets = {}
+    for form in program.forms:
+        if isinstance(form, Defun):
+            offset = len(all_bc.data)
+            fb, _ = codegen.generate_function(form)
+            func_offsets[form.name] = offset
+            all_bc.emit(fb)
+    for name, offset in func_offsets.items():
+        symtab.add_func_ref(name, offset)
+    all_bc.resolve()
+    seg0 = bytes(all_bc.data)
+    resource = ResourceBuilder(symtab, encoding='gbk')
+    seg1 = resource.build(func_offsets)
+
+    with tempfile.NamedTemporaryFile(suffix='.fas', delete=False) as f:
+        fas_path = f.name
+        writer = FasWriter(symtab)
+        writer.write(fas_path, seg0, seg1)
+    try:
+        decomp_parser = Fas4Parser()
+        fas = decomp_parser.parse(fas_path)
+        disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+        instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
+        cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
+        functions = cfa.find_functions()
+        gen = LispGenerator(fas)
+        result = gen.generate(functions, fas_path)
+    finally:
+        os.unlink(fas_path)
+
+    assert '"中文"' in result, f'Chinese string lost: {result}'
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+
 def test_dotted_call_roundtrip():
     src = '(defun f () (cons 1 . 2))'
     result = compile_and_decompile(src)

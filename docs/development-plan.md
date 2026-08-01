@@ -2,7 +2,7 @@
 
 > 本文档记录 `atlispcc`（FAS4 编译器/反编译器工具链）当前功能完成情况、
 > 遗留问题与后续开发路线。基于 AutoCAD 24.1s 实测与代码测试状态
-> （166/166 通过）。
+> （167/167 通过）。
 
 ---
 
@@ -57,7 +57,7 @@ AutoCAD 24.1s 实测正确执行：
   （AutoCAD `vlisp-compile` 实测：`/` 局部变量不计入头）
 - `&optional`：`14 <max> <min> <max> 00`；`&rest`：`14 <min>x3 01`
 
-### 2.3 代码测试 166/166 ✅
+### 2.3 代码测试 167/167 ✅
 
 全部通过（含 `tests/test_variadic_args.py` 5 用例）。
 
@@ -114,7 +114,8 @@ CAD 加载后函数可定义（SUBR）但调用返回空（rest 未收集）。
 **逆向结论**（已用 patch 试错穷尽）：CAD 对 `b4=01, min=0` **硬性不收集**
 rest——试遍 DEFUN 头 b1/b2/b3 组合、读取槽（0-5）、GET_LOCAL 槽、
 PUSH_G 绑定槽均无效；且 `b1 ≥ 1` 时 CAD 按 min 解析参数绑定数，
-绑定数不匹配即报「Xsubr(L) 指令错误」。CAD 的 rest 收集规则为：
+绑定数不匹配即报「Xsubr(L) 指令错误」（Xsubr = CAD 对 `USUBR` 0x35
+指令的称呼，见 `docs/opcodes.md`）。CAD 的 rest 收集规则为：
 **需 `min ≥ 1`（至少一个必填参数），rest 收集「剩余参数」**。
 
 **处理**（已实施）：编译器对纯 `&rest`（`f.rest and not f.args and not
@@ -145,7 +146,7 @@ link：square 因 `add_force` 在槽 2），导致 `build_module_code` 的
 跨函数引用 `add_force` 去重、按文件 slots 顺序合并（去头尾模块槽）。
 验证：`fd_new == fd_cmd`（cmd 等价）**字节级一致**（bytecode + sec2）；
 `lk_comb` 与 `multi2`（cmd 跨调用，CAD 已验证全注册）sec2/USUBR **完全对齐**；
-166/166 测试通过。CAD 实测受 3.7 环境不稳定干扰，恢复后复核。
+167/167 测试通过。CAD 实测受 3.7 环境不稳定干扰，恢复后复核。
 
 **技术路线**：
 - 用 CAD 实测链接输出的模块代码/函数注册，对比单文件多函数（cmd）
@@ -256,7 +257,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 ## 6. 验收标准
 
-- **P0 完成**：`pytest` 166/166 通过；反编译参数名正确；链接输出 CAD 全部函数可调用
+- **P0 完成**：`pytest` 167/167 通过；反编译参数名正确；链接输出 CAD 全部函数可调用
 - **P1 完成**：测试集 ≥ 20 个用例全部 CAD 执行正确；字节码逐字节一致；纯 `&rest` 编译警告已实施
 - **P2 完成**：多版本 CAD 兼容；大文件性能达标
 

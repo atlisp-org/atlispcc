@@ -30,7 +30,7 @@ CAD 加载前，先在本项目内校验输出：
 atlispcc disasm out.fas out.lasm
 # 反编译，确认函数/参数/符号结构
 atlispcc decompile out.fas out_decomp.lsp
-# 单元测试确保 166/166
+# 单元测试确保 167/167
 python -m pytest
 ```
 

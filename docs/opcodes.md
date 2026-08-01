@@ -1,5 +1,8 @@
 # FAS4 操作码参考
 
+> 本文档列出全部 FAS4 操作码及字节编码。其文本汇编表示（`.lasm`，`disasm`/`asm` 用）
+> 见 [docs/lasm.md](lasm.md)。
+
 ## 概述
 
 FAS4 字节码由一系列操作码（opcode，单字节）及其可变长度操作数组成。反编译器逐字节读取，将每个指令映射为 `Instruction` 对象。
@@ -85,6 +88,22 @@ USUBR/FUNC 的操作数字段：
 - `index`（2 字节）：在 function_gvars 中的索引，指向函数名
 - `flags`（1 字节）：标志位
 - `zero`（仅 FUNC，1 字节）：保留（始终 0）
+
+### Xsubr 与 SUBR（CAD 术语）
+
+**Xsubr = AutoCAD 对 `USUBR`（0x35）指令的内部称呼**，即「调用函数」指令。
+
+- `SUBR` = AutoLISP 系统内建函数（如 `+`、`car`），`(type +)` → `SUBR`
+- `XSUBR` = 外部子程序（FAS 编译产物 / ARX 注册的扩展函数）
+- 字节码 `USUBR`(0x35) 指令执行这类调用；CAD 加载器据此校验
+  （argc / 符号索引 / 参数绑定数）
+
+CAD 报错 **「Xsubr(L) 指令 (偏移代码) 错误」** 即加载器对 `0x35`
+指令的校验失败（如 argc 不匹配、索引越界、符号槽错位）。
+本项目 `encode_usubr3` 的 docstring 也沿用此称呼（`compiler/opcodes.py:79`）。
+
+紧凑 stub 格式的 USUBR 索引规律见 [docs/cad-stub-format.md §2.4](../docs/cad-stub-format.md)；
+`&rest` 参数绑定数不匹配触发该报错的实测案例见 [docs/development-plan.md §3.5](../docs/development-plan.md)。
 
 ### 控制流
 
@@ -226,10 +245,17 @@ INIT_ARGS <2*argc+1:2>  # 参数初始化计数 = 2*argc + 1
 
 `setq` 对符号变量统一用 `SETQ_G <槽:2>`（`06 <u16>`），不使用局部变量槽指令（stub 中无 `SET_LOCAL`）。
 
+紧凑 stub 格式（CAD 实测）的特殊规则：
+- **中间 setq**：`SETQ_G` 后**不追加 POP**（SETQ_G 自身消费栈顶；自包含格式才有 `POP`）
+- **尾 setq**（函数体最后一句）：先 `DUP`（`0b`）再 `SETQ_G`，保留返回值供函数返回
+- 中间非 setq 调用表达式仍以 `POP`（`0a`）清理
+
 ### 控制流
 
 - `if` 布局：`cond → BR_IF_TRUE <else> → then → JUMP <end> → else`。
   **BR_IF_TRUE 语义为假跳转**（栈顶为假则跳转到 else），配合 `JUMP` 实现分支。
+- **无 else 的 if**：else 标签处补隐式 `PUSH_NIL`（cond 假返回 nil），then 分支的
+  `JUMP` 跳过它。例 `(if (> 1 2) (alert "yes"))` 尾部：`... 57 01 00 00 00 01`。
 - 递归/跨函数调用**禁用尾递归循环优化**（不用 `JUMP` 回跳），改用 `USUBR` 递归调用自身；
   递归引用使用符号槽中的**重复槽**（同一函数名在符号槽中出现多次）。
 - 函数末尾：有参函数以 `CLEAR_ARGS`（`19`）结尾；无参函数无清理。调用序列已含 `00 03`。

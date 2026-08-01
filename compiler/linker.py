@@ -213,7 +213,8 @@ def _extract_functions(fas) -> List[Tuple[str, int]]:
     return funcs
 
 
-def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) -> str:
+def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
+             encoding: str = 'ansi') -> str:
     if len(input_paths) < 2:
         raise ValueError("Need at least 2 input .fas files to link")
 
@@ -317,7 +318,7 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
     for fname, foff in global_func_catalog:
         symtab.add_func_ref(fname, foff)
     _pre_module_code = build_module_code(len(_pre_func_offsets))
-    _pre_sec1 = ResourceBuilder(symtab).build(_pre_func_offsets, module_code=_pre_module_code, stub_format=True)
+    _pre_sec1 = ResourceBuilder(symtab, encoding=encoding).build(_pre_func_offsets, module_code=_pre_module_code, stub_format=True)
     _pre_nsyms = len(symtab.entries)
     from fas_core import build_mvar_tables
     try:
@@ -453,13 +454,14 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False) ->
     for fname, foff in func_offsets.items():
         symtab.add_func_ref(fname, foff)
     module_code = build_module_code(len(func_offsets))
-    resource = ResourceBuilder(symtab)
+    resource = ResourceBuilder(symtab, encoding=encoding)
     nsyms = len(symtab.entries) - len(func_offsets) + 1
     seg0_payload = f'{nsyms} $'.encode() + seg0
     seg1 = resource.build(func_offsets, module_code=module_code,
                           seg0_payload_len=len(seg0_payload), stub_format=True)
     writer = FasWriter(symtab)
-    writer.write(output_path, seg0, seg1, sec2_items=count_resource_records(seg1), nsyms=nsyms)
+    writer.write(output_path, seg0, seg1, sec2_items=count_resource_records(seg1),
+                 nsyms=nsyms, compact=True)
 
     if verbose:
         total = os.path.getsize(output_path)

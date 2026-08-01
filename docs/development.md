@@ -1,4 +1,6 @@
-# Fas2Lsp 开发说明
+# atlispcc 开发者说明
+
+> 面向开发者：架构、管线、测试、代码规范与调试指南。面向使用者的 CLI 用法见 `README.md`。
 
 ## 环境准备
 
@@ -15,22 +17,47 @@ Python >= 3.8。当前使用 Python 3.10.11。
 ## 项目结构
 
 ```
-fas4_decompiler.py   主反编译器（2331 行）
-fas_core.py          共享核心模块（691 行）— 加解密、解析、符号表重建
+fas4_decompiler.py   主反编译器（解析 + 反汇编 + 分析 + 生成）
+fas_core.py          共享核心模块 — 加解密、解析、符号表重建
 validate.py          LSP 语法验证器
 decompile.py         简易包装入口
 
 compiler/
   cli.py             CLI 入口（atlispcc），子命令：compile/decompile/disasm/asm/validate/link/build-vlx
-  parser.py           Lisp 源码解析器 → AST
-  symbol_table.py     符号表构建与作用域分析
-  codegen.py          字节码生成器（AST → 指令流）
+  parser.py          Lisp 源码解析器 → AST
+  ast.py             AST 节点定义（含 Defpackage、InPackage）
+  packages.py        包系统：PackageTable、名混淆/还原
+  symbol_table.py    符号表构建与作用域分析（含包解析）
+  codegen.py         字节码生成器（AST → 指令流）
   resource_builder.py 常量/符号/函数索引 → 资源段
-  fas_writer.py       指令流 → FAS4 二进制
-  opt.py              优化器（-O）：常量折叠、死分支消除、窥孔优化、常量传播、死赋值消除、
-                      跨函数常量传播、死代码消除、小函数内联
-  ast.py              AST 节点定义
+  fas_writer.py      指令流 → FAS4 二进制
+  opt.py             优化器（-O）：8 个 pass 跨 O1-O3 级别
+  analyzer.py        编译分析与统计
+  assembler.py       反汇编/汇编（.fas ↔ .lasm）
+  linker.py          多文件 FAS 链接器
+  vlx_builder.py     VLX 容器构建器
 ```
+
+### 关键文件
+
+| 文件 | 作用 |
+|------|------|
+| `fas4_decompiler.py` | 主反编译器：解析 + 反汇编 + 分析 + 生成 |
+| `fas_core.py` | 共享加密/解析/符号工具函数（`find_key`/`decrypt_stream`/`build_mvar_tables`/`build_function_catalog`） |
+| `compiler/cli.py` | CLI 入口，子命令分发 |
+| `compiler/parser.py` | Lisp 源码解析器 → AST |
+| `compiler/ast.py` | AST 节点定义（含 Defpackage、InPackage） |
+| `compiler/packages.py` | 包系统：PackageTable、名混淆/还原 |
+| `compiler/symbol_table.py` | 符号表构建与作用域分析（含包解析） |
+| `compiler/codegen.py` | 字节码生成器（AST → 指令流） |
+| `compiler/resource_builder.py` | 常量/符号/函数索引 → 资源段 |
+| `compiler/fas_writer.py` | 指令流 → FAS4 二进制 |
+| `compiler/opt.py` | 优化器：8 个 pass 跨 O1-O3 级别 |
+| `compiler/analyzer.py` | 编译分析与统计 |
+| `compiler/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
+| `compiler/linker.py` | 多文件 FAS 链接器 |
+| `compiler/vlx_builder.py` | VLX 容器构建器 |
+| `validate.py` | 生成的 `.lsp` 语法验证器 |
 
 ## 架构管线
 
@@ -158,9 +185,59 @@ FAS A + FAS B + ... → 合并符号表/函数目录
 - 在 ±12 范围内寻找符号作为替代（有已知 arity 的加权重）
 - `_skip_literal_zero_arg_call` 特殊处理：丢弃指向提示字符串的 0 参数伪造调用
 
+## 测试
+
+```sh
+python -m pytest              # 运行所有测试（167 用例）
+python -m pytest tests/ -v   # 详细输出
+```
+
+测试文件在 `tests/` 目录：
+- `test_parser.py` — AST 解析器（19 用例）
+- `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
+- `test_symbol_table.py` — 符号表/作用域（10 用例）
+- `test_analyzer.py` — 编译分析/尾递归（9 用例）
+- `test_cli.py` — CLI 路径（10 用例：compile/-O/--analyze/validate/link/vlx/dispatch）
+- `test_compile_decompile.py` — 编译-反编译往返（28 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返）
+- `test_compiler_output.py` — FAS 输出正确性（12 用例）
+- `test_optimizer.py` — 所有优化 pass（32 用例，含循环携带变量回归）
+- `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
+- `test_assembler.py` — 反汇编/汇编往返（5 用例）
+- `test_disasm.py` — 反汇编健壮性（8 用例，含未处理操作码降级）
+- `test_packages.py` — CL 风格包系统（4 用例）
+- `test_vlx_builder.py` — VLX 容器（3 用例）
+
+手动测试文件 `tests/test_*.lsp` 也在该目录。
+
+## 兼容性
+
+FAS4 输出格式与 AutoCAD 编译器一致：
+- seg0 = 函数字节码（`<nsyms> $...`），seg1 = 资源段（常量/符号/函数索引）
+- 紧凑 stub 格式 `total_size = len(seg0_payload) - 2`（CAD 实测恒等；末尾 2 字节为末段指令尾部，位于 total_size 之外、终止符之前）；自包含格式 `total_size = len(seg0_payload)`。`FasWriter.write(..., compact=True)` 走前者（CLI/链接器），自包含走后者（汇编/测试）
+- 紧凑 stub 生成规则（与 CAD 逐字节一致）：中间 setq 无 POP、尾 setq 先 DUP、无 else 的 `if` 补 PUSH_NIL
+- seg1 使用滚动 XOR 加密（`find_key`/`decrypt_stream`），尾部含密钥长度字节 + 密钥 + `;fas4 crunch` 标记
+- 段分隔符为 `16 24 0d 0a`，`nsyms` 为符号槽数（资源注册顺序）
+- seg1 资源流 = 模块头(`14 01 01 01 00`) + 代码引用 + 符号/字符串注册 + GVARINIT + DEFCODE + INIT_DONE + 模块代码；`seg1` 头 `items` = GVARINIT + INIT_DONE 计数
+- 符号槽顺序 = 字节码首次引用序**整体逆序**（`compiler/cad_symbols.py`）
+- 反编译回归参考：AutoCAD 产物 `tests/fun-cad.fas`（对应 `tests/fun.lsp`）
+
+反编译器同时支持两种布局：
+- **自包含格式**（`samples/bib.fas`/`samples/PDI.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
+- **紧凑 stub 格式**（AutoCAD 编译器输出）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
+
+生成器会发出包装辅助函数以避免内建冲突：
+- `fas-polar1`、`fas-rtos1`、`fas-rtos3`、`fas-getvar2`、`fas-getvar3`
+- 用于列表/关联列表/DXF 组码读取的 `IN_PARAM` 查找
+- 缺少 `Projet/PA_Projet` 框架时的后备选择提示
+
+解码器问题在 `fas4_decompiler.py` 中修复，永远不要修改生成的 `.lsp`。
+
 ## 调试与验证
 
 ```sh
+# 开发模式安装（含 dev 工具）
+pip install -e ".[dev]"
+
 # 语法检查
 python -m py_compile fas4_decompiler.py
 python -m py_compile compiler/opt.py
@@ -173,8 +250,38 @@ python validate.py test.lsp
 # 完整测试套件
 python -m pytest -v
 
-# 格式化
+# 格式化 / 类型检查
 black .
+mypy .
+```
+
+## 工具脚本
+
+`tools/` 下的辅助分析工具**不随 pip 包分发**（`pyproject.toml` 的
+`include = ["compiler*"]`），仅在源码仓库内可用：
+
+### 分析工具
+
+```sh
+# FAS4 文件分析
+python -m tools.fas-analyzer samples/bib.fas
+python -m tools.fas-analyzer samples/bib.fas --dump
+python -m tools.fas-analyzer samples/bib.fas --json
+```
+
+### 函数分割
+
+```sh
+python -m tools.fas-split samples/bib.fas
+python -m tools.fas-split samples/bib.fas --trim
+python -m tools.fas-split samples/bib.fas --outdir ./split_output
+```
+
+### 解密/破解
+
+```sh
+python -m tools.decrypt_fas4 samples/bib.fas
+python -m tools.crack_key encrypted.fas
 ```
 
 ## 代码规范

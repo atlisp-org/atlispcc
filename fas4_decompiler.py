@@ -86,12 +86,8 @@ def is_compact_stub(bytecode: bytes, function_catalog: list, sym_count: int = 0)
 
 class Fas4Parser:
     def decode_text(self, raw: bytes) -> str:
-        for encoding in ("ascii", "utf-8", "cp1252", "latin-1"):
-            try:
-                return raw.decode(encoding)
-            except UnicodeDecodeError:
-                continue
-        return raw.decode("latin-1", errors="replace")
+        from fas_core import decode_fas_text
+        return decode_fas_text(raw)
 
     def build_mvar_tables(self, res_data: bytes, nsyms: int) -> Tuple[List[Any], List[Any]]:
         """Best-effort reconstruction of the two GVar tables populated by opcode 0x43."""
