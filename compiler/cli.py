@@ -1,13 +1,14 @@
 import sys
 import os
 import argparse
+import struct
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compiler.parser import Parser, ParseError
 from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
-from compiler.ast import Defun, Defpackage, InPackage
+from compiler.ast import Defun, Defpackage, InPackage, Setq
 from compiler.opt import optimize
 from compiler.resource_builder import ResourceBuilder, build_module_code, count_resource_records, resolve_encoding
 from compiler.fas_writer import FasWriter
@@ -103,11 +104,12 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         return seg0
 
     def gvar_slot(name: str) -> int:
-        return gvar_map.get(name, nsyms)
+        # 资源段符号名已大写（_enc_sym），参数名为小写，查找时统一大写。
+        return gvar_map.get(str(name).upper(), nsyms)
 
     def sym_of(idx: int):
         if 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] in ("SYMBOL", "STRING"):
-            return str(symtab.entries[idx][1])
+            return str(symtab.entries[idx][1]).upper()
         return None
 
     out = bytearray()
@@ -157,6 +159,175 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             continue
         out += seg0[inst.offset:inst.offset + inst.size]
     return bytes(out)
+
+
+def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: int = 0,
+                           top_level_count: int = 0) -> bytes:
+    """把顶层表达式字节码转换为 CAD 风格的模块代码。
+
+    CAD 模块代码规则（逆向，AutoCAD 24.1s 实测）：
+    - 符号引用使用 gvar 槽 = 符号槽 + 1
+    - 顶部 ``PUSH_G <模块注册符号数+1>; POP`` 占位
+    - 顶层 setq → ``PUSH_G <值槽+1>; DUP; SETQ_G <变量槽+1>``
+    - 每个顶层语句后 POP（最后一句除外）
+    - 有 defun 时追加函数注册尾 ``JUMP + PUSH_G <模块注册+2>; SETQ_G 1; PUSH_G 1``
+
+    对每个顶层 form：setq 用 CAD 的 DUP 模式；其余用 codegen 输出并统一
+    符号槽 +1。
+    """
+    if not other_forms:
+        return top_level_bc
+
+    from compiler.codegen import CodeGenerator, BytecodeBuffer
+
+    module_reg_count = n_funcs + top_level_count
+    out = bytearray(b'\x14\x01\x00\x00\x00')  # DEFUN 模块头
+    out += bytes([0x09]) + struct.pack('<H', module_reg_count + 1) + b'\x0a'  # 占位
+
+    # setq 语句用 CAD 的 DUP 模式；其余用 codegen 输出并槽 +1。
+    from compiler.ast import Symbol, String as _Str
+    cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
+    stmt_list = []
+    for form in other_forms:
+        handled = False
+        if isinstance(form, Setq):
+            for target, value in form.pairs:
+                t_idx = _slot_of(symtab, target)
+                v_idx = _slot_of(symtab, value)
+                if t_idx is not None and v_idx is not None:
+                    stmt = bytearray()
+                    stmt += bytes([0x09]) + struct.pack('<H', v_idx + 1)  # PUSH_G 值
+                    stmt += b'\x0b'  # DUP
+                    stmt += bytes([0x06]) + struct.pack('<H', t_idx + 1)  # SETQ_G 变量
+                    stmt_list.append(bytes(stmt))
+                    handled = True
+        if not handled:
+            fb = BytecodeBuffer()
+            cg._emit_expr(fb, form)
+            fb.resolve()
+            stmt_list.append(_offset_slots(bytes(fb.data), len(symtab.entries)))
+
+    for i, stmt in enumerate(stmt_list):
+        out += stmt if stmt is not None else b''
+        # 每个顶层语句后 POP；最后一个仅当无 defun（无函数注册尾）时省略。
+        if stmt is not None and (i < len(stmt_list) - 1 or n_funcs > 0):
+            out += b'\x0a'  # POP
+
+    if n_funcs > 0:
+        # 有 defun：追加函数注册尾（CAD 实测）。
+        out += b'\x57\x00\x00\x00\x00'  # JUMP
+        out += bytes([0x09]) + struct.pack('<H', module_reg_count + 2)  # PUSH_G
+        out += bytes([0x06]) + struct.pack('<H', 1)  # SETQ_G 1
+        out += bytes([0x09]) + struct.pack('<H', 1)  # PUSH_G 1
+    out += b'\x16'  # END_DEFUN
+    return bytes(out)
+
+
+def _slot_of(symtab, node):
+    """返回 AST 节点的符号/字符串槽索引；非字面量返回 None。"""
+    from compiler.ast import Symbol, String as _Str
+    if isinstance(node, Symbol):
+        return symtab.name_to_idx.get(node.name)
+    if isinstance(node, _Str):
+        return symtab.name_to_idx.get(f'__str_{node.value}__')
+    return None
+
+
+def _offset_slots(bc: bytes, n_sym: int) -> bytes:
+    """把字节码中的符号槽引用 +1（CAD 模块代码用 gvar 槽 = 符号槽+1）。
+
+    处理 PUSH_G(0x09)/PUSH_VALUE(0x03)/SETQ_G(0x06)/USUBR(0x35) 的符号槽。
+    stub 的 PUSH_VALUE[0]（单字节 ``03``）与调用后清理序列 ``00 03`` 不偏移。
+    """
+    from fas4_decompiler import Disassembler
+    dis = Disassembler(short_subr=True)
+    try:
+        insts = dis.disassemble(bc, n_sym, sym_count=n_sym)
+    except Exception:
+        return bc
+    out = bytearray()
+    for inst in insts:
+        name = inst.op_name
+        raw = bc[inst.offset:inst.offset + inst.size]
+        if name == "USUBR" and len(inst.operands) >= 2:
+            out += bytes([0x35, inst.operands[0] & 0xFF, (inst.operands[1] + 1) & 0xFF])
+        elif name in ("PUSH_G", "SETQ_G", "PUSH_GLOBAL") and len(inst.operands) >= 1:
+            idx = inst.operands[0] + 1
+            out += bytes([raw[0]]) + struct.pack('<H', idx)
+        elif name == "PUSH_VALUE":
+            # stub：PUSH_VALUE[0] 单字节 03；idx>0 为 3 字节。
+            if len(inst.operands) == 1 and inst.operands[0] == 0 and inst.size == 1:
+                out += raw  # 单字节 PUSH_VALUE[0]（调用后清理），不偏移
+            elif len(inst.operands) == 1:
+                out += bytes([raw[0]]) + struct.pack('<H', inst.operands[0] + 1)
+            else:
+                out += raw
+        else:
+            out += raw
+    return bytes(out)
+
+
+def _collect_symbol_nodes(node):
+    """递归收集 AST 节点中的 Symbol/String 节点。"""
+    from compiler.ast import (
+        Symbol, String, ListExpr, QuotedExpr, Setq, IfNode, WhileNode,
+        ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
+    )
+    if isinstance(node, Symbol) or isinstance(node, String):
+        yield node
+    elif isinstance(node, Call):
+        yield Symbol(node.name)
+        for a in node.args:
+            yield from _collect_symbol_nodes(a)
+    elif isinstance(node, Setq):
+        for t, v in node.pairs:
+            if t is not None:
+                yield from _collect_symbol_nodes(t)
+            if v is not None:
+                yield from _collect_symbol_nodes(v)
+    elif isinstance(node, IfNode):
+        for sub in (node.cond, node.then, node.else_expr):
+            if sub is not None:
+                yield from _collect_symbol_nodes(sub)
+    elif isinstance(node, WhileNode):
+        if node.cond:
+            yield from _collect_symbol_nodes(node.cond)
+        for e in node.body:
+            yield from _collect_symbol_nodes(e)
+    elif isinstance(node, Progn):
+        for e in node.forms:
+            yield from _collect_symbol_nodes(e)
+    elif isinstance(node, Cond):
+        for clause in node.clauses:
+            if isinstance(clause, (list, tuple)):
+                for c in clause:
+                    yield from _collect_symbol_nodes(c)
+            else:
+                yield from _collect_symbol_nodes(clause)
+    elif isinstance(node, ListExpr):
+        for item in node.items:
+            yield from _collect_symbol_nodes(item)
+        if node.dotted is not None:
+            yield from _collect_symbol_nodes(node.dotted)
+    elif isinstance(node, ForeachNode):
+        if node.var:
+            yield from _collect_symbol_nodes(node.var)
+        if node.list_expr:
+            yield from _collect_symbol_nodes(node.list_expr)
+        for e in node.body:
+            yield from _collect_symbol_nodes(e)
+    elif isinstance(node, RepeatNode):
+        if node.count:
+            yield from _collect_symbol_nodes(node.count)
+        for e in node.body:
+            yield from _collect_symbol_nodes(e)
+    elif isinstance(node, QuotedExpr):
+        yield from _collect_symbol_nodes(node.expr)
+    elif isinstance(node, LambdaNode):
+        for a in node.args:
+            yield Symbol(a)
+        for e in node.body:
+            yield from _collect_symbol_nodes(e)
 
 
 def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis: bool = False,
@@ -225,30 +396,59 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
         else:
             symtab.get_or_add(sym)
 
-    codegen = CodeGenerator(symtab, stub_format=True,
-                            defined_funcs=[f.name for f in defun_forms],
-                            nsyms=len(symtab.entries) - len(defun_forms) + 1)
-
-    all_bytecode = BytecodeBuffer()
-    func_offsets = {}
-
+    # 顶层表达式符号（defun 之外）：CAD 把它们的符号并入模块注册段。
     other_forms = [f for f in program.forms
                    if not isinstance(f, (Defun, Defpackage, InPackage))]
-
+    from compiler.ast import Symbol as _Sym
+    from compiler.ast import String as _StrNode
+    _top_syms = []
     for form in other_forms:
-        codegen._emit_expr(all_bytecode, form)
-        all_bytecode.emit(ENCODE_POP)
+        for _n in _collect_symbol_nodes(form):
+            if isinstance(_n, _Sym) and _n.name not in _top_syms:
+                _top_syms.append(_n.name)
+            elif isinstance(_n, _StrNode) and _n.value not in _top_syms:
+                _top_syms.append(_n.value)
+    # 顶层符号在 entries 中的槽索引（字符串 key 特殊）
+    _top_slots = []
+    for s in _top_syms:
+        if s in symtab.name_to_idx:
+            _top_slots.append(symtab.name_to_idx[s])
+        elif f'__str_{s}__' in symtab.name_to_idx:
+            _top_slots.append(symtab.name_to_idx[f'__str_{s}__'])
+    top_level_count = len(_top_slots)
 
+    codegen = CodeGenerator(symtab, stub_format=True,
+                            defined_funcs=[f.name for f in defun_forms],
+                            nsyms=len(symtab.entries) - len(defun_forms) - top_level_count + 1)
+
+    func_offsets = {}
+
+    # CAD：顶层表达式（defun 之外的 setq/set 等）编译进 seg1 模块代码，
+    # seg0 只含 defun 函数。
+    #
+    # CAD 模块代码规则（逆向）：
+    #   - 模块代码引用 gvar 槽（= 符号槽 + 1）
+    #   - 顶层 setq → `PUSH_G <值槽+1>; DUP; SETQ_G <变量槽+1>; POP(非最后)`
+    #   - 顶部 `PUSH_G <符号总数+1>; POP` 占位
+    #   - 无 defun 时无函数注册尾，以 END_DEFUN 结束
+    top_level_bc = BytecodeBuffer()
+    for form in other_forms:
+        codegen._emit_expr(top_level_bc, form)
+        if isinstance(form, Setq):
+            top_level_bc.emit(ENCODE_POP)
+    top_level_bc.resolve()
+    top_level_code = bytes(top_level_bc.data)
+
+    all_bytecode = BytecodeBuffer()
     for i, form in enumerate(defun_forms):
         offset = len(all_bytecode.data)
         func_bytecode, _ = codegen.generate_function(form)
         func_offsets[form.name] = offset
         all_bytecode.emit(func_bytecode)
         if i < len(defun_forms) - 1:
-            # CAD stub: 函数间分隔符。有参函数 `<argc> 00 16`，无参函数 `16`。
-            argc = len(form.args)
-            sep = bytes([argc & 0xFF, 0x00, 0x16]) if argc > 0 else bytes([0x16])
-            all_bytecode.emit(sep)
+            # CAD stub: 函数间分隔符 `16`（CLEAR_ARGS `19 <argc> 00` 已由
+            # generate_function 生成，仅需追加 END_DEFUN 分隔）。
+            all_bytecode.emit(bytes([0x16]))
 
     for name, offset in func_offsets.items():
         symtab.add_func_ref(name, offset)
@@ -256,18 +456,32 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     all_bytecode.resolve()
     seg0 = bytes(all_bytecode.data)
 
-    module_code = build_module_code(len(defun_forms))
+    # 模块代码：含顶层表达式时用 CAD 风格完整模块代码；否则固定函数注册尾。
+    if other_forms:
+        module_code = _build_cad_module_code(top_level_code, symtab, other_forms,
+                                             n_funcs=len(defun_forms), top_level_count=top_level_count)
+    else:
+        module_code = build_module_code(len(defun_forms))
     resource = ResourceBuilder(symtab, encoding=encoding)
-    # nsyms = len(entries) - 函数数 + 1（CAD 实测：函数注册 GVARINIT st_init）
-    fas_nsyms = len(symtab.entries) - len(defun_forms) + 1
-    seg0_payload = f'{fas_nsyms} $'.encode() + seg0
-    seg1 = resource.build(func_offsets, module_code=module_code, seg0_payload_len=len(seg0_payload), stub_format=True)
-    sec2_items = count_resource_records(seg1)
+    # nsyms = len(entries) - 模块注册符号数 + 1
+    # （模块注册 = 函数名 + 顶层表达式符号；函数注册 GVARINIT st_init = nsyms）
+    module_reg_count = len(defun_forms) + top_level_count
+    fas_nsyms = len(symtab.entries) - module_reg_count + 1
 
     # 修正 USUBR/参数槽索引：CAD 用 `gvar 槽 - 1`（gvar 表由资源段 GVARINIT 建立）。
     def _all_params(f):
         return f.args + f.optional + ([f.rest] if f.rest else [])
+
+    # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
+    seg0_payload = f'{fas_nsyms} $'.encode() + seg0
+    seg1 = resource.build(func_offsets, module_code=module_code, seg0_payload_len=len(seg0_payload), stub_format=True,
+                          top_level_count=top_level_count)
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, [_all_params(f) for f in defun_forms])
+    # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
+    seg0_payload = f'{fas_nsyms} $'.encode() + seg0
+    seg1 = resource.build(func_offsets, module_code=module_code, seg0_payload_len=len(seg0_payload), stub_format=True,
+                          top_level_count=top_level_count)
+    sec2_items = count_resource_records(seg1)
 
     output = output or source.replace('.lsp', '.fas')
     writer = FasWriter(symtab)

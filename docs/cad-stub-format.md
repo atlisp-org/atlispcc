@@ -242,19 +242,37 @@ GVARINIT(函数数+2, 函数数) + 1c (INIT_DONE)
 
 ### 3.5 模块代码
 
-对每个函数生成一段，`a_i = n+1-i, b_i = 2n+1-i, c_i = n-i`（n=函数数）：
+模块代码 = `DEFUN头 + [顶层表达式] + [函数注册尾] + END_DEFUN`：
 
-```
-14 01 00 00 00
-对每个函数 i: 09 <a_i> 00 0a 57 00000000 09 <b_i> 00 06 <c_i> 00
-09 01 00 16
-```
+- **纯 defun（无顶层表达式）**：固定函数注册结构，对每个函数：
+  `a_i = n+1-i, b_i = 2n+1-i, c_i = n-i`（n=函数数）：
+  ```
+  14 01 00 00 00
+  对每个函数 i: 09 <a_i> 00 0a 57 00000000 09 <b_i> 00 06 <c_i> 00
+  09 01 00 16
+  ```
+- **含顶层表达式**（`compiler/cli.py` 的 `_build_cad_module_code` 生成）：
+  ```
+  14 01 00 00 00                # DEFUN 模块头
+  09 <模块注册+1> 00 0a          # 顶部占位
+  <顶层表达式字节码>             # setq: 09 <值+1> 00 0b 06 <变量+1> 00
+  57 00000000                   # JUMP（有 defun 时）
+  09 <模块注册+2> 00 06 01 00    # 函数注册尾
+  09 01 00                      # PUSH_G 1
+  16                            # END_DEFUN
+  ```
+  顶层表达式的符号引用用 **gvar 槽 = 符号槽 + 1**；简单 `setq 变量 "字符串"` →
+  `PUSH_G <值槽+1>; DUP; SETQ_G <变量槽+1>`。
 
 ### 3.6 nsyms
 
 ```
-nsyms = len(entries) - 函数数 + 1
+nsyms = len(entries) - 模块注册符号数 + 1
 ```
+
+- **无顶层表达式**：模块注册符号数 = 函数数 → `nsyms = len(entries) - 函数数 + 1`
+- **含顶层表达式**：模块注册符号数 = 函数数 + 顶层表达式符号数
+  （`top_level_count`）
 
 即函数注册 GVARINIT 的 st_init。多函数时**小于**符号槽去重数。
 
@@ -262,12 +280,14 @@ nsyms = len(entries) - 函数数 + 1
 
 ## 4. 符号槽顺序算法
 
-`compiler/cad_symbols.py` 复刻 AutoCAD 的**字节码首次引用序逆序**收集：
+`compiler/cad_symbols.py` 复刻 AutoCAD 的收集顺序：
 
-1. 按源码顺序逐函数生成字节码，记录每个符号**首次引用顺序**
-2. 调用中参数先于函数名压栈，故逆序后**函数名排在参数之前**
-3. 收集结果为**整体逆序**，唯一参数紧跟其函数（仅一个函数使用），共享参数最后
-4. **递归/跨函数引用产生重复函数名槽**（CAD 行为）
+1. 函数名按**源码逆序**（最后一个函数名在槽 0）
+2. 顶层表达式符号（defun 之外）——排在函数体内建之前（混合时）
+3. 按函数逆序，每函数内按"字节码引用序"**逆序**收集函数体符号（调用中参数
+   先于函数名压栈，逆序后函数名/外层调用在前）
+4. 每函数参数紧跟其函数体符号之后
+5. 递归/跨函数调用产生**重复函数名槽**（CAD 行为）
 
 例 t01：`[multiply, add, *, +, b, a]`；t07：`[pair, build-list, get-rest, get-first, cons, b, a, list, cdr, car, lst]`。
 
@@ -303,12 +323,19 @@ for i in 0..len(data)-1:
 
 ---
 
-## 7. 已验证成果（AutoCAD 24.1s 实测 14/14）
+## 7. 已验证成果（AutoCAD 24.1s 实测）
 
-> **最新（本轮）**：单函数 t1–t11 的 seg0 字节码与 AutoCAD 产物**逐字节一致**，
-> CAD 运行结果全部正确（t7→(1 2 3)、t8→5、t9→nil、t10→nil、t11→(5)、
-> t2/t3/t4→alert、t5/t6→alert）。此前与 CAD 的 DIFF（多余 POP、writer 尾字节、
-> total_size、无 else if、字符串符号槽顺序）已全部修复。
+> **最新（本轮）**：四类编译产物（seg0 + seg1 + total_size）与 AutoCAD **逐字节一致**，
+> CAD 运行结果全部正确：
+> - **纯函数定义**（t1–t11）：单函数 defun
+> - **多个纯函数定义**（m1/m2）：`(f1 5) (f2 3)` → `(6 6)`
+> - **无函数定义有顶层表达式**（tops1–tops3、version）：`@::*version*` → `1.23.8`
+> - **有函数定义和顶层表达式**（mix）：`(list @::*ver* (mix-fn 5))` → `(1.0 6)`
+> - 单函数递归（fact）：`(fact 5)` → `120`
+>
+> 此前与 CAD 的 DIFF（多余 POP、writer 尾字节、total_size、无 else if、
+> 符号名大小写、顶层表达式放 seg0、多函数符号收集顺序、多函数分隔符、
+> CLEAR_ARGS 操作数）已全部修复。
 >
 > 下表为更早一轮（多函数/递归/while/cond，14/14）的历史记录：
 
@@ -353,6 +380,10 @@ for i in 0..len(data)-1:
   紧凑 stub 文件因此丢掉末尾 2 字节（`bytecode = payload[m.end():]` 少 2）。
   对 CAD 产物与 atlispcc 产物截断一致，反编译回归（fun-cad/i18n）仍通过；
   但解析器应改为按 `16 24 0d 0a` 终止符界定字节码更准确。
+- **复杂顶层表达式**（i18n.lsp 等含 `if`/`cond`/嵌套调用/非字符串 setq）：
+  `_build_cad_module_code` 仅精确处理简单 `setq 变量 "字符串"` 的 CAD 模式；
+  复杂表达式的模块代码编码尚未完全对齐 CAD（CAD 报格式错误），需完整的
+  顶层表达式编译引擎（匹配 CAD 的所有 setq/if/set 编码模式）。
 - **多函数 stub 反编译符号槽映射**：参数绑定/读取槽（`nsyms-1-i`）与
   symbol_slots 的对应适配（需反编译器重建 gvar 表；影响 compile→decompile
   往返质量，不影响 CAD 兼容/编译输出）
@@ -360,8 +391,10 @@ for i in 0..len(data)-1:
 
 ## 实测结论
 
-- **编译输出 CAD 兼容**：t1–t11 seg0 字节码与 AutoCAD 逐字节一致，
-  CAD 运行结果全部正确（t7→(1 2 3)、t8→5、t11→(5)、t2/t3/t4 alert、t10 setq 尾等）
+- **编译输出 CAD 兼容**：四类产物（纯函数 t1–t11、多纯函数 m1/m2、纯顶层
+  tops/version、混合 mix、单函数递归 fact）与 AutoCAD 逐字节一致，CAD 运行
+  结果全部正确（t7→(1 2 3)、t8→5、t11→(5)、m1→(6 6)、version→1.23.8、
+  mix→(1.0 6)、fact→120）
 - `total_size = len(seg0_payload) - 2`（紧凑 stub，CAD 实测恒等）；末尾 2 字节为指令尾部
 - 中间 setq 无 POP、尾 setq 用 DUP、无 else if 补 PUSH_NIL（与 CAD 一致）
 - 代码测试 167/167（含链接器多函数 gvar-1 适配）

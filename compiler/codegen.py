@@ -43,6 +43,7 @@ PUSH_INT8 = NAME_TO_OPCODE["PUSH_INT8"]  # 0x32
 PUSH_INT32 = NAME_TO_OPCODE["PUSH_INT32"]  # 0x33
 PUSH_G = NAME_TO_OPCODE["PUSH_G"]  # 0x09
 POP = NAME_TO_OPCODE["POP"]  # 0x0a
+DUP = NAME_TO_OPCODE["DUP"]  # 0x0b
 SETQ_G = NAME_TO_OPCODE["SETQ_G"]  # 0x06
 JMP16_IFNOT = NAME_TO_OPCODE["JMP16_IFNOT"]  # 0x0d
 JMP16_IF = NAME_TO_OPCODE["JMP16_IF"]  # 0x0e
@@ -687,7 +688,8 @@ class CodeGenerator:
 
     def _emit_clear_args(self, buf: BytecodeBuffer, args: List[str]):
         if self.stub_format:
-            buf.emit(bytes([CLEAR_ARGS]))
+            # CAD stub: CLEAR_ARGS(0x19) 带 2 字节参数计数（实测 `19 <argc> 00`）。
+            buf.emit(encode_op_u16(CLEAR_ARGS, len(args)))
             return
         if args:
             buf.emit(encode_op_u16(CLEAR_ARGS, len(args)))
@@ -739,9 +741,9 @@ class CodeGenerator:
             buf.emit(encode_op_noarg(PUSH_NIL))
 
         if self.stub_format:
-            # CAD stub: 有参函数以 CLEAR_ARGS(0x19) 结尾；无参函数直接结束。
+            # CAD stub: 有参函数以 CLEAR_ARGS(0x19, <argc>) 结尾；无参函数直接结束。
             if func.args:
-                buf.emit(bytes([0x19]))
+                buf.emit(encode_op_u16(CLEAR_ARGS, len(func.args)))
         else:
             self._emit_clear_args(buf, func.args)
 

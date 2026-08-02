@@ -152,10 +152,10 @@ def test_local_vars_symbols():
 
     _, _, seg1, _ = _parse_fas(data)
 
-    # seg1 should contain 'x' and 'y' as symbols
-    assert b'foo\x00' in seg1, "Symbol 'foo' missing from seg1"
-    assert b'x\x00' in seg1, "Symbol 'x' missing from seg1"
-    assert b'y\x00' in seg1, "Symbol 'y' missing from seg1"
+    # seg1 should contain 'foo'/'x'/'y' as symbols (CAD 符号名统一大写)
+    assert b'FOO\x00' in seg1, "Symbol 'FOO' missing from seg1"
+    assert b'X\x00' in seg1, "Symbol 'X' missing from seg1"
+    assert b'Y\x00' in seg1, "Symbol 'Y' missing from seg1"
 
 
 def test_string_literal_in_seg1():

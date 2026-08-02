@@ -45,32 +45,29 @@ class CadSymbolCollector:
         # 1. 函数名逆序
         for f in reversed(defuns):
             self.add(f.name)
-        # 2. 函数体符号：按"首次字节码引用序"逆序收集
-        for f in defuns:
+        # 2. 顶层代码（CAD：顶层表达式符号排在函数体内建/参数之前）
+        refs = []
+        for form in others:
+            self._collect_forward(form, refs, set())
+        for name, force in reversed(refs):
+            self.add(name, force=force)
+        # 3. 函数体符号 + 参数：按源码函数逆序，每个函数内"字节码引用序"逆序
+        #    （refs 为字节码正序，reversed 后函数名/外层调用在前），参数紧跟其后。
+        for f in reversed(defuns):
             arg_names = set(f.args)
             refs = []
             for expr in f.body:
                 self._collect_forward(expr, refs, arg_names)
             for name, force in reversed(refs):
                 self.add(name, force=force)
-        # 3. 唯一参数（只被一个函数使用）紧跟函数体内建/字符串
-        for f in reversed(defuns):
-            for arg in reversed(f.args):
-                if arg_usage.get(arg, 0) == 1:
+            for arg in f.args:
+                if arg not in self.names:
                     self.add(arg)
             for loc in reversed(f.locals):
                 self.add(loc)
-        # 4. 共享参数（被多函数使用）统一最后
-        for f in reversed(defuns):
-            for arg in reversed(f.args):
-                if arg_usage.get(arg, 0) > 1:
-                    self.add(arg)
-        # 5. 顶层代码
-        refs = []
-        for form in others:
-            self._collect_forward(form, refs, set())
-        for name, force in reversed(refs):
-            self.add(name, force=force)
+        # CAD 顶层表达式符号槽为源码逆序：先注册最后一个顶层表达式的符号。
+        # _collect_forward 已按"值在前、变量在后"收集（如 setq a "x" → "x",a），
+        # reversed 后即 a,"x"（变量在值前）。多表达式时整体逆序。
         return self.names
 
     def _collect_forward(self, node, out, arg_names):
