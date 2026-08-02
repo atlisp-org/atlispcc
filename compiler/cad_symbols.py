@@ -100,6 +100,7 @@ class CadSymbolCollector:
             if node.else_expr:
                 self._collect_forward(node.else_expr, out, arg_names)
         elif isinstance(node, WhileNode):
+            out.append(("while", False))
             if node.cond:
                 self._collect_forward(node.cond, out, arg_names)
             for expr in node.body:
@@ -130,13 +131,20 @@ class CadSymbolCollector:
                 self._collect_forward(item, out, arg_names)
         elif isinstance(node, QuotedExpr):
             if node.expr:
+                if isinstance(node.expr, ListExpr) and len(node.expr.items) >= 2 and isinstance(node.expr.items[0], Symbol) and node.expr.items[0].name == 'lambda':
+                    if isinstance(node.expr.items[1], ListExpr):
+                        lambda_args = set()
+                        for item in node.expr.items[1].items:
+                            if isinstance(item, Symbol):
+                                lambda_args.add(item.name)
+                        self._collect_forward(node.expr, out, arg_names | lambda_args)
+                        return
                 self._collect_forward(node.expr, out, arg_names)
         elif isinstance(node, LambdaNode):
             out.append(("lambda", False))
-            for arg in node.args:
-                out.append((arg, False))
+            lambda_args = set(node.args)
             for expr in node.body:
-                self._collect_forward(expr, out, arg_names)
+                self._collect_forward(expr, out, arg_names | lambda_args)
         elif isinstance(node, String):
             if not self._seen(out, '"' + node.value + '"'):
                 out.append(('"' + node.value + '"', False))

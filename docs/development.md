@@ -5,14 +5,12 @@
 ## 环境准备
 
 ```sh
-pip install poetry
-poetry install
-poetry shell
+pip install -e ".[dev]"
 # 或
-poetry run python fas4_decompiler.py ...
+python -m pytest
 ```
 
-Python >= 3.8。当前使用 Python 3.10.11。
+Python >= 3.8。
 
 ## 项目结构
 
@@ -20,7 +18,6 @@ Python >= 3.8。当前使用 Python 3.10.11。
 fas4_decompiler.py   主反编译器（解析 + 反汇编 + 分析 + 生成）
 fas_core.py          共享核心模块 — 加解密、解析、符号表重建
 validate.py          LSP 语法验证器
-decompile.py         简易包装入口
 
 compiler/
   cli.py             CLI 入口（atlispcc），子命令：compile/decompile/disasm/asm/validate/link/build-vlx
@@ -28,6 +25,8 @@ compiler/
   ast.py             AST 节点定义（含 Defpackage、InPackage）
   packages.py        包系统：PackageTable、名混淆/还原
   symbol_table.py    符号表构建与作用域分析（含包解析）
+  cad_symbols.py     CAD 符号槽顺序推导（CadSymbolCollector）
+  codegen.py         字节码生成器（AST → 指令流）
   codegen.py         字节码生成器（AST → 指令流）
   resource_builder.py 常量/符号/函数索引 → 资源段
   fas_writer.py      指令流 → FAS4 二进制

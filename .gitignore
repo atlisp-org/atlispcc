@@ -14,3 +14,7 @@ dist/
 *.egg-info/
 build/
 .pytest_cache/
+.mypy_cache/
+.vscode/
+disasm_output_utf8.txt
+D:/

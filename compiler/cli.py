@@ -468,10 +468,6 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     # （模块注册 = 函数名 + 顶层表达式符号；函数注册 GVARINIT st_init = nsyms）
     module_reg_count = len(defun_forms) + top_level_count
     fas_nsyms = len(symtab.entries) - module_reg_count + 1
-    # nsyms = len(entries) - 模块注册符号数 + 1
-    # （模块注册 = 函数名 + 顶层表达式符号；函数注册 GVARINIT st_init = nsyms）
-    module_reg_count = len(defun_forms) + top_level_count
-    fas_nsyms = len(symtab.entries) - module_reg_count + 1
 
     # 修正 USUBR/参数槽索引：CAD 用 `gvar 槽 - 1`（gvar 表由资源段 GVARINIT 建立）。
     def _all_params(f):

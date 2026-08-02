@@ -39,7 +39,7 @@ def res_func_triple() -> bytes:
     return bytes([0x3A])
 
 
-def build_module_code(n_funcs: int = 1, top_level: bytes = b'') -> bytes:
+def build_module_code(n_funcs: int = 1, top_level: bytes = b'', nsyms: int = 0) -> bytes:
     """生成 CAD 风格模块代码（seg1 尾部的模块入口）。
 
     CAD 把源码中的**顶层表达式**（defun 之外的 setq/set 等）编译进模块代码，
@@ -50,21 +50,21 @@ def build_module_code(n_funcs: int = 1, top_level: bytes = b'') -> bytes:
     - 无 defun 时（n_funcs=0）：``DEFUN头 + 顶层表达式 + END_DEFUN``
     - 有 defun 时：``DEFUN头 + 顶层表达式 + JUMP + 函数注册 + END_DEFUN``
 
-    多函数版本（n>1）按每函数 ``PUSH_G <n+1-i> POP JUMP PUSH_G <2n+1-i> SETQ_G <n-i>``
-    逆向规律生成。
+    多函数版本按每函数 ``PUSH_G <n+1-i> POP JUMP PUSH_G <b> SETQ_G <n-i>``
+    生成。当 nsyms>0 时 b 上限为 nsyms-1，避免 PUSH_G 索引超出 gvar 表范围。
     """
     out = bytearray(b'\x14\x01\x00\x00\x00')
     out += top_level
     if n_funcs == 0:
-        # CAD 无 defun：模块代码 = DEFUN头 + 顶层表达式 + END_DEFUN（无函数注册尾）。
         out += b'\x16'
         return bytes(out)
     if n_funcs <= 1:
         out += bytes.fromhex('0902000a570000000009030006010009010016')
         return bytes(out)
+    max_idx = nsyms - 1 if nsyms > 0 else 0xFFFF
     for i in range(n_funcs):
         a = n_funcs + 1 - i
-        b = 2 * n_funcs + 1 - i
+        b = min(2 * n_funcs + 1 - i, max_idx)
         c = n_funcs - i
         out += b'\x09' + res_u16(a) + b'\x0a\x57\x00\x00\x00\x00'
         out += b'\x09' + res_u16(b) + b'\x06' + res_u16(c)
