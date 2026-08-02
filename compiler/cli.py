@@ -458,11 +458,12 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     seg0 = bytes(all_bytecode.data)
 
     # 模块代码：含顶层表达式时用 CAD 风格完整模块代码；否则固定函数注册尾。
+    _pre_nsyms = len(symtab.entries) - (len(defun_forms) + top_level_count) + 1
     if other_forms:
         module_code = _build_cad_module_code(top_level_code, symtab, other_forms,
                                              n_funcs=len(defun_forms), top_level_count=top_level_count)
     else:
-        module_code = build_module_code(len(defun_forms))
+        module_code = build_module_code(len(defun_forms), nsyms=_pre_nsyms)
     resource = ResourceBuilder(symtab, encoding=encoding)
     # nsyms = len(entries) - 模块注册符号数 + 1
     # （模块注册 = 函数名 + 顶层表达式符号；函数注册 GVARINIT st_init = nsyms）

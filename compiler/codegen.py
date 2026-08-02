@@ -596,7 +596,9 @@ class CodeGenerator:
         buf.add_patch(jmp_back + 1, label_loop, 4)
         buf.label(label_end)
 
-    def _emit_quoted(self, buf: BytecodeBuffer, node: Optional[Node]):
+    def _emit_quoted(self, buf: BytecodeBuffer, node: Optional[Node], skip_reg: set = None):
+        if skip_reg is None:
+            skip_reg = set()
         if node is None:
             buf.emit(encode_op_noarg(PUSH_NIL))
         elif isinstance(node, Symbol):
@@ -608,7 +610,10 @@ class CodeGenerator:
             elif name == "FUNC":
                 buf.emit(encode_op_noarg(PUSH_NIL))
             else:
-                idx = self.symtab.get_or_add(name)
+                if name in skip_reg:
+                    idx = self.symtab.name_to_idx.get(name, 0xFFFF)
+                else:
+                    idx = self.symtab.get_or_add(name)
                 buf.emit(encode_op_u16(PUSH_G, idx))
         elif isinstance(node, Integer):
             val = node.value
@@ -620,18 +625,23 @@ class CodeGenerator:
             buf.emit(encode_real(node.value))
         elif isinstance(node, ListExpr):
             if node.dotted is not None:
-                self._emit_quoted(buf, node.dotted)
+                self._emit_quoted(buf, node.dotted, skip_reg)
                 for item in reversed(node.items):
-                    self._emit_quoted(buf, item)
+                    self._emit_quoted(buf, item, skip_reg)
                     buf.emit(encode_op_noarg(CONS))
                 return
             for item in reversed(node.items):
-                self._emit_quoted(buf, item)
+                self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(node.items)))
         elif isinstance(node, LambdaNode):
-            items = [Symbol("lambda"), ListExpr(items=[Symbol(a) for a in node.args])] + node.body
+            lambda_skip = set(node.args) | skip_reg
+            args_list = ListExpr(items=[Symbol(a) for a in node.args])
+            items = [Symbol("lambda"), args_list] + node.body
             for item in reversed(items):
-                self._emit_quoted(buf, item)
+                if item is args_list:
+                    self._emit_quoted(buf, item, lambda_skip)
+                else:
+                    self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         elif isinstance(node, String):
             idx = self.symtab.add_string(node.value)
@@ -639,7 +649,7 @@ class CodeGenerator:
         elif isinstance(node, Call):
             items = [Symbol(node.name)] + node.args
             for item in reversed(items):
-                self._emit_quoted(buf, item)
+                self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         else:
             self._emit_expr(buf, node)
