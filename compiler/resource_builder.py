@@ -62,9 +62,11 @@ def build_module_code(n_funcs: int = 1, top_level: bytes = b'', nsyms: int = 0) 
         out += bytes.fromhex('0902000a570000000009030006010009010016')
         return bytes(out)
     max_idx = nsyms - 1 if nsyms > 0 else 0xFFFF
+    b_start = 2 * n_funcs + 1
+    shift = max(0, b_start - max_idx)
     for i in range(n_funcs):
         a = n_funcs + 1 - i
-        b = min(2 * n_funcs + 1 - i, max_idx)
+        b = b_start - i - shift
         c = n_funcs - i
         out += b'\x09' + res_u16(a) + b'\x0a\x57\x00\x00\x00\x00'
         out += b'\x09' + res_u16(b) + b'\x06' + res_u16(c)
@@ -105,9 +107,14 @@ def count_resource_records(res_stream: bytes) -> int:
             pos += 2
         elif op in (0x56, 0x5b):
             pos += 1
-            while pos < len(res_stream) and res_stream[pos] != 0x00:
+            while pos < len(res_stream):
+                while pos < len(res_stream) and res_stream[pos] != 0x00:
+                    pos += 1
                 pos += 1
-            pos += 1
+                if pos >= len(res_stream) or res_stream[pos] == 0x00:
+                    if pos < len(res_stream):
+                        pos += 1
+                    break
         elif op == 0x55:
             pos += 1
             if pos + 2 <= len(res_stream):
@@ -317,13 +324,9 @@ class ResourceBuilder:
                 out += b'\x5b' + self._enc_sym(fname) + b'\x00\x00'
                 out += b'\x3a\x01'
         # DEFCODE 后 GVARINIT：var_pos = 模块注册符号数 + 2（函数名 + 顶层符号 + 2）。
-        # 确保 var_pos + st_init <= nsyms，避免 gvar 索引越界。
         _nsyms = entry_count - len(func_names) - top_level_count + 1
         gv_var_pos = len(func_names) + top_level_count + 2 if stub_format else max(0, entry_count - 1)
         gv_st_init = len(func_names) if stub_format else len(func_names)
-        max_si = max(0, _nsyms - gv_var_pos)
-        if gv_st_init > max_si:
-            gv_st_init = max_si
         out += res_gvar_init(gv_var_pos, gv_st_init)
         out += b'\x1c'
 

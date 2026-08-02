@@ -458,17 +458,15 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     seg0 = bytes(all_bytecode.data)
 
     # 模块代码：含顶层表达式时用 CAD 风格完整模块代码；否则固定函数注册尾。
-    _pre_nsyms = len(symtab.entries) - (len(defun_forms) + top_level_count) + 1
+    resource = ResourceBuilder(symtab, encoding=encoding)
+    module_reg_count = len(defun_forms) + top_level_count
+    fas_nsyms = len(symtab.entries) - module_reg_count + 1
+    _pre_nsyms = fas_nsyms
     if other_forms:
         module_code = _build_cad_module_code(top_level_code, symtab, other_forms,
                                              n_funcs=len(defun_forms), top_level_count=top_level_count)
     else:
         module_code = build_module_code(len(defun_forms), nsyms=_pre_nsyms)
-    resource = ResourceBuilder(symtab, encoding=encoding)
-    # nsyms = len(entries) - 模块注册符号数 + 1
-    # （模块注册 = 函数名 + 顶层表达式符号；函数注册 GVARINIT st_init = nsyms）
-    module_reg_count = len(defun_forms) + top_level_count
-    fas_nsyms = len(symtab.entries) - module_reg_count + 1
 
     # 修正 USUBR/参数槽索引：CAD 用 `gvar 槽 - 1`（gvar 表由资源段 GVARINIT 建立）。
     def _all_params(f):
@@ -482,8 +480,15 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg0_payload = f'{fas_nsyms} $'.encode() + seg0
     seg1 = resource.build(func_offsets, module_code=module_code, seg0_payload_len=len(seg0_payload), stub_format=True,
-                          top_level_count=top_level_count)
+                           top_level_count=top_level_count)
     sec2_items = count_resource_records(seg1)
+    # 确保 items 足够大，避免 CAD 加载时遗漏 GVARINIT 记录。
+    # CAD 要求 items >= gvar 表最大可引用槽数。
+    # 对多函数文件，模块代码 PUSH_G 引用高槽号，items 若不足
+    # CAD 会在 seg1 处理时跳过部分 GVARINIT，导致函数未注册。
+    min_items = fas_nsyms - 1 if len(defun_forms) > 1 else fas_nsyms
+    if sec2_items < min_items:
+        sec2_items = min_items
 
     output = output or source.replace('.lsp', '.fas')
     writer = FasWriter(symtab)
