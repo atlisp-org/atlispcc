@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlispcc"
-version = "0.1.5"
+version = "0.1.6"
 description = "Atlisp Compiler Collection: FAS4 bytecode compiler and decompiler toolchain for AutoLISP-compatible CAD platforms"
 readme = "README.md"
 requires-python = ">=3.8"

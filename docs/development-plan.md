@@ -33,19 +33,28 @@
 | CL 风格包系统 | ✅ | namespace |
 | 语法验证 | ✅ | validate |
 | `&optional`/`&rest` 可变参数 | ✅ | DEFUN 头 b4=01、参数收集列表、反编译标记 |
+| 反编译参数名对齐 | ✅ | `fas4_decompiler.py` `_extract_signature` 重复检测+回退 |
+| 参数顺序修复 | ✅ | `codegen.py` 公式 `nsyms-argc+i` |
+| seg1 items 计数修复 | ✅ | `count_resource_records` 按操作码结构跳转 |
 
-### 2.2 CAD 兼容性（核心）✅
+### 2.2 CAD 兼容性验证（AutoCAD 24.1s）
 
-AutoCAD 24.1s 实测正确执行：
+| 功能 | 状态 | 测试结果 |
+|------|------|---------|
+| 简单函数（1-4个） | ✅ | `(add 2 3)`→5, `(f4 8)`→2.0 |
+| 递归 | ✅ | `(fact 5)`→120, `(fib 10)`→55 |
+| if/while/cond | ✅ | `abs`, `sum-to`, `sign` 全部正确 |
+| 局部变量 | ✅ | `(swap 1 2)`→(2 1) |
+| 字符串拼接 | ✅ | `(greet "CAD")`→"Hello, CAD!" |
+| 多函数交叉引用（2-3个） | ✅ | `(sum-sq 3 4)`→25 |
+| 尾递归 | ✅ | `(sum-tail 5 0)`→15 |
+| &optional/&rest | ✅ | `(f 3 2)`→5, `(g 1 2 3)`→(1 (2 3)) |
+| 顶层 setq/set | ✅ | defun 前后混合均正确执行 |
+| lambda/quote | ⚠️ | `(map-inc '(1 2 3))` → `no function: X` |
+| 4函数+交叉引用 | ❌ | `build_module_code` PUSH_G 越界 |
+| i18n.lsp 混合模式 | ❌ | seg1 模块代码结构差异 |
 
-- **多函数**：`(add 3 4)`→7、`(multiply 3 4)`→12；t07 四函数全对
-- 递归：`(factorial 5)`→120、`(fib 10)`→55
-- 控制流：while、cond、嵌套 if
-- 字符串/局部变量/算术
-- **`&optional`**：`(opt1 1)`→`(1 nil)`、`(opt1 1 2)`→`(1 2)`（缺省 nil）
-- **`&rest`**：`(g 1 2 3)`→`(1 (2 3))`、`(h 1 2 3 4)`→`(1 2 (3 4))`（收集为列表）
-  > 注意：最后一次 CAD 回归（t01/multi2 既有用例）因 CAD 运行异常中断，
-  > CAD 恢复后需复核既有 14/14 用例。
+> 单函数文件（`fun.lsp`、`fact.lsp`）解密后与 CAD 编译器输出逐字节一致。
 
 关键逆向成果：
 - **USUBR 索引 = 符号 gvar 槽 - 1**
@@ -94,22 +103,16 @@ CAD 逐字节一致。
 **技术路线**：结合调试器（如之前 fas-format.org 的 OD 方法）逆向
 acad.exe 的 FAS 加载器，完善 gvar 表模型。
 
-### 3.4 反编译 stub 参数名错位（优先级：高）
+### 3.4 ✅ 已解决：反编译 stub 参数名错位
 
-**现象**：stub 反编译的参数名错位，如 `(defun add (a b) ...)` 反编译为
-`(defun add (b b_2) ...)`；`(defun g (a &rest r))` → `(defun g (n &rest r))`。
-
-**根因**：编译端参数绑定/读取槽 = `gvar_slot(arg)-1`（参数符号可能不在
-gvar 表，fallback 为 `nsyms`），与 `symbol_slots`（符号注册顺序）索引
-不一致；`_gvar_item(idx)`/`_gvar_symbol_gvar(idx)` 对参数槽 fallback 到
-`symbol_slots[idx]` 取错符号。参数槽与 `symbol_slots` 的偏移因符号注册
-顺序而异（t01 差 1、restpure 差 2），无通用映射。
-
-**技术路线**：
-- 从 `INIT_ARGS`（`2*全部参数数+1`）与 DEFUN 头 b2 确定参数区间，
-  用「参数顺序 + 源码符号推断」重建参数名
-- 或：反编译时按 gvar 表（含参数符号）重建参数槽 → 符号映射
-- 或：编译端把参数符号也注册到 gvar 表（使 `gvar_slot-1` 与 slots 一致）
+> **修复**（2026-08）：
+> - `fas4_decompiler.py` `_extract_signature`：参数名重复或非字母时，尝试
+>   `symbol_slots[idx+1]` 回退；无有效替代则 fallback 到 `arg_N`
+> - `codegen.py` `_emit_init_args`：参数绑定公式从 `nsyms-1-i` 改为
+>   `nsyms-argc+i`（参数在符号槽中按 `nsyms-argc` 偏移）
+> - `codegen.py` `_emit_expr`：参数读取公式同步修正
+> - `cli.py` `_patch_usubr_idx`：PUSH_VALUE 逆公式更新
+> - CAD 已验证：`(defun hypot (a b) ...)` → `(defun hypot (a b) ...)` ✓
 
 ### 3.5 纯 `&rest`（min=0）CAD 不收集 rest（优先级：中）✅ 已逆向/已处理
 
@@ -208,18 +211,27 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 ## 4. 开发计划
 
-### 4.1 短期（P0，1-2 周）
+### 4.1 已完成（2026-08）
 
-目标：修复反编译参数名、链接器 CAD 注册、纯 &rest。
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 反编译参数名（3.4） | ✅ | `_extract_signature` 重复检测 + `symbol_slots[idx+1]` 回退 |
+| 参数顺序修复 | ✅ | codegen 公式 `nsyms-argc+i`、`_patch_usubr_idx` 逆公式 |
+| seg1 items 计数 | ✅ | `count_resource_records` 按操作码结构跳转，避免 `0x1c/0x43` 误计 |
+| 死代码清理 | ✅ | 移除 `Fas4Parser.build_mvar_tables`（~196 行，从未调用） |
+| 纯 `&rest` min=0 | ✅ | 已逆向（CAD 硬性不收集）+ 编译警告 |
+
+### 4.2 短期（P0，1-2 周）
+
+目标：修复链接器 CAD 注册、4+函数交叉引用模块代码。
 
 | 任务 | 说明 |
 |------|------|
-| 反编译参数名（3.4） | 参数槽 → 符号映射（INIT_ARGS/gvar 表） |
 | 链接器多函数 CAD 注册（3.6） | 模块代码/DEFCODE 与 CAD 对齐 |
-| CAD 回归复核 | CAD 恢复后重测既有 14/14 用例 |
-| ~~纯 `&rest` min=0~~ | ✅ 已逆向（CAD 硬性不收集）+ 编译警告 |
+| `build_module_code` PUSH_G 越界 | n≥4 时 `2*n+1` 超出 `nsyms-1`，需动态计算 |
+| `_build_cad_module_code` 增强 | 支持 defun 间夹杂 setq/if 的复杂顶层表达式 |
 
-### 4.2 中期（P1，1-2 月）
+### 4.3 中期（P1，1-2 月）
 
 目标：扩大 CAD 兼容覆盖，字节码逐字节一致。
 
@@ -249,10 +261,11 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 | 优先级 | 内容 | 影响 |
 |--------|------|------|
-| P0 | 反编译 stub 参数名（3.4） | 反编译质量（参数名错位） |
+| ~~P0~~ | ~~反编译 stub 参数名（3.4）~~ | ✅ 已修复 |
 | P0 | 链接器多函数 CAD 注册（3.6） | 链接输出 CAD 可用性（只注册首函数） |
+| P0 | `build_module_code` PUSH_G 越界 | 4+函数交叉引用文件无法加载 |
 | P1 | while/cond/局部变量符号槽 | CAD 字节码逐字节一致 |
-| P1 | 命令函数 `c:` 处理 | CAD 功能完整 |
+| P1 | lambda 参数绑定 | `(mapcar '(lambda (x) ...) ...)` 中 x 未正确局部化 |
 | P2 | CAD 加载器内部逆向 | gvar 表精确模型 |
 | P2 | 性能与多版本兼容 | 工具链健壮性 |
 

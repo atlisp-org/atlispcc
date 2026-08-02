@@ -198,7 +198,7 @@ python -m pytest tests/ -v   # 详细输出
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
 - `test_cli.py` — CLI 路径（10 用例：compile/-O/--analyze/validate/link/vlx/dispatch）
-- `test_compile_decompile.py` — 编译-反编译往返（28 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返）
+- `test_compile_decompile.py` — 编译-反编译往返（29 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返）
 - `test_compiler_output.py` — FAS 输出正确性（12 用例）
 - `test_optimizer.py` — 所有优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
@@ -206,6 +206,7 @@ python -m pytest tests/ -v   # 详细输出
 - `test_disasm.py` — 反汇编健壮性（8 用例，含未处理操作码降级）
 - `test_packages.py` — CL 风格包系统（4 用例）
 - `test_vlx_builder.py` — VLX 容器（3 用例）
+- `test_variadic_args.py` — &optional/&rest 编译（5 用例）
 
 手动测试文件 `tests/test_*.lsp` 也在该目录。
 

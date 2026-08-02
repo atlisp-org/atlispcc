@@ -76,6 +76,9 @@ def count_resource_records(res_stream: bytes) -> int:
     """统计资源流中的 GVARINIT(0x43) 与 INIT_DONE(0x1c) 记录数。
 
     AutoCAD 的 seg1 头 ``<len> <items> $`` 中 items 即此计数。
+
+    不简单地按字节扫描（0x43/0x1c 可能出现在 code_ref 长度、
+    符号名等数据内部），而是按资源流操作码结构正确跳转。
     """
     count = 0
     pos = 0
@@ -87,6 +90,37 @@ def count_resource_records(res_stream: bytes) -> int:
         elif op == 0x1c:
             count += 1
             pos += 1
+        elif op in (0x00, 0x01, 0x02, 0x0a, 0x0b, 0x16, 0x20, 0x23, 0x24,
+                    0x28, 0x29, 0x2a, 0x3a, 0x62, 0x63):
+            pos += 1
+        elif op in (0x1e, 0x1f):
+            pos += 2
+        elif op in (0x03, 0x05, 0x06, 0x07, 0x09, 0x0c, 0x0d, 0x0e,
+                    0x1a, 0x1b, 0x34, 0x37, 0x39, 0x3c, 0x3d,
+                    0x5c, 0x5d, 0x5e):
+            pos += 3
+        elif op in (0x14, 0x15, 0x33, 0x35, 0x51, 0x57, 0x67, 0x68, 0x69, 0x6a, 0x6b):
+            pos += 5
+        elif op == 0x32:
+            pos += 2
+        elif op in (0x56, 0x5b):
+            pos += 1
+            while pos < len(res_stream) and res_stream[pos] != 0x00:
+                pos += 1
+            pos += 1
+        elif op == 0x55:
+            pos += 1
+            if pos + 2 <= len(res_stream):
+                import struct
+                num = struct.unpack('<H', res_stream[pos:pos+2])[0]
+                pos += 2
+                for _ in range(num):
+                    if pos + 2 <= len(res_stream):
+                        slen = struct.unpack('<H', res_stream[pos:pos+2])[0]
+                        pos += 2 + slen
+        elif op == 0x3b:
+            end = res_stream.find(b'\x00', pos + 1)
+            pos = end + 1 if end >= 0 else pos + 1
         else:
             pos += 1
     return count

@@ -376,7 +376,7 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
         instructions = disassembler.disassemble(fas.bytecode, fas.nsyms,
                                                 sym_count=len(fas.symbol_slots) if short_subr else None)
         patched = bytearray()
-        # stub 多文件合并：参数绑定/读取槽按 CAD 规则 = nsyms-1-i，
+        # stub 多文件合并：参数绑定/读取槽按 gvar_slot-1 规则，
         # 合并后需平移 (merged_nsyms - file_nsyms)。
         param_delta = merged_nsyms - fas.nsyms if short_subr else 0
         cur_argc = 0          # 全部参数数（DEFUN 后到 INIT_ARGS 的绑定）

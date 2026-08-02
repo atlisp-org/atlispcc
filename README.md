@@ -183,12 +183,31 @@ atlispcc validate combined.lsp
 ## 在 CAD 中测试
 
 ```lisp
-;; 加载反编译后的文件
-(load "C:/projects/bib_generic.lsp")
+;; 加载编译后的 FAS 文件
+(load "D:/atlisp-test/add.fas")
+(add 2 3)  ;; → 5
 
-;; 调用命令
-POLYCC
+;; 批量测试
+(load "D:/atlisp-test/test_all_final.lsp")
 ```
+
+### CAD 兼容性已验证（AutoCAD 24.1s）
+
+| 功能 | 状态 | 示例 |
+|------|------|------|
+| 简单函数 | ✅ | `(add 2 3)` → 5 |
+| 递归 | ✅ | `(fact 5)` → 120 |
+| if/while/cond | ✅ | `(sum-to 5)` → 15 |
+| 局部变量 | ✅ | `(swap 1 2)` → (2 1) |
+| 字符串拼接 | ✅ | `(greet "CAD")` → "Hello, CAD!" |
+| 多函数交叉引用 | ✅ | `(sum-sq 3 4)` → 25 |
+| 尾递归 | ✅ | `(sum-tail 5 0)` → 15 |
+| &optional/&rest | ✅ | `(f 3 2)` → 5, `(g 1 2 3)` → (1 (2 3)) |
+| 勾股定理 | ✅ | `(hypot 3 4)` → 5.0 |
+| 顶层 setq/set | ✅ | setq 在 defun 前后均正确执行 |
+| lambda/quote | ⚠️ | lambda 参数绑定待增强 |
+
+> 单函数文件（`fun.lsp`、`fact.lsp`）与 CAD 编译器输出解密后逐字节一致。
 
 ## 完整示例
 

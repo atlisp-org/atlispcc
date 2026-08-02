@@ -86,7 +86,9 @@ seg0 末尾 2 字节（末段指令尾部）位于 total_size 统计之外、`16
 | `(defun f (&rest n))` | `14 00 00 00 01` | 纯 &rest（min=0）；**CAD 实测运行时空**，建议至少一个必填参数 |
 | `(defun f (a &optional b &rest r))` | `14 01 01 01 01` | optional + rest（b1/b2/b3=min） |
 
-- 参数绑定：固定/可选/rest 全部按 `nsyms-1-i` 顺序，`INIT_ARGS = 2*全部参数数 + 1`
+- 参数绑定：固定/可选/rest 使用 `PUSH_G <nsyms-argc+i>`（codegen 初始值），
+  经 `_patch_usubr_idx` 修正为 `PUSH_G <gvar_slot(arg)-1>`（最终字节码）；
+  `INIT_ARGS = 2*全部参数数 + 1`
 - rest 参数在函数体内为列表（CAD 自动收集剩余实参）
 - 反编译器按 DEFUN 头 b4/b2 重建 `&optional`/`&rest` 标记
 
@@ -95,13 +97,15 @@ seg0 末尾 2 字节（末段指令尾部）位于 total_size 统计之外、`16
 每个参数先压符号槽字面量，再绑定 GET_LOCAL 槽位：
 
 ```
-PUSH_G <nsyms-1-i:2>   # 参数 i 用 gvar 槽（从后往前）
-GET_LOCAL <i:2>        # 5c <slot:2>
+PUSH_G <idx:2>       # 参数绑定：codegen 用 nsyms-argc+i，
+                      # _patch_usubr_idx 修正为 gvar_slot(arg)-1
+GET_LOCAL <i:2>      # 5c <slot:2>
 ...
 INIT_ARGS <2*argc+1:2> # 18 05 00
 ```
 
-参数读取（函数体内引用参数）也用 `PUSH_VALUE <nsyms-1-i:2>`。
+参数读取（函数体内引用参数）用 `PUSH_VALUE <nsyms-argc+i:2>`（codegen），
+经 `_patch_usubr_idx` 修正为 `PUSH_VALUE <gvar_slot(arg)-1:2>`（最终字节码）。
 
 ### 2.3 符号读取
 

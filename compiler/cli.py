@@ -129,10 +129,11 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 out += bytes([0x09, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                 arg_i += 1
                 continue
-        # 参数读取 PUSH_VALUE（槽 = nsyms-1-i，仅多函数）
+        # 参数读取 PUSH_VALUE（仅多函数）
         elif multi and inst.op_name == "PUSH_VALUE" and cur_args is not None and inst.operands:
             idx = inst.operands[0]
-            i = nsyms - 1 - idx
+            argc = len(cur_args)
+            i = idx - nsyms + argc
             if 0 <= i < len(cur_args):
                 arg = cur_args[i]
                 new_idx = gvar_slot(arg) - 1
@@ -463,6 +464,10 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     else:
         module_code = build_module_code(len(defun_forms))
     resource = ResourceBuilder(symtab, encoding=encoding)
+    # nsyms = len(entries) - 模块注册符号数 + 1
+    # （模块注册 = 函数名 + 顶层表达式符号；函数注册 GVARINIT st_init = nsyms）
+    module_reg_count = len(defun_forms) + top_level_count
+    fas_nsyms = len(symtab.entries) - module_reg_count + 1
     # nsyms = len(entries) - 模块注册符号数 + 1
     # （模块注册 = 函数名 + 顶层表达式符号；函数注册 GVARINIT st_init = nsyms）
     module_reg_count = len(defun_forms) + top_level_count

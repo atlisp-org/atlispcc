@@ -89,201 +89,6 @@ class Fas4Parser:
         from fas_core import decode_fas_text
         return decode_fas_text(raw)
 
-    def build_mvar_tables(self, res_data: bytes, nsyms: int) -> Tuple[List[Any], List[Any]]:
-        """Best-effort reconstruction of the two GVar tables populated by opcode 0x43."""
-        tables: Dict[int, List[Any]] = {
-            0: [None] * nsyms,
-            1: [None] * nsyms,
-        }
-        stack: List[Any] = []
-        pos = 0
-
-        def table0_value(idx: int) -> Any:
-            if 0 <= idx < nsyms:
-                return tables[0][idx]
-            return None
-
-        def pop_default(default: Any = None) -> Any:
-            return stack.pop() if stack else default
-
-        def pop_many(count: int) -> List[Any]:
-            if count <= 0:
-                return []
-            if count > len(stack):
-                count = len(stack)
-            values = stack[-count:]
-            del stack[-count:]
-            return values
-
-        while pos < len(res_data):
-            op = res_data[pos]
-
-            if op == 0x00:
-                stack.append(None)
-                pos += 1
-            elif op == 0x01:
-                stack.append(None)
-                pos += 1
-            elif op == 0x02:
-                stack.append(True)
-                pos += 1
-            elif op == 0x0A:
-                if stack:
-                    stack.pop()
-                pos += 1
-            elif op == 0x0B:
-                if stack:
-                    stack.append(stack[-1])
-                pos += 1
-            elif op in (0x14, 0x15):
-                if pos + 5 > len(res_data):
-                    break
-                stack.append(("DEFHDR", tuple(res_data[pos + 1 : pos + 5])))
-                pos += 5
-            elif op in (0x03, 0x09):
-                if pos + 3 > len(res_data):
-                    break
-                idx = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
-                stack.append(table0_value(idx))
-                pos += 3
-            elif op == 0x06:
-                if pos + 3 > len(res_data):
-                    break
-                idx = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
-                if 0 <= idx < nsyms:
-                    tables[0][idx] = pop_default()
-                pos += 3
-            elif op == 0x2A:
-                if len(stack) >= 2:
-                    right = stack.pop()
-                    left = stack.pop()
-                    stack.append(("CONS", left, right))
-                pos += 1
-            elif op == 0x28:
-                value = pop_default()
-                if isinstance(value, tuple) and len(value) == 3 and value[0] == "CONS":
-                    stack.append(value[1])
-                elif isinstance(value, tuple) and value:
-                    stack.append(value[0])
-                else:
-                    stack.append(("CAR", value))
-                pos += 1
-            elif op == 0x29:
-                value = pop_default()
-                if isinstance(value, tuple) and len(value) == 3 and value[0] == "CONS":
-                    stack.append(value[2])
-                elif isinstance(value, tuple) and len(value) > 1:
-                    stack.append(tuple(value[1:]))
-                else:
-                    stack.append(("CDR", value))
-                pos += 1
-            elif op == 0x32:
-                if pos + 2 > len(res_data):
-                    break
-                stack.append(struct.unpack("<b", res_data[pos + 1 : pos + 2])[0])
-                pos += 2
-            elif op == 0x33:
-                if pos + 5 > len(res_data):
-                    break
-                stack.append(struct.unpack("<i", res_data[pos + 1 : pos + 5])[0])
-                pos += 5
-            elif op == 0x39:
-                if pos + 3 > len(res_data):
-                    break
-                count = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
-                stack.append(tuple(pop_many(count)))
-                pos += 3
-            elif op == 0x34:
-                if pos + 3 > len(res_data):
-                    break
-                argc = res_data[pos + 1]
-                flags = res_data[pos + 2]
-                args = pop_many(argc + 1)
-                stack.append(("EVAL", argc, flags, tuple(args)))
-                pos += 3
-            elif op in (0x35, 0x51):
-                if pos + 5 > len(res_data):
-                    break
-                argc = res_data[pos + 1]
-                idx = struct.unpack("<H", res_data[pos + 2 : pos + 4])[0]
-                flags = res_data[pos + 4]
-                args = pop_many(argc)
-                stack.append(("CALL", table0_value(idx), idx, flags, tuple(args)))
-                pos += 5
-            elif op == 0x55:
-                if pos + 3 > len(res_data):
-                    break
-                num_strings = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
-                pos += 3
-                for _ in range(num_strings):
-                    if pos + 2 > len(res_data):
-                        pos = len(res_data)
-                        break
-                    str_len = struct.unpack("<H", res_data[pos : pos + 2])[0]
-                    pos += 2
-                    if pos + str_len > len(res_data):
-                        pos = len(res_data)
-                        break
-                    stack.append(("STRING", self.decode_text(res_data[pos : pos + str_len])))
-                    pos += str_len
-            elif op in (0x56, 0x5B):
-                pos += 1
-                while pos < len(res_data):
-                    end = res_data.find(b"\x00", pos)
-                    if end < 0:
-                        pos = len(res_data)
-                        break
-                    sym_name = self.decode_text(res_data[pos:end])
-                    pos = end + 1
-                    if not sym_name:
-                        break
-                    stack.append(("SYMBOL", sym_name))
-            elif op == 0x3A:
-                if len(stack) >= 3:
-                    name = stack.pop()
-                    start = stack.pop()
-                    module = stack.pop()
-                    stack.append(("FUNC", name, start, module))
-                pos += 1
-            elif op == 0x43:
-                if pos + 5 > len(res_data):
-                    break
-                var_pos = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
-                st_init = struct.unpack("<H", res_data[pos + 3 : pos + 5])[0]
-                module_id = stack.pop() if stack else None
-                table_idx = 0 if module_id is None else 1
-                for idx in range(var_pos + st_init - 1, var_pos - 1, -1):
-                    if not stack:
-                        break
-                    value = stack.pop()
-                    if 0 <= idx < nsyms:
-                        tables[table_idx][idx] = value
-                pos += 5
-            elif op == 0x23:
-                stack.append(("NOT", pop_default()))
-                pos += 1
-            elif op == 0x24:
-                stack.append(("ATOM", pop_default()))
-                pos += 1
-            elif op in (0x57, 0x67, 0x68, 0x69, 0x6A, 0x6B):
-                pos += 5
-            elif op in (0x05, 0x07, 0x0C, 0x0D, 0x0E, 0x1A, 0x1B, 0x37, 0x3C, 0x3D, 0x5C, 0x5D, 0x5E):
-                pos += 3
-            elif op in (0x1E, 0x1F):
-                pos += 2
-            elif op in (0x16, 0x1C, 0x20, 0x62, 0x63):
-                pos += 1
-            elif op == 0x3B:
-                end = res_data.find(b"\x00", pos + 1)
-                if end < 0:
-                    break
-                stack.append(("REAL", self.decode_text(res_data[pos + 1 : end])))
-                pos = end + 1
-            else:
-                pos += 1
-
-        return tables[0], tables[1]
-
     def parse_resource_stream(self, res_data: bytes) -> Tuple[List[Any], List[Tuple[int, Any]], List[str]]:
         pos = 0
         items: List[Any] = []
@@ -2134,6 +1939,7 @@ class LispGenerator:
         args: List[Tuple[int, str]] = []
         arg_symbol_indices: List[int] = []
         local_binding_names: List[str] = []
+        seen_arg_names: set = set()
         pair_items = pushed[-((init_count // 2) * 2) :]
         for pos in range(0, len(pair_items) - 1, 2):
             left, right = pair_items[pos], pair_items[pos + 1]
@@ -2144,6 +1950,16 @@ class LispGenerator:
                     local_binding_names.extend(symbol_list)
                     continue
                 raw_name = self._gvar_symbol_gvar(left[1]) or f"arg_{len(args) + 1}"
+                if self.is_stub_format and (raw_name in seen_arg_names or
+                                            not any(c.isalpha() for c in raw_name)):
+                    j = left[1] + 1
+                    if j < len(self.symbol_slots):
+                        alt = self._extract_symbol_text(self.symbol_slots[j])
+                        if alt and alt not in seen_arg_names:
+                            raw_name = alt
+                    if raw_name in seen_arg_names or not any(c.isalpha() for c in raw_name):
+                        raw_name = f"arg_{len(args) + 1}"
+                seen_arg_names.add(raw_name)
                 args.append((right[1], raw_name))
                 arg_symbol_indices.append(left[1])
 
@@ -2239,7 +2055,6 @@ class LispGenerator:
 
     def _gvar_item(self, idx: int) -> Any:
         if self.is_stub_format:
-            # 编译端符号索引 = gvar 槽 - 1，故 gvar 槽 = idx + 1。
             j = idx + 1
             if 0 <= j < len(self.gvar_table):
                 v = self.gvar_table[j]

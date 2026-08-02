@@ -155,3 +155,27 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - `README.md` — 使用者文档（安装、CLI 用法、工作流、工具参考）
 - `docs/lasm.md` — LASM 汇编语言参考（disasm/asm）
 - `docs/development.md` — 架构详解、代码规范、调试指南
+- `docs/development-plan.md` — 开发计划、已验证兼容性矩阵
+
+## CAD 测试
+
+测试文件编译到 `D:/atlisp-test/`，在 CAD 中加载测试脚本：
+
+```lisp
+(load "D:/atlisp-test/test_all_final.lsp")
+```
+
+### 已验证（AutoCAD 24.1s）
+
+- 简单函数、递归、if/while/cond、局部变量、字符串拼接 ✅
+- 2-3 函数交叉引用 ✅
+- 尾递归、&optional/&rest ✅
+- 顶层 setq/set（defun 前后混合）✅
+- `fun.lsp`/`fact.lsp` 解密后与 CAD 逐字节一致 ✅
+
+### 已知限制
+
+- 4+函数交叉引用：`build_module_code` PUSH_G 越界 → `count_resource_records` 修复后 `items` 计数正确，但模块代码布局仍需调整
+- `i18n.lsp` 混合模式：defun+顶层表达式混杂，`cad_symbols.py` 需支持持续块规则
+- lambda：`(mapcar '(lambda (x) ...) list)` 中 x 未正确局部化
+- MCP CAD 连接不稳定，建议手动测试

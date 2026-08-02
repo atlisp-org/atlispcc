@@ -127,7 +127,7 @@ class CodeGenerator:
     def __init__(self, symtab: SymbolTable, stub_format: bool = False, defined_funcs=None, nsyms: int = -1):
         self.symtab = symtab
         self.stub_format = stub_format
-        # stub 格式参数绑定/读取用 gvar 槽：参数 i → nsyms-1-i
+        # stub 格式参数绑定/读取：参数 i → nsyms-argc+i（最终经 _patch_usubr_idx 修正为 gvar_slot-1）
         self.nsyms = nsyms if nsyms >= 0 else len(symtab.entries)
         self.local_slots: Dict[str, int] = {}
         self.next_slot = 0
@@ -216,8 +216,7 @@ class CodeGenerator:
                 buf.emit(encode_op_noarg(PUSH_NIL))
             elif self.stub_format:
                 if name in self.current_func_args:
-                    # 参数读取用 gvar 槽（nsyms-1-i）
-                    idx = self.nsyms - 1 - self.local_slots[name]
+                    idx = self.nsyms - len(self.current_func_args) + self.local_slots[name]
                 else:
                     idx = self.symtab.get_or_add(name)
                 buf.emit(encode_op_u16(PUSH_VALUE, idx))
@@ -665,8 +664,9 @@ class CodeGenerator:
         if not args:
             return
         if self.stub_format:
+            argc = len(args)
             for i, arg in enumerate(args):
-                idx = self.nsyms - 1 - i
+                idx = self.nsyms - argc + i
                 buf.emit(encode_op_u16(PUSH_G, idx))
                 buf.emit(encode_op_u16(GET_LOCAL_16, i))
             buf.emit(encode_op_u16(INIT_ARGS, len(args) * 2 + 1))
