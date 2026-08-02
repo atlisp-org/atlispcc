@@ -317,8 +317,14 @@ class ResourceBuilder:
                 out += b'\x5b' + self._enc_sym(fname) + b'\x00\x00'
                 out += b'\x3a\x01'
         # DEFCODE 后 GVARINIT：var_pos = 模块注册符号数 + 2（函数名 + 顶层符号 + 2）。
-        out += res_gvar_init(len(func_names) + top_level_count + 2 if stub_format else max(0, entry_count - 1),
-                             len(func_names) if stub_format else len(func_names))
+        # 确保 var_pos + st_init <= nsyms，避免 gvar 索引越界。
+        _nsyms = entry_count - len(func_names) - top_level_count + 1
+        gv_var_pos = len(func_names) + top_level_count + 2 if stub_format else max(0, entry_count - 1)
+        gv_st_init = len(func_names) if stub_format else len(func_names)
+        max_si = max(0, _nsyms - gv_var_pos)
+        if gv_st_init > max_si:
+            gv_st_init = max_si
+        out += res_gvar_init(gv_var_pos, gv_st_init)
         out += b'\x1c'
 
         # ── 模块代码 ────────────────────────────────────────────────────
