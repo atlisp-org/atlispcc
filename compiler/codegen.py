@@ -561,7 +561,10 @@ class CodeGenerator:
             self._emit_expr(buf, cond)
             if actions:
                 jmp_pos = buf.pos()
-                label_next = f"_cond_next_{buf.pos()}_{i}"
+                if i < len(node.clauses) - 1:
+                    label_next = f"_cond_next_{buf.pos()}_{i}"
+                else:
+                    label_next = label_end
                 buf.emit(encode_op_u16(JMP16_IFNOT, 0))
                 buf.add_patch(jmp_pos + 1, label_next, 2)
                 for action in actions:
