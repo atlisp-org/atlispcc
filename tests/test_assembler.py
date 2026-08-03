@@ -193,6 +193,23 @@ def _seg1_plain(f):
     return b""
 
 
+def test_disasm_zelx():
+    """.zelx 直接反汇编：zelx→lasm 与 fas→lasm 完全一致。"""
+    from compiler.cli import cmd_disassemble
+    samples = os.path.join(os.path.dirname(__file__), "..", "samples", "zelx-reversing")
+    zlx_lasm = os.path.join(tempfile.gettempdir(), "t1_zlx.lasm")
+    fas_lasm = os.path.join(tempfile.gettempdir(), "t1_fas.lasm")
+    try:
+        cmd_disassemble(os.path.join(samples, "t1.zelx"), zlx_lasm)
+        cmd_disassemble(os.path.join(samples, "t1.fas"), fas_lasm)
+        with open(zlx_lasm, encoding="utf-8") as a, open(fas_lasm, encoding="utf-8") as b:
+            assert a.read() == b.read()
+    finally:
+        for p in (zlx_lasm, fas_lasm):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
 def test_lasm_zelx_roundtrip():
     """通用 lasm → zelx：lasm 汇编成 .zelx，再恢复 .fas 与原始一致（seg0+seg1）。"""
     from tools.zelx_to_fas import zelx_to_fas

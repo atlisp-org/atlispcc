@@ -516,10 +516,27 @@ def cmd_decompile(source: str, output: str = '') -> str:
 
 
 def cmd_disassemble(source: str, output: str = '') -> str:
-    """反汇编 .fas → .lasm（字节码指令列表）。"""
+    """反汇编 .fas / .zelx → .lasm（字节码指令列表）。"""
     from asm.assembler import disassemble_fas
-    text = disassemble_fas(source)
-    output = output or source.replace('.fas', '.lasm')
+
+    tmp_fas = ''
+    if source.lower().endswith('.zelx'):
+        # zelx → fas → lasm：先用逆向恢复出 fas 再反汇编
+        import os
+        import tempfile
+        from tools.zelx_to_fas import zelx_to_fas
+        base = os.path.splitext(os.path.basename(source))[0]
+        tmp_fas = os.path.join(tempfile.gettempdir(), f'{base}.fas')
+        try:
+            zelx_to_fas(source, tmp_fas)
+            text = disassemble_fas(tmp_fas)
+        finally:
+            if os.path.exists(tmp_fas):
+                os.unlink(tmp_fas)
+    else:
+        text = disassemble_fas(source)
+
+    output = output or source.rsplit('.', 1)[0] + '.lasm'
     with open(output, 'w', encoding='utf-8') as f:
         f.write(text)
     print(f'Disassembled to {output}')
@@ -587,8 +604,8 @@ def main():
 
     # disassemble: .fas → .lasm
     p_disasm = sub.add_parser('disasm', aliases=['disassemble'],
-                              help='Disassemble .fas → .lasm (bytecode instructions)')
-    p_disasm.add_argument('source', help='input .fas file')
+                              help='Disassemble .fas/.zelx → .lasm (bytecode instructions)')
+    p_disasm.add_argument('source', help='input .fas or .zelx file')
     p_disasm.add_argument('output', nargs='?', default='', help='output .lasm file (optional)')
 
     # assemble: .lasm → .fas
