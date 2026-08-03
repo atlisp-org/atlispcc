@@ -2,7 +2,7 @@
 
 > LASM = **L**isp **ASM**embly，FAS4 字节码的文本汇编表示。
 > `disasm`（`.fas → .lasm`）与 `asm`（`.lasm → .fas`）互为逆操作。
-> 实现见 `compiler/assembler.py`，指令编码见 `docs/opcodes.md`。
+> 实现见 `asm/assembler.py`，指令编码见 `docs/opcodes.md`。
 
 ## 概览
 
@@ -10,11 +10,13 @@
 .fas ── disasm ──> .lasm（文本） ── asm ──> .fas
 ```
 
-`.lasm` 是纯文本，每行一条指令，`;` 起始为注释。结构由三部分组成：
+`.lasm` 是纯文本，每行一条指令，`;` 起始为注释。结构由以下几部分组成：
 
 1. 文件头注释（可选）
-2. `.symbols` 段 — 符号表
-3. `.function` 段 — 每个函数一条指令列表
+2. `.format` 指令 — FAS 布局格式（`compact` / `selfcontained`）
+3. `.nsyms` 指令 — gvar 槽数（紧凑 stub 格式）
+4. `.symbols` 段 — 符号表
+5. `.function` 段 — 每个函数一条指令列表
 
 ## 文件结构
 
@@ -22,6 +24,8 @@
 ; FAS4 assembly                 ← 文件头（可选注释）
 ; Source: xxx.fas
 ; Crunch date: A7/31/26
+.format compact                  ← 格式指令：compact（CAD 紧凑 stub）/ selfcontained
+.nsyms 4                        ← gvar 槽数（紧凑 stub 必需，自包含可省略）
 
 .symbols                          ← 符号表段
   0: SYMBOL f2
@@ -36,6 +40,20 @@
   ...
 .end_function
 ```
+
+### 格式指令（.format / .nsyms）
+
+`disasm` 生成的 `.lasm` 头部包含 `.format` 与 `.nsyms` 指令，`asm` 据此选择
+**布局格式**与符号槽数：
+
+- `.format compact` — 与 AutoCAD 编译器一致的**紧凑 stub** 布局
+  （`total_size = len(seg0_payload) - 2`，符号按资源注册序直接编址）。
+  汇编产物可在 CAD 中加载执行。
+- `.format selfcontained` — 自包含布局（`total_size = len(seg0_payload)`）。
+- `.nsyms N` — gvar 槽数；缺省时按 `len(entries) - 函数数 + 1` 推导。
+
+手工编写的 `.lasm` 可省略这两条指令：汇编器按指令特征自动判定
+（出现 `END_DEFUN`/`ALPHA`/`BETA` 视为自包含，否则视为紧凑 stub）。
 
 ## 符号表（.symbols）
 
@@ -118,6 +136,24 @@
 0x000a: USUBR 2, 1            ; argc=2, 符号槽 1（如 +）
 0x000e: SETQ_G x, 0           ; x = 符号槽 2
 ```
+
+> **重复符号槽**：递归/跨函数调用会使同一函数名占多个符号槽。反汇编器对
+> 重复名字输出显式数字索引 `[N]`（而非符号名），避免汇编时解析回首个槽。
+> 例 `PUSH_VALUE [0]`（min 的递归函数名槽）。
+
+## 紧凑 stub 编码（.format compact）
+
+紧凑 stub 格式的部分指令编码与自包含不同（`_asm_instr` 在 `compact=True` 时）：
+
+| 指令 | 紧凑 stub | 自包含 |
+|------|----------|--------|
+| `USUBR` / `FUNC` | `35/51 <argc> <idx:1>`（3 字节） | `35/51 <argc> <idx:2> <flags> ...`（5/6 字节） |
+| `PUSH_VALUE [0]` | `03`（单字节） | `03 <idx:2>`（3 字节） |
+| `PUSH_VALUE [i>0]` | `03 <idx:2>`（3 字节） | 同左 |
+| `CLEAR_ARGS` | `19 <argc:2> 00`（3 字节） | `19 <argc:2>`（3 字节） |
+| `DEFUN` | `14 <argc>x3 <mode>`（argc 编码） | `14 <gv:2> <off:2>`（gvar 编码） |
+
+汇编器依据 `.format` 指令选择编码；缺省按指令特征自动判定。
 
 ### GET_LOCAL_WIDE（长编码局部变量）
 
@@ -215,5 +251,8 @@ diff test.lasm roundtrip.lasm   # 应无差异
 
 - 汇编器**忽略**偏移前缀，按行序编码；手工编写时偏移可随意填写或省略
 - 符号索引超出符号表范围会编码为原数字（或 `[N]` 形式）
-- `asm` 输出自包含格式 FAS；CAD 加载兼容性请参考 `docs/cad-stub-format.md`
+- 缺省格式为自包含；紧凑 stub（`.format compact`）产物与 CAD 布局一致，
+  可在 CAD 中加载执行。`disasm` 默认按紧凑 stub 输出（AutoCAD 编译器产物）
+- `disasm` 输出的 `.lasm` 可通过 `asm` **逐字节还原**原始 `.fas`
+  （seg0 完全一致；含顶层表达式的文件其 seg1 模块代码不随 `.lasm` 携带，见 `docs/cad-stub-format.md`）
 - 反汇编器对未知操作码输出 `UNK_<hex>`，汇编时不支持（编码会失败）

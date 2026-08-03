@@ -167,7 +167,7 @@ FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操
 03 02 00         PUSH_VALUE 槽2 (b)   ; 取 b 的值
 35 02 01         USUBR argc=2 槽1 (+) ; 调用 +
 00 03            NIL + PUSH_VALUE     ; 调用后清理
-19               CLEAR_ARGS
+19 02 00         CLEAR_ARGS argc=2    ; 3 字节（CAD 实测）
 ; stub 格式末尾不追加 END_DEFUN
 ```
 
@@ -526,7 +526,7 @@ JUMP func_entry
 
 ## 编码函数参考
 
-`compiler/opcodes.py` 提供的编码辅助函数：
+`asm/opcodes.py` 提供的编码辅助函数：
 
 | 函数 | 输出格式 | 示例 |
 |------|---------|------|
@@ -553,5 +553,5 @@ JUMP func_entry
 | [fas-format.md](fas-format.md) | FAS4 文件格式详解（布局、加密、资源段） |
 | [cad-stub-format.md](cad-stub-format.md) | 紧凑 stub 格式与 CAD 兼容性细节 |
 | [development.md](development.md) | 编译器架构与开发指南 |
-| `compiler/opcodes.py` | 操作码定义与编码函数 |
+| `asm/opcodes.py` | 操作码定义与编码函数 |
 | `compiler/codegen.py` | 字节码生成器（发射各操作码） |

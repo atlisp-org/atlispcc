@@ -4,11 +4,11 @@ import os
 import sys
 from typing import List, Dict, Tuple, Set, Any
 
-from fas4_decompiler import Fas4Parser, Disassembler
+from decompiler.fas4_decompiler import Fas4Parser, Disassembler
 from compiler.symbol_table import SymbolTable
 from compiler.resource_builder import ResourceBuilder, build_module_code, count_resource_records
 from compiler.fas_writer import FasWriter
-from compiler.opcodes import (
+from asm.opcodes import (
     OPCODE_TO_NAME,
     OPCODE_FORMAT,
     encode_op_u16,
@@ -25,13 +25,13 @@ from compiler.opcodes import (
     encode_eval,
     encode_real,
 )
-from fas4_decompiler import is_compact_stub
+from decompiler.fas4_decompiler import is_compact_stub
 
 
 def _fas_is_stub(fas) -> bool:
     """用反编译器完整判定（is_compact_stub + DEFCODE/argc 头检测）。"""
     try:
-        from fas4_decompiler import LispGenerator
+        from decompiler.fas4_decompiler import LispGenerator
         return LispGenerator(fas).is_stub_format
     except Exception:
         return is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots))
@@ -158,7 +158,7 @@ def _data_items_of(fas) -> List[Tuple]:
         if _fas_is_stub(fas):
             # stub 符号表需含内建（如 strcat），symbol_slots 可能缺失
             try:
-                from fas_core import build_mvar_tables
+                from core.fas_core import build_mvar_tables
                 _, fg = build_mvar_tables(fas.sec2_data, fas.nsyms)
                 seen = {_make_item_key(it) for it in items}
                 for v in fg:
@@ -320,7 +320,7 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
     _pre_module_code = build_module_code(len(_pre_func_offsets))
     _pre_sec1 = ResourceBuilder(symtab, encoding=encoding).build(_pre_func_offsets, module_code=_pre_module_code, stub_format=True)
     _pre_nsyms = len(symtab.entries)
-    from fas_core import build_mvar_tables
+    from core.fas_core import build_mvar_tables
     try:
         _, _pre_fg = build_mvar_tables(_pre_sec1, _pre_nsyms)
     except Exception:
@@ -348,7 +348,7 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
             # 再映射到合并 gvar 槽-1。
             sym_by_idx = {}
             try:
-                from fas_core import build_mvar_tables as _bmt
+                from core.fas_core import build_mvar_tables as _bmt
                 _, _ffg = _bmt(fas.sec2_data, fas.nsyms)
             except Exception:
                 _ffg = []

@@ -2,7 +2,7 @@
 """
 FAS4 分析器 — 识别格式类型，提取函数边界和分析报告。
 
-使用 fas_core.py 核心模块。
+使用 core/fas_core.py 核心模块。
 
 用法:
   python -m tools.fas-analyzer <input.fas> [--dump] [--json]
@@ -15,7 +15,7 @@ import sys
 import os
 import json
 
-from fas_core import (
+from core.fas_core import (
     parse_fas4, extract_stubs,
     parse_resource_stream, build_mvar_tables, build_function_catalog,
     extract_symbol_names,
@@ -57,7 +57,7 @@ def main():
     has_func_defs = False
     seg0_enc = False
     # 判断 seg0 是否含函数定义
-    from fas_core import FUNC_DEF_OPCODE
+    from core.fas_core import FUNC_DEF_OPCODE
     if FUNC_DEF_OPCODE in bytecode:
         has_func_defs = True
 

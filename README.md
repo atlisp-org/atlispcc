@@ -23,11 +23,11 @@ pip install atlispcc
 ```sh
 atlispcc compile input.lsp output.fas
 python -m compiler.cli compile input.lsp output.fas   # 等价
-python -m fas4_decompiler input.fas output.lsp         # 反编译
-python -m validate output.lsp                          # 验证
+python -m decompiler.fas4_decompiler input.fas output.lsp   # 反编译
+python -m tools.validate output.lsp                          # 验证
 ```
 
-> 在源码仓库中也可直接运行脚本：`python compiler/cli.py ...`、`python fas4_decompiler.py ...`、`python validate.py ...`。
+> 在源码仓库中也可直接运行脚本：`python compiler/cli.py ...`、`python decompiler/fas4_decompiler.py ...`、`python tools/validate.py ...`。
 
 ## CLI 快速参考
 
@@ -91,7 +91,7 @@ atlispcc compile --analyze -O3 input.lsp output.fas
 ```sh
 atlispcc decompile input.fas output.lsp
 # 或模块调用
-python -m fas4_decompiler input.fas output.lsp
+python -m decompiler.fas4_decompiler input.fas output.lsp
 ```
 
 ### validate — 语法验证
@@ -100,7 +100,7 @@ python -m fas4_decompiler input.fas output.lsp
 # 单文件或多文件
 atlispcc validate output.lsp
 # 或模块调用
-python -m validate output.lsp
+python -m tools.validate output.lsp
 ```
 
 验证器检查：括号平衡、顶层形式为 defun、C: 命令无必需参数、符号名合法性、常见结构问题（if 参数不足、setq 参数为奇数、空 progn 等）。
@@ -117,9 +117,12 @@ atlispcc disasm input.fas output.lasm
 atlispcc disassemble input.fas
 ```
 
-输出包含符号表（`.symbols`）和各函数的指令列表（`.function`），如：
+输出包含格式指令、符号表（`.symbols`）和各函数的指令列表（`.function`），如：
 
 ```
+.format compact
+.nsyms 4
+
 .symbols
   0: SYMBOL hello
   1: SYMBOL x
@@ -142,7 +145,10 @@ atlispcc asm input.lasm output.fas
 atlispcc assemble input.lasm
 ```
 
-`disasm` / `asm` 互为逆操作，支持 `.fas → .lasm → .fas` 往返。`.lasm` 汇编语言语法见 `docs/lasm.md`。
+`disasm` / `asm` 互为逆操作，支持 `.fas → .lasm → .fas` 往返，**seg0 逐字节一致**。
+汇编器依据 `.lasm` 头部的 `.format` 指令选择布局：`.format compact`（CAD 紧凑 stub）
+产物可直接在 CAD 中加载执行，`.format selfcontained` 为自包含格式。
+`.lasm` 汇编语言语法见 `docs/lasm.md`。
 
 ### link — 多文件链接
 

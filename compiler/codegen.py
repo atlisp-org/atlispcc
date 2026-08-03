@@ -20,7 +20,7 @@ from compiler.ast import (
     LambdaNode,
     Cond,
 )
-from compiler.opcodes import (
+from asm.opcodes import (
     NAME_TO_OPCODE,
     encode_op_noarg,
     encode_op_u16,

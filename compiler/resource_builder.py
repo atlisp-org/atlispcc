@@ -1,6 +1,6 @@
 import struct
 from typing import List, Dict, Any, Tuple, Optional
-from fas_core import get_ansi_encoding
+from core.fas_core import get_ansi_encoding
 from compiler.symbol_table import SymbolTable
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlispcc"
-version = "0.1.6"
+version = "0.1.7"
 description = "Atlisp Compiler Collection: FAS4 bytecode compiler and decompiler toolchain for AutoLISP-compatible CAD platforms"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -23,11 +23,11 @@ dev = [
 atlispcc = "compiler.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["compiler*"]
+include = ["compiler*", "asm*", "core*", "decompiler*", "tools*"]
 namespaces = false
 
 [tool.setuptools]
-py-modules = ["fas_core", "fas4_decompiler", "validate"]
+py-modules = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

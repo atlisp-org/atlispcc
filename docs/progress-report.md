@@ -14,7 +14,7 @@
 |------|------|
 | 代码规模 | ~8,900 行 Python |
 | 测试用例 | **167/167 通过**（14 个测试文件） |
-| 核心模块 | `fas4_decompiler.py`(2533)、`opt.py`(1376)、`codegen.py`(796)、`fas_core.py`(707)、`cli.py`(660) |
+| 核心模块 | `decompiler/fas4_decompiler.py`(2533)、`compiler/opt.py`(1376)、`compiler/codegen.py`(796)、`core/fas_core.py`(707)、`compiler/cli.py`(660) |
 | CLI 子命令 | compile / decompile / disasm / asm / validate / link / build-vlx |
 | 优化级别 | -O1/-O2/-O3（8 个 pass） |
 

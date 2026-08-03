@@ -15,9 +15,14 @@ Python >= 3.8。
 ## 项目结构
 
 ```
-fas4_decompiler.py   主反编译器（解析 + 反汇编 + 分析 + 生成）
-fas_core.py          共享核心模块 — 加解密、解析、符号表重建
-validate.py          LSP 语法验证器
+decompiler/
+  fas4_decompiler.py 主反编译器（解析 + 反汇编 + 分析 + 生成）
+core/
+  fas_core.py        共享核心模块 — 加解密、解析、符号表重建
+
+asm/
+  assembler.py       反汇编/汇编（.fas ↔ .lasm）
+  opcodes.py         操作码定义与编码函数（codegen/linker/汇编共用）
 
 compiler/
   cli.py             CLI 入口（atlispcc），子命令：compile/decompile/disasm/asm/validate/link/build-vlx
@@ -27,22 +32,27 @@ compiler/
   symbol_table.py    符号表构建与作用域分析（含包解析）
   cad_symbols.py     CAD 符号槽顺序推导（CadSymbolCollector）
   codegen.py         字节码生成器（AST → 指令流）
-  codegen.py         字节码生成器（AST → 指令流）
   resource_builder.py 常量/符号/函数索引 → 资源段
   fas_writer.py      指令流 → FAS4 二进制
   opt.py             优化器（-O）：8 个 pass 跨 O1-O3 级别
   analyzer.py        编译分析与统计
-  assembler.py       反汇编/汇编（.fas ↔ .lasm）
   linker.py          多文件 FAS 链接器
   vlx_builder.py     VLX 容器构建器
+
+tools/
+  validate.py        LSP 语法验证器
+  fas-analyzer.py    FAS4 分析工具
+  fas-split.py       FAS 分割工具
+  decrypt_fas4.py    解密工具
+  crack_key.py       密钥破解工具
 ```
 
 ### 关键文件
 
 | 文件 | 作用 |
 |------|------|
-| `fas4_decompiler.py` | 主反编译器：解析 + 反汇编 + 分析 + 生成 |
-| `fas_core.py` | 共享加密/解析/符号工具函数（`find_key`/`decrypt_stream`/`build_mvar_tables`/`build_function_catalog`） |
+| `decompiler/fas4_decompiler.py` | 主反编译器：解析 + 反汇编 + 分析 + 生成 |
+| `core/fas_core.py` | 共享加密/解析/符号工具函数（`find_key`/`decrypt_stream`/`build_mvar_tables`/`build_function_catalog`） |
 | `compiler/cli.py` | CLI 入口，子命令分发 |
 | `compiler/parser.py` | Lisp 源码解析器 → AST |
 | `compiler/ast.py` | AST 节点定义（含 Defpackage、InPackage） |
@@ -53,7 +63,8 @@ compiler/
 | `compiler/fas_writer.py` | 指令流 → FAS4 二进制 |
 | `compiler/opt.py` | 优化器：8 个 pass 跨 O1-O3 级别 |
 | `compiler/analyzer.py` | 编译分析与统计 |
-| `compiler/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
+| `asm/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
+| `asm/opcodes.py` | 操作码定义与编码函数（codegen/linker/汇编共用） |
 | `compiler/linker.py` | 多文件 FAS 链接器 |
 | `compiler/vlx_builder.py` | VLX 容器构建器 |
 | `validate.py` | 生成的 `.lsp` 语法验证器 |
@@ -213,7 +224,8 @@ python -m pytest tests/ -v   # 详细输出
 
 FAS4 输出格式与 AutoCAD 编译器一致：
 - seg0 = 函数字节码（`<nsyms> $...`），seg1 = 资源段（常量/符号/函数索引）
-- 紧凑 stub 格式 `total_size = len(seg0_payload) - 2`（CAD 实测恒等；末尾 2 字节为末段指令尾部，位于 total_size 之外、终止符之前）；自包含格式 `total_size = len(seg0_payload)`。`FasWriter.write(..., compact=True)` 走前者（CLI/链接器），自包含走后者（汇编/测试）
+- 紧凑 stub 格式 `total_size = len(seg0_payload) - 2`（CAD 实测恒等；末尾 2 字节为末段指令尾部，位于 total_size 之外、终止符之前）；自包含格式 `total_size = len(seg0_payload)`。`FasWriter.write(..., compact=True)` 走前者（CLI/链接器/紧凑汇编）
+- **汇编器（`asm/assembler.py`）同时支持两种布局**：`.lasm` 头部的 `.format compact|selfcontained` 指令选择布局与 stub 编码（USUBR/FUNC 3 字节、PUSH_VALUE[0] 单字节、CLEAR_ARGS `19 <argc> 00`）；缺省按指令特征自动判定。`disasm → asm` 往返 seg0 逐字节一致，紧凑产物可在 CAD 加载执行
 - 紧凑 stub 生成规则（与 CAD 逐字节一致）：中间 setq 无 POP、尾 setq 先 DUP、无 else 的 `if` 补 PUSH_NIL、有参函数末尾 `19 <argc> 00`（CLEAR_ARGS）
 - seg1 使用滚动 XOR 加密（`find_key`/`decrypt_stream`），尾部含密钥长度字节 + 密钥 + `;fas4 crunch` 标记
 - 段分隔符为 `16 24 0d 0a`，`nsyms` 为符号槽数（资源注册顺序）
@@ -234,7 +246,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - 用于列表/关联列表/DXF 组码读取的 `IN_PARAM` 查找
 - 缺少 `Projet/PA_Projet` 框架时的后备选择提示
 
-解码器问题在 `fas4_decompiler.py` 中修复，永远不要修改生成的 `.lsp`。
+解码器问题在 `decompiler/fas4_decompiler.py` 中修复，永远不要修改生成的 `.lsp`。
 
 ### 编译管线关键实现（与 CAD 逐字节一致）
 
@@ -257,13 +269,13 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 pip install -e ".[dev]"
 
 # 语法检查
-python -m py_compile fas4_decompiler.py
+python -m py_compile decompiler/fas4_decompiler.py
 python -m py_compile compiler/opt.py
 
 # 编译 + 反编译 + 验证
 python compiler/cli.py compile -O2 tests/test_while.lsp test.fas
-python fas4_decompiler.py test.fas test.lsp
-python validate.py test.lsp
+python -m decompiler.fas4_decompiler test.fas test.lsp
+python -m tools.validate test.lsp
 
 # 完整测试套件
 python -m pytest -v
@@ -275,8 +287,9 @@ mypy .
 
 ## 工具脚本
 
-`tools/` 下的辅助分析工具**不随 pip 包分发**（`pyproject.toml` 的
-`include = ["compiler*"]`），仅在源码仓库内可用：
+`tools/` 下的辅助分析工具随 pip 包分发（`pyproject.toml` 的
+`include = ["compiler*", "asm*", "core*", "decompiler*", "tools*"]`）。
+其中 `tools/validate.py` 被 CLI 的 `validate` 子命令依赖，其余为独立脚本：
 
 ### 分析工具
 
@@ -306,8 +319,8 @@ python -m tools.crack_key encrypted.fas
 
 - PEP 8（通过 `black .` 格式化）
 - 类型注解使用 `typing` 模块风格（`Optional[str]`，保持 Python 3.8 兼容）
-- `fas_core.py` 是共享模块：所有工具脚本共用的函数放这里
-- 解码器修复始终在 `fas4_decompiler.py`，从不修改生成的 `.lsp`
+- `core/fas_core.py` 是共享模块：所有工具脚本共用的函数放这里
+- 解码器修复始终在 `decompiler/fas4_decompiler.py`，从不修改生成的 `.lsp`
 
 ## 常见问题
 

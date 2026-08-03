@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from fas4_decompiler import (
+from decompiler.fas4_decompiler import (
     Disassembler, Fas4Parser, is_compact_stub, LispGenerator,
     Instruction, FunctionDef, Fas4File,
 )
@@ -109,7 +109,7 @@ def test_render_block_unhandled_branch_comment():
 
 def test_opcode_tables_in_sync():
     """Disassembler and compiler opcode tables must be identical."""
-    from compiler import opcodes as compiler_opcodes
+    from asm import opcodes as compiler_opcodes
     assert Disassembler.OPCODES == compiler_opcodes.OPCODES
 
 

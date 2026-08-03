@@ -9,8 +9,8 @@ from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
-from fas_core import find_key as fas_find_key
-from fas_core import decrypt_stream as fas_decrypt_stream
+from core.fas_core import find_key as fas_find_key
+from core.fas_core import decrypt_stream as fas_decrypt_stream
 
 ENCODE_POP = bytes([0x0a])
 FAS4_MAGIC = b'\r\n FAS4-FILE ; Do not change it!\r\n'
@@ -172,9 +172,9 @@ def test_string_literal_in_seg1():
 
 def test_magic_roundtrip():
     """Compiled FAS: compile -> decompile produces valid Lisp (roundtrip)."""
-    from fas4_decompiler import Fas4Parser, Disassembler, \
+    from decompiler.fas4_decompiler import Fas4Parser, Disassembler, \
         ControlFlowAnalyzer, LispGenerator, is_compact_stub
-    from validate import tokenize, parse_tokens, validate_ast
+    from tools.validate import tokenize, parse_tokens, validate_ast
 
     src = '(defun hello () (princ "Hello, World!") (princ))'
     parser = Parser(src)

@@ -2,9 +2,9 @@
 import os
 import tempfile
 
-from compiler.assembler import disassemble_fas, assemble_lasm
+from asm.assembler import disassemble_fas, assemble_lasm
 from compiler.cli import cmd_compile as compile_lsp
-from fas4_decompiler import Fas4Parser, LispGenerator
+from decompiler.fas4_decompiler import Fas4Parser, LispGenerator
 
 
 def _compile_lsp(source: str) -> str:
@@ -16,7 +16,7 @@ def _compile_lsp(source: str) -> str:
 def _decompile_fas(fas_path: str) -> str:
     parser = Fas4Parser()
     fas = parser.parse(fas_path)
-    from fas4_decompiler import Disassembler, ControlFlowAnalyzer
+    from decompiler.fas4_decompiler import Disassembler, ControlFlowAnalyzer
     disasm = Disassembler()
     instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
     cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
@@ -130,7 +130,7 @@ def test_disassemble_output_is_parseable():
         if not stripped:
             continue
         if stripped.startswith('.'):
-            assert stripped in (
+            assert stripped.startswith(('.format ', '.nsyms ')) or stripped in (
                 '.symbols', '.end_symbols',
             ) or stripped.startswith('.function') or stripped.startswith('.end_function')
         elif ':' in stripped[:10]:

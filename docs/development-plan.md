@@ -33,7 +33,7 @@
 | CL 风格包系统 | ✅ | namespace |
 | 语法验证 | ✅ | validate |
 | `&optional`/`&rest` 可变参数 | ✅ | DEFUN 头 b4=01、参数收集列表、反编译标记 |
-| 反编译参数名对齐 | ✅ | `fas4_decompiler.py` `_extract_signature` 重复检测+回退 |
+| 反编译参数名对齐 | ✅ | `decompiler/fas4_decompiler.py` `_extract_signature` 重复检测+回退 |
 | 参数顺序修复 | ✅ | `codegen.py` 公式 `nsyms-argc+i` |
 | seg1 items 计数修复 | ✅ | `count_resource_records` 按操作码结构跳转 |
 
@@ -106,7 +106,7 @@ acad.exe 的 FAS 加载器，完善 gvar 表模型。
 ### 3.4 ✅ 已解决：反编译 stub 参数名错位
 
 > **修复**（2026-08）：
-> - `fas4_decompiler.py` `_extract_signature`：参数名重复或非字母时，尝试
+> - `decompiler/fas4_decompiler.py` `_extract_signature`：参数名重复或非字母时，尝试
 >   `symbol_slots[idx+1]` 回退；无有效替代则 fallback 到 `arg_N`
 > - `codegen.py` `_emit_init_args`：参数绑定公式从 `nsyms-1-i` 改为
 >   `nsyms-argc+i`（参数在符号槽中按 `nsyms-argc` 偏移）

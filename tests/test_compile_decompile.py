@@ -10,8 +10,8 @@ from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
 from compiler.ast import Defun
-from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
-from validate import tokenize, parse_tokens, validate_ast
+from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
+from tools.validate import tokenize, parse_tokens, validate_ast
 
 
 ENCODE_POP = bytes([0x0a])
@@ -405,7 +405,7 @@ def test_real_fas_decompile():
     if not os.path.exists(fas_path):
         pytest.skip('PDI.fas not found')
 
-    from fas4_decompiler import Fas4Parser, Disassembler, \
+    from decompiler.fas4_decompiler import Fas4Parser, Disassembler, \
         ControlFlowAnalyzer, LispGenerator
     import tempfile
 

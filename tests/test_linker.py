@@ -3,7 +3,7 @@ import os
 import tempfile
 from compiler.linker import link_fas
 from compiler.cli import cmd_compile as compile_lsp
-from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
+from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
 
 
 def _compile(source: str) -> str:

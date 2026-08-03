@@ -63,7 +63,7 @@ def build_trailer(seg1_plaintext: bytes, key_len: int = 23) -> tuple:
 
 
 def _find_key_in_tail(tail: bytes) -> bytes | None:
-    """与 fas_core.find_key 相同逻辑的密钥定位（用于自检）。"""
+    """与 core.fas_core.find_key 相同逻辑的密钥定位（用于自检）。"""
     pos = tail.find(CRUNCH_MARKER)
     if pos < 0:
         return None

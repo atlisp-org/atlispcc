@@ -1,12 +1,12 @@
 # FAS4 文件格式详解
 
-本文档描述 FAS4（AutoLISP Fast-Load）二进制文件格式。它是对本项目编译器（`compiler/fas_writer.py`）、解析器（`fas_core.py` / `fas4_decompiler.py`）实际实现的精确说明，并与 AutoCAD 编译器产物（`tests/fun-cad.fas`）逐字节兼容。
+本文档描述 FAS4（AutoLISP Fast-Load）二进制文件格式。它是对本项目编译器（`compiler/fas_writer.py`）、解析器（`core/fas_core.py` / `decompiler/fas4_decompiler.py`）实际实现的精确说明，并与 AutoCAD 编译器产物（`tests/fun-cad.fas`）逐字节兼容。
 
 参考源码：
 - 写入：`compiler/fas_writer.py`
 - 资源段构建：`compiler/resource_builder.py`
-- 解析/解密：`fas_core.py`
-- 反编译：`fas4_decompiler.py`
+- 解析/解密：`core/fas_core.py`
+- 反编译：`decompiler/fas4_decompiler.py`
 - 操作码：`docs/opcodes.md`
 
 ---
@@ -86,7 +86,7 @@ A<M>/<D>/<YY>     # 编译日期，如 A8/1/26（无前导零）
 
 ## 2. 加解密算法（双字节滚动 XOR）
 
-加密与解密使用同一函数（可逆）。`fas_core.py` 中 `decrypt_stream` 与 `fas_writer.py` 中 `_rolling_xor` 等价。
+加密与解密使用同一函数（可逆）。`core/fas_core.py` 中 `decrypt_stream` 与 `fas_writer.py` 中 `_rolling_xor` 等价。
 
 ```
 key_old = key[0];  kp = 1
@@ -98,13 +98,13 @@ for i in 0..len(data)-1:
     kp += 1
 ```
 
-即每个明文字节与 key 中相邻两字节的 XOR 值异或。`mixor_decrypt`（`fas_core.py`）用 key 自复制展开，效果相同。
+即每个明文字节与 key 中相邻两字节的 XOR 值异或。`mixor_decrypt`（`core/fas_core.py`）用 key 自复制展开，效果相同。
 
 ---
 
 ## 3. 资源流（seg1 明文）格式
 
-解密后的资源流是一系列单字节操作码及其操作数。由 `ResourceBuilder.build()` 生成，解析见 `fas_core.parse_resource_stream`。
+解密后的资源流是一系列单字节操作码及其操作数。由 `ResourceBuilder.build()` 生成，解析见 `core.fas_core.parse_resource_stream`。
 
 ### 3.1 总体结构
 
@@ -227,7 +227,7 @@ nsyms = len(entries) - 模块注册符号数 + 1
 
 ---
 
-## 6. 快速解析流程（fas_core.parse_fas4）
+## 6. 快速解析流程（core.fas_core.parse_fas4）
 
 1. 定位 `FAS4_MAGIC`，读 `<total_size>`，提取 payload
 2. 匹配 `(\d+) \$` 得 nsyms，其余为 bytecode（seg0）

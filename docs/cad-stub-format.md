@@ -173,9 +173,11 @@ then 分支末尾的 `JUMP` 跳过它。例 t9 `(if (> 1 2) (alert "yes"))` 尾�
 
 ### 2.7 函数末尾与分隔符
 
-- 有参函数末尾：`00 03 19`（NIL PUSH_VALUE[0] CLEAR_ARGS）
+- 有参函数末尾：`00 03 19 <argc:2> 00`（NIL PUSH_VALUE[0] CLEAR_ARGS）
 - 无参函数末尾：`00 03`
 - **多函数间分隔符**：有参 `<argc> 00 16`；无参 `00 16`
+- **CLEAR_ARGS 编码**：`19 <argc:2> 00`（3 字节，CAD 实测；如 `(defun f (n) ...)` → `19 01 00`）。
+  反编译器按 3 字节解码，`disasm` 输出 `CLEAR_ARGS <argc>`，汇编可逐字节还原
 
 ### 2.8 seg0 末尾 2 字节（total_size 之外）
 
@@ -187,8 +189,12 @@ then 分支末尾的 `JUMP` 跳过它。例 t9 `(if (> 1 2) (alert "yes"))` 尾�
 | t9（无 else if） | `JUMP +1` + `PUSH_NIL` | `00 01` |
 | t10（setq 尾） | `PUSH_VALUE [1]` | `01 00` |
 | t11（有参 list） | `PUSH_NIL` + `NIL` | `01 00` |
+| 有参函数尾 | `CLEAR_ARGS <argc> 00` | `<argc> 00` |
 
 > 历史描述「尾部编码源码最后一个函数的参数数」为误判，已由 AutoCAD 逐字节对比纠正。
+
+`Fas4Parser.parse` 按 `16 24 0d 0a` 终止符界定 seg0（而非 `total_size`），因此能完整
+读到末尾 2 字节（最后一条 CLEAR_ARGS 的操作数），保证 `disasm → asm` 往返字节可逆。
 
 ---
 
@@ -325,6 +331,11 @@ for i in 0..len(data)-1:
 
 已验证：`fun-cad.fas`→stub，`samples/PDI.fas`/`samples/bib.fas`→自包含。
 
+> **汇编器独立判定**（`asm/assembler.py` 的 `_detect_compact`）：
+> 反编译共享的 `is_compact_stub` 对多函数紧凑 stub（UNK 平局且函数目录非空）会误判为
+> 自包含。`disasm/asm` 往返使用独立判定：UNK 计数 + DEFUN 头 argc 编码，
+> 对多函数紧凑 stub（`tests/multi_cad.fas`）也能正确标记 `.format compact`。
+
 ---
 
 ## 7. 已验证成果（AutoCAD 24.1s 实测）
@@ -373,25 +384,28 @@ for i in 0..len(data)-1:
 | `compiler/cli.py` | 编译管线、`_patch_usubr_idx` |
 | `compiler/symbol_table.py` | add_force（重复槽）、repeat_slots |
 | `compiler/linker.py` | stub 链接适配 |
-| `fas4_decompiler.py` | stub 反编译（函数名/DEFCODE/判定） |
-| `validate.py` | 接受含 `:` 的合法 AutoLISP 符号 |
+| `asm/assembler.py` | 反汇编/汇编（.fas ↔ .lasm，`_detect_compact` 独立判定） |
+| `asm/opcodes.py` | 操作码定义与编码函数（stub 3 字节/自包含长编码） |
+| `decompiler/fas4_decompiler.py` | stub 反编译（函数名/DEFCODE/判定） |
+| `tools/validate.py` | 接受含 `:` 的合法 AutoLISP 符号 |
 
 ---
 
 ## 9. 遗留问题
 
-- **`Fas4Parser.parse` total_size 截断**：反编译器按 `total_size` 切 seg0 字节码，
-  紧凑 stub 文件因此丢掉末尾 2 字节（`bytecode = payload[m.end():]` 少 2）。
-  对 CAD 产物与 atlispcc 产物截断一致，反编译回归（fun-cad/i18n）仍通过；
-  但解析器应改为按 `16 24 0d 0a` 终止符界定字节码更准确。
 - **复杂顶层表达式**（i18n.lsp 等含 `if`/`cond`/嵌套调用/非字符串 setq）：
   `_build_cad_module_code` 仅精确处理简单 `setq 变量 "字符串"` 的 CAD 模式；
   复杂表达式的模块代码编码尚未完全对齐 CAD（CAD 报格式错误），需完整的
   顶层表达式编译引擎（匹配 CAD 的所有 setq/if/set 编码模式）。
+  `disasm → asm` 往返不携带 seg1 模块代码：含顶层表达式的文件重新汇编后
+  顶层代码丢失（函数本身仍可正确加载执行）。
 - **多函数 stub 反编译符号槽映射**：参数绑定/读取槽（`nsyms-1-i`）与
   symbol_slots 的对应适配（需反编译器重建 gvar 表；影响 compile→decompile
   往返质量，不影响 CAD 兼容/编译输出）
 - 链接器多函数合并后的反编译
+
+> `Fas4Parser.parse` 的 total_size 截断问题**已修复**：解析器改用 `16 24 0d 0a`
+> 终止符界定 seg0，可读全末尾 2 字节（CLEAR_ARGS 操作数）。
 
 ## 实测结论
 
@@ -399,6 +413,10 @@ for i in 0..len(data)-1:
   tops/version、混合 mix、单函数递归 fact）与 AutoCAD 逐字节一致，CAD 运行
   结果全部正确（t7→(1 2 3)、t8→5、t11→(5)、m1→(6 6)、version→1.23.8、
   mix→(1.0 6)、fact→120）
+- **disasm/asm 往返字节可逆**：`atlispcc disasm x.fas x.lasm && atlispcc asm x.lasm y.fas`
+  对纯函数/递归/多函数/顶层/strcat/while 产物，seg0 **逐字节一致**
+  （total_size/nsyms/items 全等）；重新汇编产物可在 CAD 加载执行
+  （`min`、多函数、init 文件均验证通过）
 - `total_size = len(seg0_payload) - 2`（紧凑 stub，CAD 实测恒等）；末尾 2 字节为指令尾部
 - 中间 setq 无 POP、尾 setq 用 DUP、无 else if 补 PUSH_NIL（与 CAD 一致）
 - 代码测试 167/167（含链接器多函数 gvar-1 适配）

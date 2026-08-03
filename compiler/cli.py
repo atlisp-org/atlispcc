@@ -15,8 +15,8 @@ from compiler.fas_writer import FasWriter
 from compiler.analyzer import analyze
 from compiler.linker import link_fas
 from compiler.vlx_builder import build_vlx
-from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
-from validate import validate_file
+from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
+from tools.validate import validate_file
 
 
 ENCODE_POP = bytes([0x0a])
@@ -87,7 +87,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     codegen 用占位生成，此处用资源段 GVARINIT 重建的 gvar 表修正。
     """
     try:
-        from fas_core import build_mvar_tables
+        from core.fas_core import build_mvar_tables
         rg, fg = build_mvar_tables(seg1, nsyms)
     except Exception:
         return seg0
@@ -97,7 +97,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             gvar_map.setdefault(str(v[1]), idx)
     if not gvar_map:
         return seg0
-    from fas4_decompiler import Disassembler
+    from decompiler.fas4_decompiler import Disassembler
     try:
         insts = Disassembler(short_subr=True).disassemble(seg0, nsyms, sym_count=len(symtab.entries))
     except Exception:
@@ -240,7 +240,7 @@ def _offset_slots(bc: bytes, n_sym: int) -> bytes:
     处理 PUSH_G(0x09)/PUSH_VALUE(0x03)/SETQ_G(0x06)/USUBR(0x35) 的符号槽。
     stub 的 PUSH_VALUE[0]（单字节 ``03``）与调用后清理序列 ``00 03`` 不偏移。
     """
-    from fas4_decompiler import Disassembler
+    from decompiler.fas4_decompiler import Disassembler
     dis = Disassembler(short_subr=True)
     try:
         insts = dis.disassemble(bc, n_sym, sym_count=n_sym)
@@ -517,7 +517,7 @@ def cmd_decompile(source: str, output: str = '') -> str:
 
 def cmd_disassemble(source: str, output: str = '') -> str:
     """反汇编 .fas → .lasm（字节码指令列表）。"""
-    from compiler.assembler import disassemble_fas
+    from asm.assembler import disassemble_fas
     text = disassemble_fas(source)
     output = output or source.replace('.fas', '.lasm')
     with open(output, 'w', encoding='utf-8') as f:
@@ -528,7 +528,7 @@ def cmd_disassemble(source: str, output: str = '') -> str:
 
 def cmd_assemble(source: str, output: str = '') -> str:
     """汇编 .lasm → .fas。"""
-    from compiler.assembler import assemble_lasm
+    from asm.assembler import assemble_lasm
     with open(source, 'r', encoding='utf-8') as f:
         text = f.read()
     output = output or source.replace('.lasm', '.fas')

@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-import struct
-import re
 import os
 import sys
+
+# 支持直接调用 `python decompiler/fas4_decompiler.py <in.fas> [out.lsp]`：
+# 把仓库根目录加入 sys.path，使 `core` / `decompiler` 包可导入。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import struct
+import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any, Set
 
-from fas_core import (
+from core.fas_core import (
     find_key as _find_key,
     decrypt_stream as _decrypt_stream,
     build_mvar_tables as _build_mvar_tables,
@@ -86,7 +91,7 @@ def is_compact_stub(bytecode: bytes, function_catalog: list, sym_count: int = 0)
 
 class Fas4Parser:
     def decode_text(self, raw: bytes) -> str:
-        from fas_core import decode_fas_text
+        from core.fas_core import decode_fas_text
         return decode_fas_text(raw)
 
     def parse_resource_stream(self, res_data: bytes) -> Tuple[List[Any], List[Tuple[int, Any]], List[str]]:
@@ -236,7 +241,12 @@ class Fas4Parser:
         size_end = data.find(b"\r\n", after)
         total_size = int(data[after:size_end])
         payload_start = size_end + 2
-        payload = data[payload_start : payload_start + total_size]
+        # seg0 止于段终止符 `16 24 0d 0a`。紧凑 stub 的 total_size = len-2，
+        # 不覆盖 seg0 末尾 2 字节指令尾；用终止符定界可完整取得最后一条
+        # 指令（CLEAR_ARGS）的操作数，保证反汇编/汇编字节可逆。
+        term = data.find(b"\x16\x24\r\n", payload_start)
+        payload_end = term if term > payload_start else payload_start + total_size
+        payload = data[payload_start:payload_end]
 
         m = re.match(rb"(\d+) \$", payload)
         if not m:
@@ -383,11 +393,13 @@ class Disassembler:
                     inst.operands = [val]
                     inst.size = 5
                 elif fmt == "2":
-                    # 紧凑 stub 格式中 CLEAR_ARGS(0x19) 为单字节，
-                    # 且函数尾部 PUSH_VALUE(0x03) 常为短形式 `03 19`。
+                    # 紧凑 stub 格式中 CLEAR_ARGS(0x19) 为 `19 <argc u16> <00>`
+                    # （CAD 实测，3 字节）。函数尾部常为 `03 19 <argc> 00`
+                    # （PUSH_VALUE[0] 单字节 + CLEAR_ARGS）。
                     if op == 0x19 and self.short_subr:
-                        inst.operands = [0]
-                        inst.size = 1
+                        val = struct.unpack("<H", bytecode[i + 1 : i + 3])[0] if i + 2 < len(bytecode) else 0
+                        inst.operands = [val]
+                        inst.size = 3
                     elif op == 0x03 and self.short_subr:
                         # stub 中 PUSH_VALUE[0] 编码为单字节 `03`，
                         # PUSH_VALUE[idx>0] 为 `03 <u16>`。用有效符号上限启发式区分。
@@ -746,7 +758,7 @@ class LispGenerator:
         self.gvar_table: List[Any] = []
         if self.is_stub_format:
             try:
-                from fas_core import build_mvar_tables
+                from core.fas_core import build_mvar_tables
                 _, self.gvar_table = build_mvar_tables(self.fas.sec2_data, self.fas.nsyms)
             except Exception:
                 self.gvar_table = []
@@ -2517,7 +2529,7 @@ class Fas4Decompiler:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python fas4_decompiler.py <input.fas> [output.lsp]")
+        print("Usage: python -m decompiler.fas4_decompiler <input.fas> [output.lsp]")
         sys.exit(1)
     input_file = sys.argv[1]
     output_file = sys.argv[2] if len(sys.argv) > 2 else None

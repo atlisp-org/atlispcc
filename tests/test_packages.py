@@ -10,8 +10,8 @@ from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.ast import Defun, Symbol, Call
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
-from fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator
-from compiler.opcodes import NAME_TO_OPCODE
+from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator
+from asm.opcodes import NAME_TO_OPCODE
 
 
 def test_defpackage_inpackage():

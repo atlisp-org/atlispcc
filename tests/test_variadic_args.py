@@ -7,7 +7,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compiler.cli import cmd_compile
-from fas4_decompiler import (
+from decompiler.fas4_decompiler import (
     ControlFlowAnalyzer,
     Disassembler,
     Fas4Parser,

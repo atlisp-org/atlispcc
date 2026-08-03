@@ -8,7 +8,7 @@ sys.path.insert(0, '.')
 from compiler.cli import cmd_compile, cmd_decompile, cmd_validate, cmd_link, main
 from compiler.vlx_builder import build_vlx
 from compiler.linker import link_fas
-from fas4_decompiler import Fas4Parser
+from decompiler.fas4_decompiler import Fas4Parser
 
 
 def _tmp(name):
