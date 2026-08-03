@@ -5,9 +5,11 @@ venv/
 *.lsp
 !tests/*.lsp
 !samples/*.lsp
+!samples/zelx-reversing/*.lsp
 *.fas
 !tests/*.fas
 !samples/*.fas
+!samples/zelx-reversing/*.fas
 *.split/
 *.analysis.json
 dist/
@@ -18,3 +20,4 @@ build/
 .vscode/
 disasm_output_utf8.txt
 D:/
+LispConverter.exe

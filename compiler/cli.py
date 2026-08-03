@@ -575,6 +575,11 @@ def main():
     p_validate = sub.add_parser('validate', aliases=['v'], help='Validate .lsp syntax')
     p_validate.add_argument('source', help='input .lsp file')
 
+    # build zelx: .lsp/.fas → .zelx (ZWCAD)
+    p_zelx = sub.add_parser('zelx', help='Build .zelx from .lsp/.fas (ZWCAD)')
+    p_zelx.add_argument('source', help='input .lsp or .fas file')
+    p_zelx.add_argument('output', nargs='?', default='', help='output .zelx file (optional)')
+
     # disassemble: .fas → .lasm
     p_disasm = sub.add_parser('disasm', aliases=['disassemble'],
                               help='Disassemble .fas → .lasm (bytecode instructions)')
@@ -629,6 +634,13 @@ def main():
 
     if args.command in ('validate', 'v'):
         return cmd_validate(args.source)
+
+    if args.command == 'zelx':
+        from tools.zelx_build import build_zelx
+        output = args.output or args.source.rsplit('.', 1)[0] + '.zelx'
+        build_zelx(args.source, output)
+        print(f'Built {output}')
+        return 0
 
     if args.command == 'link':
         if len(args.inputs) < 2:

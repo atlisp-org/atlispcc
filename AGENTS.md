@@ -14,6 +14,7 @@ atlispcc asm <input.lasm> [output.fas]                     # 汇编 .lasm → FA
 atlispcc validate <input.lsp>                              # 语法验证
 atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]    # 多文件链接
 atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]  # VLX 容器
+atlispcc zelx <input.lsp|input.fas> [output.zelx]          # ZWCAD ZELX（逆向 LispConverter）
 ```
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
@@ -64,7 +65,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | `compiler/vlx_builder.py` | VLX 容器构建器 |
 | `tools/validate.py` | 生成的 `.lsp` 语法验证器 |
 
-工具脚本（`tools/decrypt_fas4.py`、`tools/fas-split.py`、`tools/fas-analyzer.py`、`tools/crack_key.py`、`tools/validate.py` 等）使用 `core/fas_core.py` 中的函数。
+工具脚本（`tools/decrypt_fas4.py`、`tools/fas-split.py`、`tools/fas-analyzer.py`、`tools/crack_key.py`、`tools/validate.py` 等）使用 `core/fas_core.py` 中的函数。`tools/zelx_info.py`（解密/解析 ZWCAD `.zelx`）、`tools/zelx_diff.py`（`.fas`↔`.zelx` 结构 diff）、`tools/zelx_build.py`（`.fas`→`.zelx` 写入器，小型/简单文件逐字节一致）基于逆向 LispConverter.exe 的成果，格式见 `docs/zelx-format.md`。微型样本 `samples/zelx-reversing/` 由 GUI 自动化（UIA + ctypes）产出。
 
 ## 优化器（compiler/opt.py）
 

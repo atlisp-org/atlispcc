@@ -35,10 +35,11 @@ python -m tools.validate output.lsp                          # 验证
 atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]        # 编译
 atlispcc decompile <input.fas> [output.lsp]                      # 反编译 FAS → Lisp
 atlispcc disasm <input.fas> [output.lasm]                        # 反汇编 FAS → 字节码指令列表
-atlispcc asm <input.lasm> [output.fas]                           # 汇编 .lasm → FAS
-atlispcc validate <input.lsp>                                     # 验证
-atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]          # 链接 FAS
-atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]   # 构建 VLX 容器
+ atlispcc asm <input.lasm> [output.fas]                           # 汇编 .lasm → FAS
+ atlispcc validate <input.lsp>                                     # 验证
+ atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]          # 链接 FAS
+ atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]   # 构建 VLX 容器
+ atlispcc zelx <input.lsp|input.fas> [output.zelx]                # 构建 ZWCAD ZELX
 ```
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
@@ -171,6 +172,19 @@ atlispcc build-vlx app.fas lib.fas -o app.vlx --export main setup
 - 自动生成 `_VLX` 元数据条目（含 `vl-doc-export` 调用）
 - 加载 VLX 时 CAD 运行时创建隔离命名空间，仅导出的函数可被外部访问
 - VLX 格式基于逆向工程，标记为实验性
+
+### zelx — 构建 ZWCAD ZELX
+
+将 `.lsp` 或 `.fas` 直接构建为 ZWCAD 的 `.zelx` 分发格式（无需 LispConverter GUI）：
+
+```sh
+atlispcc zelx app.lsp app.zelx      # .lsp 自动先编译成 FAS4 再转换
+atlispcc zelx app.fas app.zelx      # 直接转换 .fas
+```
+
+- `.zelx` = `!ZAS` 容器：载荷（资源）+ 段1目录（函数字节码）+ 滚动 XOR 加密
+- 算法逆向自 ZWCAD `LispConverter.exe`；小型/简单文件与官方产物**逐字节一致**（15/15 样本）
+- 复杂文件（大量符号/顶层表达式）仍需 ZWCAD 的压缩重编码（模块代码重编码 + 符号重排），见 `docs/zelx-format.md`
 
 ## 完整工作流
 
