@@ -580,6 +580,11 @@ def main():
     p_zelx.add_argument('source', help='input .lsp or .fas file')
     p_zelx.add_argument('output', nargs='?', default='', help='output .zelx file (optional)')
 
+    # unzelx: .zelx → .fas
+    p_unzelx = sub.add_parser('unzelx', help='Recover .fas from .zelx (ZWCAD)')
+    p_unzelx.add_argument('source', help='input .zelx file')
+    p_unzelx.add_argument('output', nargs='?', default='', help='output .fas file (optional)')
+
     # disassemble: .fas → .lasm
     p_disasm = sub.add_parser('disasm', aliases=['disassemble'],
                               help='Disassemble .fas → .lasm (bytecode instructions)')
@@ -639,6 +644,13 @@ def main():
         from tools.zelx_build import build_zelx
         output = args.output or args.source.rsplit('.', 1)[0] + '.zelx'
         build_zelx(args.source, output)
+        print(f'Built {output}')
+        return 0
+
+    if args.command == 'unzelx':
+        from tools.zelx_to_fas import zelx_to_fas
+        output = args.output or args.source.rsplit('.', 1)[0] + '.fas'
+        zelx_to_fas(args.source, output)
         print(f'Built {output}')
         return 0
 

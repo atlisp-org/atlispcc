@@ -40,6 +40,7 @@ atlispcc disasm <input.fas> [output.lasm]                        # 反汇编 FAS
  atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]          # 链接 FAS
  atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]   # 构建 VLX 容器
  atlispcc zelx <input.lsp|input.fas> [output.zelx]                # 构建 ZWCAD ZELX
+ atlispcc unzelx <input.zelx> [output.fas]                        # ZELX 恢复为 FAS
 ```
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`

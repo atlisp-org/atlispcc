@@ -170,3 +170,19 @@ AutoCAD 用 `03/35/09/0a/06/32/51/57/67/5c`，ZWCAD 用 `34/2a/16/24/1b/27`。
 > UIA + ctypes）产出。样本矩阵：t1(1函数/1参/算术)、tiny(2函数)、s3f(3函数)、
 > sstr(字符串)、szero(0参)、snest(嵌套调用)、aif/awhile/arec/asetq/astrcat/
 > aarith/acons/aand/aor（if/while/递归/setq/strcat/多参/cons/and/or）。
+
+## 8. zelx → fas（逆向恢复）
+
+`tools/zelx_to_fas.py` / `atlispcc unzelx` 从 `.zelx` 恢复 `.fas`（LispConverter 的逆向）：
+
+```
+zelx → 解密载荷 → 逆向重映射资源段/模块代码段 → fas seg1
+     → 逆向重映射段1目录 → fas seg0
+     → 组装 fas（magic/total_size/加密 seg1/密钥尾）
+```
+
+- 微型样本 15/15 恢复的 fas 与原始**逐字节一致**（seg0+seg1）
+- `fas → zelx → fas` 往返一致
+- 官方 zelx（含 ZWCAD 压缩）恢复的 fas 可正常反编译（base-whole → 802 行 Lisp）
+- 使用：`python -m tools.zelx_to_fas <x.zelx> <x.fas>` 或 `atlispcc unzelx`
+
