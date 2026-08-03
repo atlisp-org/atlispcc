@@ -29,11 +29,52 @@ FAS_OP = {
 REMAP = {
     0x01: 0x22, 0x06: 0x27, 0x09: 0x34, 0x0a: 0x2a, 0x14: 0x01, 0x16: 0x03,
     0x1c: 0x2c, 0x2a: 0x40, 0x32: 0x41, 0x39: 0x45, 0x3a: 0x46, 0x43: 0x49,
-    0x57: 0x16, 0x5b: 0x57, 0x5c: 0x2f, 0x03: 0x03,
+    0x57: 0x16, 0x5b: 0x57, 0x5c: 0x2f, 0x03: 0x03, 0x33: 0x42,
 }
 
+# 资源流 opcode 大小（与 resource_builder.count_resource_records 一致）
+_RSRC_ONE = (0x00, 0x01, 0x02, 0x0a, 0x0b, 0x16, 0x20, 0x23, 0x24, 0x28, 0x29,
+             0x2a, 0x3a, 0x62, 0x63)
+_RSRC_TWO = (0x1e, 0x1f, 0x32, 0x18, 0x19)
+_RSRC_THREE = (0x03, 0x05, 0x06, 0x07, 0x09, 0x0c, 0x0d, 0x0e, 0x1a, 0x1b, 0x34,
+               0x37, 0x39, 0x3c, 0x3d, 0x5c, 0x5d, 0x5e)
+_RSRC_FIVE = (0x14, 0x15, 0x33, 0x35, 0x51, 0x57, 0x67, 0x68, 0x69, 0x6a, 0x6b)
 
-def remap_stream(b: bytes) -> bytes:
+
+def find_init_done(b: bytes):
+    """返回模块代码起始偏移（INIT_DONE(0x1c) 之后）。"""
+    i = 0
+    while i < len(b):
+        op = b[i]
+        if op == 0x5b:
+            i += 1
+            while i < len(b):
+                if b[i] == 0:
+                    i += 1; break
+                e = b.find(b"\x00", i)
+                if e < 0: return None
+                i = e + 1
+            continue
+        if op == 0x55:
+            if i + 1 >= len(b): return None
+            cnt = struct.unpack_from("<H", b, i + 1)[0]; j = i + 3
+            for _ in range(cnt):
+                if j + 2 > len(b): return None
+                ln = struct.unpack_from("<H", b, j)[0]; j += 2 + ln
+            i = j; continue
+        if op in (0x3b, 0x56):
+            e = b.find(b"\x00", i + 1); i = e + 1 if e >= 0 else i + 1; continue
+        if op == 0x1c: return i + 1
+        if op == 0x43: i += 5; continue
+        if op in _RSRC_ONE: i += 1
+        elif op in _RSRC_TWO: i += 2
+        elif op in _RSRC_THREE: i += 3
+        elif op in _RSRC_FIVE: i += 5
+        else: i += 1
+    return None
+
+
+def _remap_resource(b: bytes) -> bytes:
     out = bytearray(); i = 0
     while i < len(b):
         op = b[i]
@@ -41,13 +82,10 @@ def remap_stream(b: bytes) -> bytes:
             out.append(REMAP.get(op, op)); i += 1
             while i < len(b):
                 if b[i] == 0:
-                    out.append(0); i += 1
-                    if i < len(b) and b[i] == 0:
-                        break
-                else:
-                    e = b.find(b"\x00", i)
-                    if e < 0: e = len(b)
-                    out.extend(b[i:e]); i = e
+                    out.append(0); i += 1; break
+                e = b.find(b"\x00", i)
+                if e < 0: e = len(b)
+                out.extend(b[i:e]); out.append(0); i = e + 1
             continue
         if op == 0x55:
             out.append(0x55); i += 1
@@ -56,22 +94,83 @@ def remap_stream(b: bytes) -> bytes:
                 ln = struct.unpack_from("<H", b, i)[0]; out.extend(b[i:i + 2]); i += 2
                 out.extend(b[i:i + ln]); i += ln
             continue
+        if op in (0x3b, 0x56):
+            e = b.find(b"\x00", i + 1); e = e if e >= 0 else len(b)
+            out.extend(b[i:e + 1]); i = e + 1; continue
         # 00 03 = NIL + PUSH_VALUE[0] (call cleanup) -> keep both
         if op == 0x00 and i + 1 < len(b) and b[i + 1] == 0x03:
             out.append(0x00); out.append(0x03); i += 2; continue
-        # PUSH_VALUE 0x03: PUSH_VALUE[0] (1B, after call cleanup) vs PUSH_VALUE+u16 (3B)
+        # PUSH_VALUE 0x03: PUSH_VALUE[0] (1B) vs PUSH_VALUE+u16 (3B)
         if op == 0x03:
             if i + 2 < len(b) and b[i + 1] < 0x80:
                 out.append(0x03); out.extend(b[i + 1:i + 3]); i += 3; continue
             out.append(0x03); i += 1; continue
-        n = FAS_OP.get(op)
-        if n is not None:
-            out.append(REMAP.get(op, op))
-            if n > 1: out.extend(b[i + 1:i + n])
-            i += n
-            continue
+        if op == 0x43:
+            out.append(0x49); out.extend(b[i + 1:i + 5]); i += 5; continue
+        if op in _RSRC_ONE:
+            out.append(REMAP.get(op, op)); i += 1; continue
+        if op in _RSRC_TWO:
+            out.append(REMAP.get(op, op)); out.extend(b[i + 1:i + 2]); i += 2; continue
+        if op in _RSRC_THREE:
+            out.append(REMAP.get(op, op)); out.extend(b[i + 1:i + 3]); i += 3; continue
+        if op in _RSRC_FIVE:
+            out.append(REMAP.get(op, op)); out.extend(b[i + 1:i + 5]); i += 5; continue
         out.append(REMAP.get(op, op)); i += 1
     return bytes(out)
+
+
+def _remap_module_code(b: bytes) -> bytes:
+    """模块代码区用函数字节码映射（与段1目录一致，但不追加尾 03）。"""
+    out = bytearray(); i = 0
+    while i < len(b):
+        op = b[i]
+        if op == 0x00:
+            if i + 1 < len(b) and b[i + 1] == 0x03:
+                out.append(0x00); out.append(0x03); i += 2; continue
+            out.append(0x00); i += 1; continue
+        if op == 0x03:
+            if i + 2 < len(b) and b[i + 1] < 0x80:
+                out.append(0x24); out.extend(b[i + 1:i + 3]); i += 3; continue
+            out.append(0x03); i += 1; continue
+        sz, zop = SEG0.get(op, (1, None))
+        if zop is None:
+            i += 1; continue
+        out.append(zop); out.extend(b[i + 1:i + sz]); i += sz
+    return bytes(out)
+
+
+def _patch_code_ref(resource: bytes, mc_len: int) -> bytes:
+    """把资源段开头（模块头后）的模块代码引用长度更新为 mc_len。
+
+    引用形式：`41 00 42 <len:4> ... 40 45 01 00`（len>127）或
+    `41 00 41 <len:1> 40 45 01 00`（len<=127）。
+    """
+    # 模块头 `01 01 01 01 00` 之后即代码引用
+    if not resource.startswith(b"\x01\x01\x01\x01\x00"):
+        return resource
+    p = 5
+    out = bytearray(resource[:p])
+    if resource[p:p + 3] == b"\x41\x00\x42":        # u32 长度
+        out += b"\x41\x00\x42" + struct.pack("<I", mc_len)
+        out += resource[p + 7:]
+    elif resource[p:p + 3] == b"\x41\x00\x41":      # u8 长度
+        if mc_len <= 127:
+            out += b"\x41\x00\x41" + bytes([mc_len]) + resource[p + 4:]
+        else:
+            # 长度超界需转 u32 形式
+            out += b"\x41\x00\x42" + struct.pack("<I", mc_len) + resource[p + 4:]
+    return bytes(out)
+
+
+def remap_stream(b: bytes) -> bytes:
+    """fas seg1 → zelx 载荷：资源段（资源映射）+ 模块代码段（函数映射）。"""
+    mc_off = find_init_done(b)
+    if mc_off is None:
+        return _remap_resource(b)
+    resource = _remap_resource(b[:mc_off])
+    module_code = _remap_module_code(b[mc_off:])
+    resource = _patch_code_ref(resource, len(module_code))
+    return resource + module_code
 
 
 # ─── fas seg0 函数字节码 → 段1目录（ZWCAD 函数代码）──────────────────────────
@@ -191,6 +290,9 @@ def main():
         print("Usage: python -m tools.zelx_build <input.lsp|input.fas> [output.zelx]")
         return 1
     src = sys.argv[1]
+    if not os.path.exists(src):
+        print(f"Error: file not found: {src}", file=sys.stderr)
+        return 1
     base = os.path.splitext(os.path.basename(src))[0]
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(src) or ".", base + ".zelx")
     r = build_zelx(src, out)

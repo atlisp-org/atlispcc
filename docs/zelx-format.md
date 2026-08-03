@@ -130,6 +130,9 @@ AutoCAD 用 `03/35/09/0a/06/32/51/57/67/5c`，ZWCAD 用 `34/2a/16/24/1b/27`。
 - **载荷 ENCODE（fas seg1 → zelx 载荷）**：上下文感知 opcode 重映射，
   `tools/zelx_build.py` 对微型样本 **逐字节一致**（15/15）
 - **段1目录 ENCODE（fas seg0 → 函数字节码）**：opcode 重映射，同样 15/15
+- **混合重映射**：资源段用资源映射，模块代码段（INIT_DONE 之后）用函数映射；
+  模块代码引用长度（`41 00 42 <len>`）更新为自身长度。复杂文件
+  （base-whole/at-math/@lisp）结构自洽、可解密（非逐字节一致）
 - **头部 W = nsyms**；**子头 field2 = fas seg1 items（GVARINIT+INIT_DONE 计数）**
 - ZWCAD opcode 表（资源流 & 函数代码两套）：
 
@@ -159,12 +162,11 @@ AutoCAD 用 `03/35/09/0a/06/32/51/57/67/5c`，ZWCAD 用 `34/2a/16/24/1b/27`。
   | 2a | 40 | - | CONS |
 
 **待破解：**
-- **大文件符号索引重映射**：ZWCAD 重排符号表（fas 槽 → zelx 槽），
-  微型样本索引小故顺序一致，复杂文件（base-whole）PUSH_G 0x59 → 0x11
-- 完整写入器对复杂文件的验证
+- **复杂文件压缩重编码**：ZWCAD 压缩载荷（模块代码重编码 + 符号重排）。
+  当前 `tools/zelx_build.py` 已产出自洽结构（保持 fas 符号顺序、混合映射、
+  长度更新），但未复刻 ZWCAD 的压缩；**ZWCAD 能否加载需真实验证**
 
-> 微型样本（`samples/zelx-reversing/`）由 GUI 自动化（UIA + ctypes）产出，
-> 见 `samples/zelx-reversing/README.md`。样本矩阵：t1(1函数/1参/算术)、
-> tiny(2函数)、s3f(3函数)、sstr(字符串)、szero(0参)、snest(嵌套调用)、
-> aif/awhile/arec/asetq/astrcat/aarith/acons/aand/aor（if/while/递归/setq/
-> strcat/多参/cons/and/or）。
+> 微型样本（`samples/zelx-reversing/`）由 GUI 自动化（`tools/lisp_converter_auto.py`，
+> UIA + ctypes）产出。样本矩阵：t1(1函数/1参/算术)、tiny(2函数)、s3f(3函数)、
+> sstr(字符串)、szero(0参)、snest(嵌套调用)、aif/awhile/arec/asetq/astrcat/
+> aarith/acons/aand/aor（if/while/递归/setq/strcat/多参/cons/and/or）。
