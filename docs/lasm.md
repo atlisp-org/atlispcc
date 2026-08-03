@@ -57,18 +57,25 @@
 
 ## 符号表（.symbols）
 
-每行 `序号: SYMBOL 符号名`，序号即符号槽索引（字节码中的寻址基准）。
+每行 `序号: 类型 值`，序号即符号槽索引（字节码中的寻址基准），类型为
+`SYMBOL` / `STRING` / `REAL`。
 
 ```
 .symbols
   0: SYMBOL __init__
   1: SYMBOL my-func
   2: SYMBOL v
+  3: STRING "hello\nworld"
 .end_symbols
 ```
 
 - 序号必须连续（汇编器按行填充空槽）
 - 符号名与源码/反汇编输出一致，区分大小写
+- **STRING/REAL 槽用引号转义的单行形式**（`\n`/`\"`/`\\` 转义），多行 DCL 字符串
+  也如此，保证 .lasm 逐行可解析且字节可逆；汇编时按类型注册，字符串原样保留
+- 含特殊字符的 SYMBOL（如 `+`/`-`/`*`/`1+` 等运算符名）可裸写；含空格/引号/分号/
+  逗号/方括号/括号/井号或纯数字的符号也会被转成引号形式
+- REAL 槽操作数恒用 `[idx]` 引用（避免与字符串常量歧义）
 - `__init__` 是特殊函数名：其指令进入初始化代码段（模块入口），见下文
 
 ## 函数段（.function）
@@ -247,6 +254,20 @@ atlispcc disasm test.fas roundtrip.lasm
 diff test.lasm roundtrip.lasm   # 应无差异
 ```
 
+## 通用 lasm → fas / zelx
+
+同一份 `.lasm` 既可汇编成 AutoCAD `.fas`，也可汇编成 ZWCAD `.zelx`
+（助记符描述的是两平台共享的语义，汇编器按目标平台选 opcode 字节）：
+
+```sh
+atlispcc asm x.lasm x.fas            # → AutoCAD FAS4
+atlispcc asm --zelx x.lasm x.zelx    # → ZWCAD ZELX
+```
+
+`asm --zelx` 内部先按 AutoCAD 字节码汇编成 `.fas`，再经 ZWCAD opcode 重映射
+与 `!ZAS` 容器组装。简单文件 `disasm → asm` / `disasm → asm --zelx → unzelx`
+可逐字节还原原始 `.fas`；多行/特殊字符字符串（DCL 等）已支持单行化往返。
+
 ## 注意事项
 
 - 汇编器**忽略**偏移前缀，按行序编码；手工编写时偏移可随意填写或省略
@@ -256,3 +277,5 @@ diff test.lasm roundtrip.lasm   # 应无差异
 - `disasm` 输出的 `.lasm` 可通过 `asm` **逐字节还原**原始 `.fas`
   （seg0 完全一致；含顶层表达式的文件其 seg1 模块代码不随 `.lasm` 携带，见 `docs/cad-stub-format.md`）
 - 反汇编器对未知操作码输出 `UNK_<hex>`，汇编时不支持（编码会失败）
+- 已知限制：复杂多函数文件（4+ 交叉引用）`disasm → asm` 的资源段符号槽序
+  不与 CAD 原布局逐字节一致，但产物仍有效可反编译加载

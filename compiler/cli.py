@@ -593,9 +593,10 @@ def main():
 
     # assemble: .lasm → .fas
     p_asm = sub.add_parser('asm', aliases=['assemble'],
-                           help='Assemble .lasm → .fas')
+                           help='Assemble .lasm → .fas (or .zelx with --zelx)')
     p_asm.add_argument('source', help='input .lasm file')
-    p_asm.add_argument('output', nargs='?', default='', help='output .fas file (optional)')
+    p_asm.add_argument('output', nargs='?', default='', help='output file (optional)')
+    p_asm.add_argument('--zelx', action='store_true', help='assemble to ZWCAD .zelx')
 
     # link
     p_link = sub.add_parser('link', help='Link multiple .fas files into one')
@@ -634,7 +635,15 @@ def main():
         return 0
 
     if args.command in ('asm', 'assemble'):
-        cmd_assemble(args.source, args.output)
+        if args.zelx:
+            from asm.assembler import assemble_lasm_zelx
+            with open(args.source, 'r', encoding='utf-8') as f:
+                text = f.read()
+            output = args.output or args.source.replace('.lasm', '.zelx')
+            assemble_lasm_zelx(text, output)
+            print(f'Assembled to {output}')
+        else:
+            cmd_assemble(args.source, args.output)
         return 0
 
     if args.command in ('validate', 'v'):

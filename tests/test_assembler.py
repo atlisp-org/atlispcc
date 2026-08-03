@@ -2,7 +2,7 @@
 import os
 import tempfile
 
-from asm.assembler import disassemble_fas, assemble_lasm
+from asm.assembler import disassemble_fas, assemble_lasm, assemble_lasm_zelx
 from compiler.cli import cmd_compile as compile_lsp
 from decompiler.fas4_decompiler import Fas4Parser, LispGenerator
 
@@ -164,5 +164,71 @@ def test_cli_disasm_asm_roundtrip():
         assert 'princ' in code
     finally:
         for p in (lasm_path, out_path, lsp_path):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def _seg0(f):
+    d = open(f, "rb").read()
+    magic = b"\r\n FAS4-FILE ; Do not change it!\r\n"
+    i = len(magic); j = d.find(b"\r\n", i); i = j + 2; j = d.find(b" $", i); i = j + 2
+    term = d.find(b"\x16\x24\r\n", i)
+    return d[i:term]
+
+
+def _seg1_plain(f):
+    from tools.zelx_info import rolling_xor
+    d = open(f, "rb").read()
+    magic = b"\r\n FAS4-FILE ; Do not change it!\r\n"
+    i = len(magic); j = d.find(b"\r\n", i); i = j + 2; j = d.find(b" $", i); i = j + 2
+    term = d.find(b"\x16\x24\r\n", i)
+    s1s = term + 4; j = d.find(b" $", s1s)
+    parts = d[s1s:j].split()
+    enc = d[j + 2:j + 2 + int(parts[0])]
+    pos = d.find(b"\n;fas4 crunch\n;")
+    for rl in range(6, 12):
+        ks = pos - rl; ke = pos + 15
+        if d[ks - 1] == (ke - ks):
+            return rolling_xor(enc, d[ks:ke])
+    return b""
+
+
+def test_lasm_zelx_roundtrip():
+    """通用 lasm → zelx：lasm 汇编成 .zelx，再恢复 .fas 与原始一致（seg0+seg1）。"""
+    from tools.zelx_to_fas import zelx_to_fas
+    samples = os.path.join(os.path.dirname(__file__), "..", "samples", "zelx-reversing")
+    zlx_path = os.path.join(tempfile.gettempdir(), "t1_roundtrip.zelx")
+    fas_path = os.path.join(tempfile.gettempdir(), "t1_roundtrip_rec.fas")
+
+    try:
+        lasm_text = disassemble_fas(os.path.join(samples, "t1.fas"))
+        assemble_lasm_zelx(lasm_text, zlx_path)
+        zelx_to_fas(zlx_path, fas_path)
+        orig = os.path.join(samples, "t1.fas")
+        assert _seg0(orig) == _seg0(fas_path)
+        assert _seg1_plain(orig) == _seg1_plain(fas_path)
+    finally:
+        for p in (zlx_path, fas_path):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def test_multiline_string_roundtrip():
+    """多行/特殊字符字符串（换行、逗号、分号、引号）在 .lasm 中单行化并可逆汇编。"""
+    lsp_path = os.path.join(tempfile.gettempdir(), "ml_str.lsp")
+    fas_path = os.path.join(tempfile.gettempdir(), "ml_str.fas")
+    out_path = os.path.join(tempfile.gettempdir(), "ml_str_out.fas")
+    try:
+        with open(lsp_path, "w", encoding="utf-8") as f:
+            f.write('(defun f () (strcat "a\\nb,c;d" "e\\"f"))\n')
+        compile_lsp(lsp_path, fas_path)
+        lasm_text = disassemble_fas(fas_path)
+        # 多行/特殊字符字符串必须是单行引号形式且带 STRING 类型，不得有裸延续行
+        assert 'STRING "a\\nb,c;d"' in lasm_text
+        assemble_lasm(lasm_text, out_path)
+        assert _seg0(fas_path) == _seg0(out_path)
+        assert _seg1_plain(fas_path) == _seg1_plain(out_path)
+    finally:
+        for p in (lsp_path, fas_path, out_path):
             if os.path.exists(p):
                 os.unlink(p)

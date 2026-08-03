@@ -88,17 +88,58 @@ def _resolve_sym(symbols: List[str], idx: int) -> str:
     return f"[{idx}]"
 
 
-def _resolve_sym_safe(symbols: List[str], idx: int) -> str:
-    """解析符号操作数：名字唯一时输出名字，重复（递归/跨函数引用）时输出 ``[idx]``，
-    保证 .lasm 重新汇编时字节可逆。"""
+def _resolve_sym_safe(symbols: List[str], idx: int, sym_types: Optional[List[str]] = None) -> str:
+    """解析符号操作数：名字唯一时输出名字，重复（递归/跨函数引用）或 REAL 槽
+    输出 ``[idx]``，保证 .lasm 重新汇编时字节可逆。"""
     if 0 <= idx < len(symbols):
+        typ = sym_types[idx] if sym_types else None
+        if typ == "REAL":
+            return f"[{idx}]"
         name = symbols[idx]
         if symbols.count(name) == 1:
             return name
     return f"[{idx}]"
 
 
-def _fmt_inst(inst, symbols: List[str]) -> str:
+def _quote_lasm_string(s: str) -> str:
+    """把字符串常量转成单行 .lasm 显示形式（引号包裹 + 转义）。"""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\r\n", "\\n").replace("\n", "\\n") + '"'
+
+
+def _unquote_lasm_string(s: str) -> str:
+    """撤销 _quote_lasm_string：``"..."`` → 原始字符串（非引号形式原样返回）。"""
+    if not (s.startswith('"') and s.endswith('"') and len(s) >= 2):
+        return s
+    body = s[1:-1]
+    out = []
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c == "\\" and i + 1 < len(body):
+            n = body[i + 1]
+            out.append({"n": "\n", "\\": "\\", '"': '"'}.get(n, n))
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _is_plain_symbol(name: str) -> bool:
+    """SYMBOL 记录是否可裸写：不含破坏 .lasm 行解析的字符。
+
+    引号/分号/逗号/括号/方括号/空白/井号 以及纯数字需转引号形式；
+    ``+ - * < > =`` 等运算符符号名可裸写。
+    """
+    if not name:
+        return False
+    if name.isdigit() or name.lstrip("-").isdigit():
+        return False
+    forbidden = set(' \t\r\n;,[]"#(){}')
+    return not any(c in forbidden for c in name)
+
+
+def _fmt_inst(inst, symbols: List[str], sym_types: Optional[List[str]] = None) -> str:
     """Format one instruction as a .lasm line."""
     prefix = f"  0x{inst.offset:04x}:"
     name = _disasm_op_name(inst.opcode)
@@ -112,14 +153,14 @@ def _fmt_inst(inst, symbols: List[str]) -> str:
         return f"{prefix} DEFUN {sym}, {off}"
     # FUNC/USUBR: second operand is a symbol index
     if name in ("FUNC", "USUBR") and len(ops) >= 2:
-        sym = _resolve_sym_safe(symbols, ops[1])
+        sym = _resolve_sym_safe(symbols, ops[1], sym_types)
         rest = [str(ops[0]), sym]
         if len(ops) > 2:
             rest.extend(str(o) for o in ops[2:])
         return f'{prefix} {name} {", ".join(rest)}'
     # PUSH_VALUE/PUSH_G/SETQ_G/PUSH_GLOBAL: first operand is a symbol index
     if name in ("PUSH_VALUE", "PUSH_G", "PUSH_GLOBAL", "SETQ_G") and ops:
-        sym_info = _resolve_sym_safe(symbols, ops[0])
+        sym_info = _resolve_sym_safe(symbols, ops[0], sym_types)
         rest = [sym_info]
         rest.extend(str(o) for o in ops[1:3])
         return f'{prefix} {name} {", ".join(rest)}'
@@ -156,14 +197,26 @@ def disassemble_fas(fas_path: str) -> str:
     lines.append("")
 
     # 紧凑 stub 格式按资源注册顺序（symbol_slots）编址
+    sym_types: List[str] = []
     if getattr(fas, "symbol_slots", None):
-        symbols = [str(it[1]) for it in fas.symbol_slots]
+        symbols = []
+        for it in fas.symbol_slots:
+            typ = it[0]
+            val = str(it[1])
+            sym_types.append(typ)
+            # STRING/REAL 记录（含多行 DCL）转成引号+转义的单行形式，保证 .lasm 字节可逆
+            if typ == "SYMBOL" and _is_plain_symbol(val):
+                symbols.append(val)
+            else:
+                symbols.append(_quote_lasm_string(val))
     else:
         symbols = fas.symbols
+        sym_types = ["SYMBOL"] * len(symbols)
 
     lines.append(".symbols")
     for idx, sym in enumerate(symbols):
-        lines.append(f"  {idx}: SYMBOL {sym}")
+        typ = sym_types[idx] if idx < len(sym_types) else "SYMBOL"
+        lines.append(f"  {idx}: {typ} {sym}")
     lines.append(".end_symbols")
     lines.append("")
 
@@ -171,7 +224,7 @@ def disassemble_fas(fas_path: str) -> str:
         fname = func.name if func.name and func.name != "c:init" else "__init__"
         lines.append(f".function {fname}, {func.sym_idx}")
         for inst in func.instructions:
-            lines.append(_fmt_inst(inst, symbols))
+            lines.append(_fmt_inst(inst, symbols, sym_types))
         lines.append(".end_function")
         lines.append("")
 
@@ -199,9 +252,9 @@ def _detect_format(functions: List[Tuple[str, int, List[str]]]) -> str:
 
 def assemble_lasm(lasm_text: str, output_path: str) -> str:
     """Assemble .lasm text into a FAS4 binary file."""
-
     # === Pass 1: parse structure ===
     symbols_list: List[str] = []
+    symbol_types: List[str] = []
     functions: List[Tuple[str, int, List[str]]] = []
     current_func_name = ""
     current_func_idx = 0
@@ -212,7 +265,7 @@ def assemble_lasm(lasm_text: str, output_path: str) -> str:
     nsyms_dir: Optional[int] = None
 
     for raw in lasm_text.split("\n"):
-        line = raw.split(";", 1)[0].strip()
+        line = _strip_comment(raw).strip()
         if not line:
             continue
 
@@ -242,13 +295,16 @@ def assemble_lasm(lasm_text: str, output_path: str) -> str:
                 current_func_body = []
                 in_function = False
         elif in_symbols:
-            m = re.match(r"\s*(\d+)\s*:\s*SYMBOL\s+(.+)", line)
+            m = re.match(r"\s*(\d+)\s*:\s*(SYMBOL|STRING|REAL)\s+(.+)", line)
             if m:
                 idx = int(m.group(1))
-                name = m.group(2).strip()
+                typ = m.group(2)
+                name = m.group(3).strip()
                 while len(symbols_list) <= idx:
                     symbols_list.append("")
+                    symbol_types.append("SYMBOL")
                 symbols_list[idx] = name
+                symbol_types[idx] = typ
         elif in_function:
             current_func_body.append(line)
 
@@ -257,16 +313,67 @@ def assemble_lasm(lasm_text: str, output_path: str) -> str:
 
     fmt = fmt_dir if fmt_dir in ("compact", "selfcontained") else _detect_format(functions)
     if fmt == "compact":
-        return _assemble_compact(output_path, symbols_list, functions, nsyms_dir)
-    return _assemble_selfcontained(output_path, symbols_list, functions)
+        return _assemble_compact(output_path, symbols_list, symbol_types, functions, nsyms_dir)
+    return _assemble_selfcontained(output_path, symbols_list, symbol_types, functions)
+
+
+def assemble_lasm_zelx(lasm_text: str, output_path: str) -> str:
+    """通用 lasm → ZWCAD .zelx。
+
+    lasm 助记符描述的是语义（PUSH_G/USUBR/JUMP 等两平台相同），先按 AutoCAD
+    字节码汇编成 .fas，再经 ZWCAD opcode 重映射/容器组装为 .zelx。
+    """
+    import tempfile
+    from tools.zelx_build import _build_zelx_fas
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".fas", delete=False)
+    tmp.close()
+    try:
+        assemble_lasm(lasm_text, tmp.name)
+        _build_zelx_fas(tmp.name, output_path)
+    finally:
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)
+    return output_path
+
+
+def _register_slot(symtab: SymbolTable, typ: str, display: str) -> int:
+    """按 .lasm 顺序注册一个符号槽，保留 STRING/REAL/SYMBOL 类型。返回槽索引。
+
+    ``display`` 为 STRING/REAL 时是引号转义形式；重复槽直接追加（保持顺序），
+    并让 ``name_to_idx`` 指向该新槽。
+    """
+    val = _unquote_lasm_string(display) if display.startswith('"') else display
+    if typ == "STRING":
+        key = f"__str_{val}__"
+    elif typ == "REAL":
+        key = f"__real_{float(val)}__"
+    else:
+        key = val
+    if key in symtab.name_to_idx:
+        idx = len(symtab.entries)
+        symtab.entries.append((typ, float(val) if typ == "REAL" else val))
+        symtab.name_to_idx[key] = idx
+        return idx
+    if typ == "STRING":
+        idx = len(symtab.entries)
+        symtab.name_to_idx[key] = idx
+        symtab.entries.append(("STRING", val))
+        symtab.strings.append(val)
+        return idx
+    if typ == "REAL":
+        return symtab.add_real(float(val))
+    return symtab.get_or_add(val)
 
 
 def _assemble_selfcontained(output_path: str, symbols_list: List[str],
+                            symbol_types: List[str],
                             functions: List[Tuple[str, int, List[str]]]) -> str:
     """自包含格式汇编：符号表直接编址，total_size = len(seg0_payload)。"""
     symtab = SymbolTable()
-    for sym in symbols_list:
-        symtab.get_or_add(sym)
+    for i, sym in enumerate(symbols_list):
+        typ = symbol_types[i] if i < len(symbol_types) else "SYMBOL"
+        _register_slot(symtab, typ, sym)
 
     # === Pass 2: assemble bytecode ===
     init_code = bytearray()
@@ -309,7 +416,7 @@ def _assemble_selfcontained(output_path: str, symbols_list: List[str],
     return output_path
 
 
-def _assemble_compact(output_path: str, symbols_list: List[str],
+def _assemble_compact(output_path: str, symbols_list: List[str], symbol_types: List[str],
                       functions: List[Tuple[str, int, List[str]]],
                       nsyms_dir: Optional[int]) -> str:
     """紧凑 stub 汇编：与 CAD 编译器一致的符号槽/加密/stub 布局。
@@ -323,11 +430,9 @@ def _assemble_compact(output_path: str, symbols_list: List[str],
     entries = symbols_list[: len(symbols_list) - n_func] if n_func else symbols_list
 
     symtab = SymbolTable()
-    for sym in entries:
-        if sym in symtab.name_to_idx:
-            symtab.add_force(sym)
-        else:
-            symtab.get_or_add(sym)
+    for i, sym in enumerate(entries):
+        typ = symbol_types[i] if i < len(symbol_types) else "SYMBOL"
+        _register_slot(symtab, typ, sym)
 
     # === Assemble function bytecode (stub encodings) ===
     seg0 = bytearray()
@@ -375,6 +480,61 @@ _INSTR_RE = re.compile(r"(\w+)(.*)")
 _ADDR_PREFIX = re.compile(r"^0x[0-9a-fA-F]+:")
 
 
+def _strip_comment(line: str) -> str:
+    """去掉行注释（``;``），但忽略引号字符串内部的 ``;``。"""
+    out = []
+    inq = False
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if inq:
+            out.append(c)
+            if c == "\\" and i + 1 < len(line):
+                out.append(line[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                inq = False
+        elif c == '"':
+            inq = True
+            out.append(c)
+        elif c == ";":
+            break
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _split_ops(text: str) -> List[str]:
+    """按逗号切分操作数，但尊重引号包裹的字符串（含逗号/空格不切分）。"""
+    result: List[str] = []
+    cur: List[str] = []
+    inq = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if inq:
+            cur.append(c)
+            if c == "\\" and i + 1 < len(text):
+                cur.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                inq = False
+        elif c == '"':
+            inq = True
+            cur.append(c)
+        elif c == ",":
+            result.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    result.append("".join(cur))
+    return [p.strip() for p in result]
+
+
 def _asm_instr(line: str, symtab: SymbolTable, symbols: List[str], compact: bool = False) -> Optional[bytes]:
     """Parse one assembly instruction line and encode to bytes.
 
@@ -414,16 +574,28 @@ def _asm_instr(line: str, symtab: SymbolTable, symbols: List[str], compact: bool
 
 
 def _parse_ops(text: str, symtab: SymbolTable) -> List:
-    """Parse comma-separated operands, resolving symbol names to indices."""
+    """Parse comma-separated operands, resolving symbol names to indices.
+
+    引号包裹的 ``"..."`` 操作数是字符串常量（_quote_lasm_string 产物），
+    解引号后在符号表里查索引。
+    """
     if not text.strip():
         return []
 
-    parts = [p.strip() for p in text.split(",")]
     result: List[Any] = []
-    for p in parts:
+    for p in _split_ops(text):
         if not p:
             continue
-        if p in symtab.name_to_idx:
+        if p.startswith('"'):
+            val = _unquote_lasm_string(p)
+            # 引号操作数可能是 STRING/REAL 常量槽，或带特殊字符的 SYMBOL 槽
+            for key in (f"__str_{val}__", f"__real_{val}__", val):
+                if key in symtab.name_to_idx:
+                    result.append(symtab.name_to_idx[key])
+                    break
+            else:
+                raise ValueError(f"Cannot resolve string operand: {val}")
+        elif p in symtab.name_to_idx:
             result.append(symtab.name_to_idx[p])
         elif p.startswith("[") and p.endswith("]") and p[1:-1].isdigit():
             result.append(int(p[1:-1]))
