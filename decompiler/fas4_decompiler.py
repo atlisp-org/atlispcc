@@ -2067,11 +2067,15 @@ class LispGenerator:
 
     def _gvar_item(self, idx: int) -> Any:
         if self.is_stub_format:
-            j = idx + 1
-            if 0 <= j < len(self.gvar_table):
-                v = self.gvar_table[j]
-                if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
-                    return v
+            # stub 字节码引用（PUSH_G/PUSH_VALUE/SETQ_G/USUBR）的操作数均为
+            # “gvar 槽 - 1”：运行时读 gvar_table[operand + 1]。字符串/符号常量
+            # 若落在表内则优先取 gvar_table[idx+1]，表外（如单函数文件的字面量
+            # 常量、参数读取）回退到资源注册顺序 symbol_slots[idx]。
+            # gvar_table[0]=None、[1]=CONS 为固定结构槽，不参与 mvar-1 引用
+            # （自包含格式的模块代码用 symbol_slots 直接编址，其 PUSH_G 0 会
+            # 命中 [1]=CONS，必须回退）。
+            if 1 < idx + 1 < len(self.gvar_table):
+                return self.gvar_table[idx + 1]
             if 0 <= idx < len(self.symbol_slots):
                 return self.symbol_slots[idx]
             return None
