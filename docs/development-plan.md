@@ -50,8 +50,9 @@
 | 尾递归 | ✅ | `(sum-tail 5 0)`→15 |
 | &optional/&rest | ✅ | `(f 3 2)`→5, `(g 1 2 3)`→(1 (2 3)) |
 | 顶层 setq/set | ✅ | defun 前后混合均正确执行 |
-| lambda/quote | ⚠️ | `(map-inc '(1 2 3))` → `no function: X` |
-| 4函数+交叉引用 | ❌ | `build_module_code` PUSH_G 越界 |
+| lambda/quote | ✅ | `(map-inc '(1 2 3))` → (2 3 4)；lambda 参数局部化正确（全局 x 不受污染） |
+| 4函数+交叉引用 | ✅ | `(f1 10)`→11 … `(f5 10)`→29 全部正确（p1_multi4 实测） |
+| while/cond/局部变量/apply/funcall/quote | ✅ | t04-t13 全套 CAD 实测通过；t04_while/t05_cond 与 CAD golden 逐字节一致 |
 | i18n.lsp 混合模式 | ❌ | seg1 模块代码结构差异 |
 
 > 单函数文件（`fun.lsp`、`fact.lsp`）解密后与 CAD 编译器输出逐字节一致。
@@ -262,10 +263,11 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | 优先级 | 内容 | 影响 |
 |--------|------|------|
 | ~~P0~~ | ~~反编译 stub 参数名（3.4）~~ | ✅ 已修复 |
-| P0 | 链接器多函数 CAD 注册（3.6） | 链接输出 CAD 可用性（只注册首函数） |
-| P0 | `build_module_code` PUSH_G 越界 | 4+函数交叉引用文件无法加载 |
-| P1 | while/cond/局部变量符号槽 | CAD 字节码逐字节一致 |
-| P1 | lambda 参数绑定 | `(mapcar '(lambda (x) ...) ...)` 中 x 未正确局部化 |
+| ~~P0~~ | ~~链接器多函数 CAD 注册（3.6）~~ | ✅ 已修复 |
+| ~~P0~~ | ~~`build_module_code` PUSH_G 越界~~ | ✅ 已修复（4+函数交叉引用 CAD 实测通过） |
+| ~~P1~~ | ~~lambda 参数绑定~~ | ✅ 已修复（λ 常量 PUSH_G 操作数 = gvar 槽-1 = symtab 槽-nfuncs+1） |
+| ~~P1~~ | ~~while/cond/局部变量符号槽~~ | ✅ 已修复（while 无 WHILE 槽/末体无 POP；cond 测试正序+结果倒序） |
+| P1 | i18n.lsp 混合模式 | defun+顶层表达式混杂，`cad_symbols.py` 持续块规则 |
 | P2 | CAD 加载器内部逆向 | gvar 表精确模型 |
 | P2 | 性能与多版本兼容 | 工具链健壮性 |
 
