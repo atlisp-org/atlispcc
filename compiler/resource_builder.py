@@ -270,6 +270,11 @@ class ResourceBuilder:
                     continue
                 if entry_type == 'SYMBOL':
                     symbol_bytes += self._enc_sym(entry_val) + b'\x00'
+                elif entry_type == 'CONST':
+                    if symbol_bytes:
+                        out += b'\x5b' + bytes(symbol_bytes) + b'\x00'
+                        symbol_bytes = bytearray()
+                    out += self._const_bytes(entry_val)
                 elif entry_type == 'STRING':
                     if symbol_bytes:
                         out += b'\x5b' + bytes(symbol_bytes) + b'\x00'
@@ -336,6 +341,8 @@ class ResourceBuilder:
         entry_type, entry_val = entry
         if entry_type == 'SYMBOL':
             out += b'\x5b' + self._enc_sym(entry_val) + b'\x00\x00'
+        elif entry_type == 'CONST':
+            out += self._const_bytes(entry_val)
         elif entry_type == 'STRING':
             encoded = self._enc(entry_val)
             out += b'\x55\x01\x00' + res_u16(len(encoded)) + encoded
@@ -344,6 +351,39 @@ class ResourceBuilder:
             out += res_int8(val) if -128 <= val <= 127 else res_int32(val)
         elif entry_type == 'REAL':
             out += res_real_str(f'{entry_val:g}')
+
+    def _const_bytes(self, structure) -> bytes:
+        """把 CAD 常量结构序列化为资源流记录（CAD '(lambda ...) 实测）。
+
+        结构与 build_mvar_tables 的栈模拟一一对应：原子记录 + 列表以
+        ``39 <count>`` 收尾。每个 SYMBOL 独立成块（5b name 00 00）。
+        """
+        out = bytearray()
+        self._emit_const(out, structure)
+        return bytes(out)
+
+    def _emit_const(self, out: bytearray, structure):
+        kind = structure[0]
+        if kind == 'NIL':
+            out.append(0x01)
+        elif kind == 'T':
+            out.append(0x02)
+        elif kind == 'SYMBOL':
+            out += b'\x5b' + self._enc_sym(structure[1]) + b'\x00\x00'
+        elif kind == 'INT':
+            val = int(structure[1])
+            out += res_int8(val) if -128 <= val <= 127 else res_int32(val)
+        elif kind == 'REAL':
+            out += res_real_str(f'{structure[1]:g}')
+        elif kind == 'STRING':
+            encoded = self._enc(structure[1])
+            out += b'\x55\x01\x00' + res_u16(len(encoded)) + encoded
+        elif kind == 'LIST':
+            for item in structure[1]:
+                self._emit_const(out, item)
+            out += b'\x39' + res_u16(len(structure[1]))
+        else:
+            raise ValueError(f'Unknown constant kind: {kind}')
 
     @staticmethod
     def _entry_name(entry: Tuple[str, Any]) -> str:

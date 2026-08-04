@@ -105,6 +105,23 @@ class SymbolTable:
             self.entries.append(('REAL', value))
         return self.name_to_idx[key]
 
+    def add_constant(self, structure) -> int:
+        """注册 CAD 常量（引用字面量，如 '(lambda ...)）为一个 gvar 槽。
+
+        常量在资源段注册为结构值（加载期构建），字节码用一条 PUSH_G 引用。
+        结构为 to_const() 产生的嵌套元组。
+        """
+        key = '__const__' + repr(structure)
+        if key not in self.name_to_idx:
+            idx = len(self.entries)
+            self.name_to_idx[key] = idx
+            self.entries.append(('CONST', structure))
+        return self.name_to_idx[key]
+
+    def get_const_idx(self, structure) -> Optional[int]:
+        key = '__const__' + repr(structure)
+        return self.name_to_idx.get(key)
+
     def add_func_ref(self, name: str, offset: int):
         self.function_offsets[name] = offset
         self.get_or_add(name)

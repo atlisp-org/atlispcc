@@ -389,9 +389,11 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
                 f"a required param, e.g. (defun {f.name} (x &rest {f.rest}))",
                 file=sys.stderr,
             )
-    from compiler.cad_symbols import derive_symbol_names
+    from compiler.cad_symbols import derive_symbol_names, is_const_entry
     for sym in derive_symbol_names(program):
-        if sym.startswith('"') and sym.endswith('"'):
+        if is_const_entry(sym):
+            symtab.add_constant(sym[1])
+        elif sym.startswith('"') and sym.endswith('"'):
             symtab.add_string(sym[1:-1])
         elif sym in symtab.name_to_idx:
             # CAD stub：允许符号重复（递归/跨函数引用产生重复槽）

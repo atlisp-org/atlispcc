@@ -646,6 +646,15 @@ class CodeGenerator:
     def _emit_quoted(self, buf: BytecodeBuffer, node: Optional[Node], skip_reg: set = None):
         if skip_reg is None:
             skip_reg = set()
+        # CAD 紧凑 stub：引用字面量注册为资源段常量，字节码只发一条 PUSH_G。
+        if self.stub_format and node is not None:
+            from compiler.cad_symbols import to_const
+            const = to_const(node)
+            if const is not None:
+                idx = self.symtab.get_const_idx(const)
+                if idx is not None:
+                    buf.emit(encode_op_u16(PUSH_G, idx))
+                    return
         if node is None:
             buf.emit(encode_op_noarg(PUSH_NIL))
         elif isinstance(node, Symbol):
