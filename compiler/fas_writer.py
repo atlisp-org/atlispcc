@@ -90,9 +90,11 @@ class FasWriter:
         seg0_header = f'{nsyms} $'.encode('ascii')
         seg0_payload = seg0_header + seg0
         if compact:
-            # CAD 紧凑 stub：total_size 覆盖 seg0_payload 前 len-2 字节，
-            # seg0 末尾 2 字节在 total_size 区域之外（CAD 实测 rest-ts=2）。
-            total_size = len(seg0_payload) - 2
+            # CAD 紧凑 stub：total_size = len(seg0 字节码) + 1（f4/f4r/f5 实测）。
+            # 注意不能写成 len(seg0_payload) - 2：seg0 头部为 `{nsyms} $`，
+            # 其长度随 nsyms 位数变化（"6 $" 3 字节 / "12 $" 4 字节），
+            # 两套写法仅在 nsyms < 10 时等价。
+            total_size = len(seg0) + 1
         else:
             total_size = len(seg0_payload)
 

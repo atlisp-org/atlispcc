@@ -475,20 +475,18 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
         return f.args + f.optional + ([f.rest] if f.rest else [])
 
     # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
-    seg0_payload = f'{fas_nsyms} $'.encode() + seg0
-    seg1 = resource.build(func_offsets, module_code=module_code, seg0_payload_len=len(seg0_payload), stub_format=True,
+    seg1 = resource.build(func_offsets, module_code=module_code, total_size=len(seg0) + 1, stub_format=True,
                           top_level_count=top_level_count)
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, [_all_params(f) for f in defun_forms])
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
-    seg0_payload = f'{fas_nsyms} $'.encode() + seg0
-    seg1 = resource.build(func_offsets, module_code=module_code, seg0_payload_len=len(seg0_payload), stub_format=True,
+    seg1 = resource.build(func_offsets, module_code=module_code, total_size=len(seg0) + 1, stub_format=True,
                            top_level_count=top_level_count)
     sec2_items = count_resource_records(seg1)
-    # 确保 items 足够大，避免 CAD 加载时遗漏 GVARINIT 记录。
-    # CAD 要求 items >= gvar 表最大可引用槽数。
-    # 对多函数文件，模块代码 PUSH_G 引用高槽号，items 若不足
-    # CAD 会在 seg1 处理时跳过部分 GVARINIT，导致函数未注册。
-    min_items = fas_nsyms - 1 if len(defun_forms) > 1 else fas_nsyms
+    # 确保 items 与 CAD 编译器一致：CAD 的 items = 2 * 模块注册数 + 2
+    # （模块注册数 = defun 数 + 顶层表达式数）。实测：1 函数→4、2 函数→6、
+    # 3 函数→8、4 函数→10；mix(1 defun+1 顶层)→6、topsetq(2 顶层)→6。
+    # CAD 加载时按 items 处理 GVARINIT 记录，若偏小会遗漏函数注册。
+    min_items = 2 * (len(defun_forms) + top_level_count) + 2
     if sec2_items < min_items:
         sec2_items = min_items
 

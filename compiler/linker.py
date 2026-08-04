@@ -456,9 +456,8 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
     module_code = build_module_code(len(func_offsets))
     resource = ResourceBuilder(symtab, encoding=encoding)
     nsyms = len(symtab.entries) - len(func_offsets) + 1
-    seg0_payload = f'{nsyms} $'.encode() + seg0
     seg1 = resource.build(func_offsets, module_code=module_code,
-                          seg0_payload_len=len(seg0_payload), stub_format=True)
+                          total_size=len(seg0) + 1, stub_format=True)
     writer = FasWriter(symtab)
     writer.write(output_path, seg0, seg1, sec2_items=count_resource_records(seg1),
                  nsyms=nsyms, compact=True)

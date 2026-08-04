@@ -459,11 +459,10 @@ def _assemble_compact(output_path: str, symbols_list: List[str], symbol_types: L
     top_level_count = max(0, len(entries) - n_func - fas_nsyms + 1)
 
     # === Build CAD stub seg1 and write ===
-    seg0_payload = f"{fas_nsyms} $".encode() + bytes(seg0)
     module_code = build_module_code(n_func, nsyms=fas_nsyms)
     resource = ResourceBuilder(symtab)
     seg1 = resource.build(func_offsets, module_code=module_code,
-                          seg0_payload_len=len(seg0_payload), stub_format=True,
+                          total_size=len(seg0) + 1, stub_format=True,
                           top_level_count=top_level_count)
     sec2_items = count_resource_records(seg1)
     min_items = fas_nsyms - 1 if n_func > 1 else fas_nsyms

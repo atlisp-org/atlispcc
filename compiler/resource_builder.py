@@ -61,12 +61,10 @@ def build_module_code(n_funcs: int = 1, top_level: bytes = b'', nsyms: int = 0) 
     if n_funcs <= 1:
         out += bytes.fromhex('0902000a570000000009030006010009010016')
         return bytes(out)
-    max_idx = nsyms - 1 if nsyms > 0 else 0xFFFF
     b_start = 2 * n_funcs + 1
-    shift = max(0, b_start - max_idx)
     for i in range(n_funcs):
         a = n_funcs + 1 - i
-        b = b_start - i - shift
+        b = b_start - i
         c = n_funcs - i
         out += b'\x09' + res_u16(a) + b'\x0a\x57\x00\x00\x00\x00'
         out += b'\x09' + res_u16(b) + b'\x06' + res_u16(c)
@@ -164,7 +162,7 @@ class ResourceBuilder:
     def _push_t(self):
         self.data.append(0x02)
 
-    def build(self, func_offsets: Dict[str, int], module_code: bytes = b'', seg0_payload_len: int = 0,
+    def build(self, func_offsets: Dict[str, int], module_code: bytes = b'', total_size: int = 0,
               stub_format: bool = False, top_level_count: int = 0) -> bytes:
         """构建与 AutoCAD 编译器一致的 seg1 资源流。
 
@@ -256,12 +254,11 @@ class ResourceBuilder:
 
         # ── 函数注册 ────────────────────────────────────────────────────
         if stub_format and func_offsets and len(func_offsets) > 1:
-            # 最后一个函数 end 用 total_size（seg0_payload_len - 2）。
-            out += self._func_ranges_bytes(func_offsets, (seg0_payload_len - 2) if seg0_payload_len else 0)
+            # 最后一个函数 end 用 total_size = len(seg0 字节码) + 1（CAD f4*/f5 实测）。
+            out += self._func_ranges_bytes(func_offsets, total_size)
         else:
-            # CAD 代码引用长度 = total_size = seg0_payload_len - 2
-            # （seg0 末尾 2 字节在 total_size 统计之外）。
-            ref_len = (seg0_payload_len - 2) if seg0_payload_len else self._first_function_len(module_code)
+            # CAD 代码引用长度 = total_size = len(seg0 字节码) + 1。
+            ref_len = total_size if total_size else self._first_function_len(module_code)
             out += self._code_ref_bytes(ref_len)
         if stub_format:
             # CAD 符号格式: 连续 SYMBOL 合并为单个 5b 块，遇 STRING 分块。
@@ -372,7 +369,7 @@ class ResourceBuilder:
             end = offsets[i + 1][0] if i + 1 < len(offsets) else total_len
             ranges.append((off, end))
         for start, end in reversed(ranges):
-            out += bytes([0x32, start & 0xFF])
+            out += bytes([0x32, start & 0xFF]) if -128 <= start <= 127 else bytes([0x33]) + res_s32(start)
             out += bytes([0x32, end & 0xFF]) if end <= 127 else bytes([0x33]) + res_s32(end)
             out += b'\x2a'
         out += bytes([0x39]) + res_u16(len(ranges))
