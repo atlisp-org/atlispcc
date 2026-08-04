@@ -47,7 +47,7 @@
 **布局格式**与符号槽数：
 
 - `.format compact` — 与 AutoCAD 编译器一致的**紧凑 stub** 布局
-  （`total_size = len(seg0_payload) - 2`，符号按资源注册序直接编址）。
+  （`total_size = len(seg0) + 1`，seg0 为 `<nsyms> $` 后的纯字节码，符号按资源注册序直接编址）。
   汇编产物可在 CAD 中加载执行。
 - `.format selfcontained` — 自包含布局（`total_size = len(seg0_payload)`）。
 - `.nsyms N` — gvar 槽数；缺省时按 `len(entries) - 函数数 + 1` 推导。

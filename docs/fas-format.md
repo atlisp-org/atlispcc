@@ -35,9 +35,9 @@
 
 - `FAS4_MAGIC = b"\r\n FAS4-FILE ; Do not change it!\r\n"` —— 判断 FAS 文件的依据，任何编译器产物不变。
 - `total_size` 表示 seg0 负载（`<nsyms> $` + 字节码）的**统计长度**，随布局而异：
-  - **紧凑 stub 格式**（CAD 编译器输出，`compact=True`）：`total_size = len(seg0_payload) - 2`。
-    CAD 实测恒为「seg0 实际长度 - 2」：末尾 2 字节（指令尾部）位于 total_size 之外、
-    `16 24 0d 0a` 终止符之前。
+  - **紧凑 stub 格式**（CAD 编译器输出，`compact=True`）：`total_size = len(seg0) + 1`。
+    其中 `seg0` 为 `<nsyms> $` 后的纯字节码。CAD 实测恒等（cross/m2/m3/multi/sh/
+    lambda_test 六份产物）。旧公式 `len(seg0_payload) - 2` 仅在 nsyms<10（头 3 字节）时碰巧相等。
   - **自包含格式**（`compact=False`）：`total_size = len(seg0_payload)`（完整覆盖）。
   - `Fas4Parser.parse` 目前按 total_size 切字节码，紧凑 stub 文件会因此丢掉末尾 2 字节
     （对 CAD 产物与 atlispcc 产物一致，不影响反编译结果；见 §6）。

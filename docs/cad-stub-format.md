@@ -42,9 +42,11 @@
 └──────────────────────────────────────────────┘
 ```
 
-**total_size（紧凑 stub 格式，CAD 实测恒等）**：`total_size = len(seg0_payload) - 2`，
-其中 `seg0_payload = <nsyms> $ + 字节码`。即 CAD 的 `total_size` 比 seg0 实际长度**少 2**：
-seg0 末尾 2 字节（末段指令尾部）位于 total_size 统计之外、`16 24 0d 0a` 终止符之前。
+**total_size（紧凑 stub 格式，CAD 实测恒等）**：`total_size = len(seg0) + 1`，
+其中 `seg0 = <nsyms> $ 之后的纯字节码`（不含 `<nsyms> $` 头）。实测
+`cross/m2/m3/multi/sh/lambda_test` 六份 AutoCAD 产物均恒等
+（len(seg0)+1：55/56/91/168/70/29）。旧公式 `len(seg0_payload) - 2`
+仅在 nsyms<10（`<nsyms> $` 头 3 字节）时碰巧相等，nsyms≥10 时错误。
 `FasWriter.write(..., compact=True)` 按此规则写盘。
 
 ---
@@ -417,7 +419,7 @@ for i in 0..len(data)-1:
   对纯函数/递归/多函数/顶层/strcat/while 产物，seg0 **逐字节一致**
   （total_size/nsyms/items 全等）；重新汇编产物可在 CAD 加载执行
   （`min`、多函数、init 文件均验证通过）
-- `total_size = len(seg0_payload) - 2`（紧凑 stub，CAD 实测恒等）；末尾 2 字节为指令尾部
+- `total_size = len(seg0) + 1`（紧凑 stub，CAD 实测恒等；六份 CAD 产物验证）；seg0 为 `<nsyms> $` 后的纯字节码
 - 中间 setq 无 POP、尾 setq 用 DUP、无 else if 补 PUSH_NIL（与 CAD 一致）
 - 代码测试 167/167（含链接器多函数 gvar-1 适配）
 
