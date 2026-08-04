@@ -203,7 +203,11 @@ def test_disasm_zelx():
         cmd_disassemble(os.path.join(samples, "t1.zelx"), zlx_lasm)
         cmd_disassemble(os.path.join(samples, "t1.fas"), fas_lasm)
         with open(zlx_lasm, encoding="utf-8") as a, open(fas_lasm, encoding="utf-8") as b:
-            assert a.read() == b.read()
+            # zelx 不携带 crunch 日期，恢复的 fas 无日期行；fas 参考内嵌日期。
+            # 两者为元数据差异，比对前剔除。
+            zlx_lines = [l for l in a.read().splitlines() if not l.startswith("; Crunch date:")]
+            fas_lines = [l for l in b.read().splitlines() if not l.startswith("; Crunch date:")]
+            assert zlx_lines == fas_lines
     finally:
         for p in (zlx_lasm, fas_lasm):
             if os.path.exists(p):

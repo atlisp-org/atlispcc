@@ -175,7 +175,6 @@ def zelx_to_fas(zelx_path: str, fas_path: str) -> dict:
         seg0 = seg0[:-1]
 
     # 组装 fas
-    import datetime
     nsyms_hdr = f"{nsyms} $".encode("ascii")
     seg0_payload = nsyms_hdr + seg0
     total_size = len(seg0_payload) - 2
@@ -183,9 +182,8 @@ def zelx_to_fas(zelx_path: str, fas_path: str) -> dict:
     key = prefix + b"\n;fas4 crunch\n;"
     enc_seg1 = _rolling_xor(seg1, key)
     seg1_hdr = f"{len(enc_seg1)} {items} $".encode("ascii")
-    today = datetime.date.today()
-    date = f"A{today.month}/{today.day}/{today.year % 100}".encode("ascii")
-    trailer = bytes([len(key)]) + key + b"$;" + date
+    # zelx 不携带 crunch 日期，恢复的 fas 不伪造日期（保持确定性输出）。
+    trailer = bytes([len(key)]) + key + b"$;"
 
     magic = b"\r\n FAS4-FILE ; Do not change it!\r\n"
     data = magic + f"{total_size}\r\n".encode("ascii") + seg0_payload + \
