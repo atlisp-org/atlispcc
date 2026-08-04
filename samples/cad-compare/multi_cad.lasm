@@ -1,0 +1,100 @@
+; FAS4 assembly
+; Source: multi_cad.fas
+; Crunch date: 8/3/26
+.format compact
+.nsyms 9
+
+.symbols
+  0: SYMBOL FACT
+  1: SYMBOL MUL
+  2: SYMBOL SUB
+  3: SYMBOL ADD
+  4: SYMBOL FACT
+  5: SYMBOL <=
+  6: SYMBOL N
+  7: SYMBOL *
+  8: SYMBOL -
+  9: SYMBOL +
+  10: SYMBOL B
+  11: SYMBOL A
+  12: SYMBOL FACT
+  13: SYMBOL MUL
+  14: SYMBOL SUB
+  15: SYMBOL ADD
+.end_symbols
+
+.function ADD, 0
+  0x0000: DEFUN [514], 2
+  0x0005: PUSH_G -
+  0x0008: GET_LOCAL_WIDE 0
+  0x000b: PUSH_G *
+  0x000e: GET_LOCAL_WIDE 1
+  0x0011: INIT_ARGS 5
+  0x0014: PUSH_VALUE -
+  0x0017: PUSH_VALUE *
+  0x001a: USUBR 2, N
+  0x001d: NIL
+  0x001e: PUSH_VALUE [0]
+  0x001f: CLEAR_ARGS 2
+  0x0022: END_DEFUN
+.end_function
+
+.function SUB, 1
+  0x0023: DEFUN [514], 2
+  0x0028: PUSH_G -
+  0x002b: GET_LOCAL_WIDE 0
+  0x002e: PUSH_G *
+  0x0031: GET_LOCAL_WIDE 1
+  0x0034: INIT_ARGS 5
+  0x0037: PUSH_VALUE -
+  0x003a: PUSH_VALUE *
+  0x003d: USUBR 2, <=
+  0x0040: NIL
+  0x0041: PUSH_VALUE [0]
+  0x0042: CLEAR_ARGS 2
+  0x0045: END_DEFUN
+.end_function
+
+.function MUL, 2
+  0x0046: DEFUN [514], 2
+  0x004b: PUSH_G -
+  0x004e: GET_LOCAL_WIDE 0
+  0x0051: PUSH_G *
+  0x0054: GET_LOCAL_WIDE 1
+  0x0057: INIT_ARGS 5
+  0x005a: PUSH_VALUE -
+  0x005d: PUSH_VALUE *
+  0x0060: USUBR 2, [4]
+  0x0063: NIL
+  0x0064: PUSH_VALUE [0]
+  0x0065: CLEAR_ARGS 2
+  0x0068: END_DEFUN
+.end_function
+
+.function FACT, 3
+  0x0069: DEFUN [257], 1
+  0x006e: PUSH_G [3]
+  0x0071: GET_LOCAL_WIDE 0
+  0x0074: INIT_ARGS 3
+  0x0077: PUSH_VALUE [3]
+  0x007a: PUSH_INT8 1
+  0x007c: USUBR 2, [2]
+  0x007f: NIL
+  0x0080: PUSH_VALUE [0]
+  0x0081: BR_IF_TRUE 7
+  0x0086: PUSH_INT8 1
+  0x0088: JUMP 23
+  0x008d: PUSH_VALUE [3]
+  0x0090: PUSH_VALUE [3]
+  0x0093: PUSH_INT8 1
+  0x0095: USUBR 2, <=
+  0x0098: NIL
+  0x0099: PUSH_VALUE [0]
+  0x009a: USUBR 1, [1]
+  0x009d: NIL
+  0x009e: PUSH_VALUE [0]
+  0x009f: USUBR 2, [4]
+  0x00a2: NIL
+  0x00a3: PUSH_VALUE [0]
+  0x00a4: CLEAR_ARGS 1
+.end_function

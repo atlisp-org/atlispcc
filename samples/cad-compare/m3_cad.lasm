@@ -1,0 +1,64 @@
+; FAS4 assembly
+; Source: m3_cad.fas
+; Crunch date: 8/3/26
+.format compact
+.nsyms 8
+
+.symbols
+  0: SYMBOL F3
+  1: SYMBOL F2
+  2: SYMBOL F1
+  3: SYMBOL -
+  4: SYMBOL D
+  5: SYMBOL *
+  6: SYMBOL C
+  7: SYMBOL +
+  8: SYMBOL B
+  9: SYMBOL A
+  10: SYMBOL F3
+  11: SYMBOL F2
+  12: SYMBOL F1
+.end_symbols
+
+.function F1, 0
+  0x0000: DEFUN [514], 2
+  0x0005: PUSH_G +
+  0x0008: GET_LOCAL_WIDE 0
+  0x000b: PUSH_G C
+  0x000e: GET_LOCAL_WIDE 1
+  0x0011: INIT_ARGS 5
+  0x0014: PUSH_VALUE +
+  0x0017: PUSH_VALUE C
+  0x001a: USUBR 2, *
+  0x001d: NIL
+  0x001e: PUSH_VALUE [0]
+  0x001f: CLEAR_ARGS 2
+  0x0022: END_DEFUN
+.end_function
+
+.function F2, 1
+  0x0023: DEFUN [257], 1
+  0x0028: PUSH_G D
+  0x002b: GET_LOCAL_WIDE 0
+  0x002e: INIT_ARGS 3
+  0x0031: PUSH_VALUE D
+  0x0034: PUSH_INT8 3
+  0x0036: USUBR 2, -
+  0x0039: NIL
+  0x003a: PUSH_VALUE [0]
+  0x003b: CLEAR_ARGS 1
+  0x003e: END_DEFUN
+.end_function
+
+.function F3, 2
+  0x003f: DEFUN [257], 1
+  0x0044: PUSH_G [2]
+  0x0047: GET_LOCAL_WIDE 0
+  0x004a: INIT_ARGS 3
+  0x004d: PUSH_VALUE [2]
+  0x0050: PUSH_INT8 1
+  0x0052: USUBR 2, [1]
+  0x0055: NIL
+  0x0056: PUSH_VALUE [0]
+  0x0057: CLEAR_ARGS 1
+.end_function

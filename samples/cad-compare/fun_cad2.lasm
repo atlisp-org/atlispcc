@@ -1,0 +1,20 @@
+; FAS4 assembly
+; Source: fun_cad2.fas
+; Crunch date: 8/3/26
+.format compact
+.nsyms 3
+
+.symbols
+  0: SYMBOL A
+  1: SYMBOL ALERT
+  2: STRING "abc"
+  3: SYMBOL A
+.end_symbols
+
+.function A, 0
+  0x0000: DEFUN A, 0
+  0x0005: PUSH_G "abc"
+  0x0008: USUBR 1, ALERT
+  0x000b: NIL
+  0x000c: PUSH_VALUE [0]
+.end_function
