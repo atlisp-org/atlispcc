@@ -92,15 +92,20 @@ def _warn(msg: str) -> None:
     print(f"WARNING: {msg}", file=sys.stderr)
 
 
-def _patch_operands(inst, file_sym_map: Dict[int, int]) -> List:
+def _patch_operands(inst, file_sym_map: Dict[int, int], file_sym_slot_map: Dict[int, int] = None) -> List:
     name = inst.op_name
     ops = list(inst.operands)
     if not ops:
         return ops
     if name in _SYM_REF_INSTS:
+        # PUSH_G/SETQ_G 用符号槽（CAD/单文件编译器约定）；PUSH_VALUE 用 gvar 槽-1
+        if name in ("PUSH_G", "PUSH_GLOBAL", "SETQ_G") and file_sym_slot_map:
+            slot_map = file_sym_slot_map
+        else:
+            slot_map = file_sym_map
         local_idx = ops[0]
-        if local_idx in file_sym_map:
-            ops[0] = file_sym_map[local_idx]
+        if local_idx in slot_map:
+            ops[0] = slot_map[local_idx]
     elif name in _FUNC_REF_INSTS:
         if len(ops) >= 2:
             local_idx = ops[1]
@@ -361,14 +366,20 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
                 if _is_data_item(s) and s[0] in ("SYMBOL", "STRING"):
                     sym_by_idx.setdefault(i, str(s[1]))
             sm = {}
+            sm_slot = {}
             for i, sym in sym_by_idx.items():
                 if sym in _pre_gvar:
                     sm[i] = _pre_gvar[sym] - 1
+                    for j, (et, ev) in enumerate(symtab.entries):
+                        if et in ("SYMBOL", "STRING") and str(ev) == sym:
+                            sm_slot[i] = j
+                            break
                 else:
                     # fg 外（nsyms 截断）符号：用合并 symtab 槽，反编译 fallback 到 symbol_slots
                     for j, (et, ev) in enumerate(symtab.entries):
                         if et in ("SYMBOL", "STRING") and str(ev) == sym:
                             sm[i] = j
+                            sm_slot[i] = j
                             break
         else:
             sm = _build_local_data_map(global_data, fas)
@@ -410,7 +421,7 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
                 else:
                     skip_single = False
                     if _needs_symbol_patch(inst.op_name) and not skip_single:
-                        new_ops = _patch_operands(inst, sm)
+                        new_ops = _patch_operands(inst, sm, sm_slot)
                         bc = _encode_with_opcode(inst.opcode, inst.op_name, new_ops, short_subr=short_subr)
                     else:
                         bc = fas.bytecode[inst.offset : inst.offset + inst.size]
@@ -420,7 +431,7 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
                 skip_defun = short_subr and inst.op_name == "DEFUN"
                 skip_single = short_subr and inst.op_name == "PUSH_VALUE" and inst.size == 1
                 if _needs_symbol_patch(inst.op_name) and not skip_defun and not skip_single:
-                    new_ops = _patch_operands(inst, sm)
+                    new_ops = _patch_operands(inst, sm, sm_slot)
                     bc = _encode_with_opcode(inst.opcode, inst.op_name, new_ops, short_subr=short_subr)
                 else:
                     bc = fas.bytecode[inst.offset : inst.offset + inst.size]
