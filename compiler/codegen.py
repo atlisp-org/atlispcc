@@ -48,6 +48,7 @@ SETQ_G = NAME_TO_OPCODE["SETQ_G"]  # 0x06
 JMP16_IFNOT = NAME_TO_OPCODE["JMP16_IFNOT"]  # 0x0d
 JMP16_IF = NAME_TO_OPCODE["JMP16_IF"]  # 0x0e
 BR_IF_TRUE = NAME_TO_OPCODE["BR_IF_TRUE"]  # 0x67
+COND_OR = NAME_TO_OPCODE["COND_OR"]  # 0x68
 JUMP = NAME_TO_OPCODE["JUMP"]  # 0x57
 CONS = NAME_TO_OPCODE["CONS"]
 BUILD_LIST = NAME_TO_OPCODE["BUILD_LIST"]  # 0x39
@@ -544,6 +545,9 @@ class CodeGenerator:
         buf.label(label_end)
 
     def _emit_cond(self, buf: BytecodeBuffer, node: Cond):
+        if self.stub_format:
+            self._emit_cond_stub(buf, node)
+            return
         label_end = f"_cond_end_{buf.pos()}"
         label_next = None
         for i, clause in enumerate(node.clauses):
@@ -576,6 +580,46 @@ class CodeGenerator:
             else:
                 buf.emit(encode_op_noarg(POP))
         buf.label(label_end)
+
+    def _emit_cond_stub(self, buf: BytecodeBuffer, node: Cond):
+        base = f"_cond_{buf.pos()}"
+        clauses = [c for c in node.clauses if c]
+        n = len(clauses)
+        if n == 0:
+            buf.emit(encode_op_noarg(PUSH_NIL))
+            return
+        # 各子句测试按源码顺序发出；仅 t 子句直接 PUSH_VALUE T（无 NIL 槽对）。
+        for i, clause in enumerate(clauses):
+            cond = clause[0]
+            if isinstance(cond, Symbol) and cond.name.lower() == "t":
+                idx = self.symtab.get_or_add(cond.name)
+                buf.emit(encode_op_u16(PUSH_VALUE, idx))
+            else:
+                self._emit_expr(buf, cond)
+            condor_pos = buf.pos()
+            buf.emit(encode_op_s32(COND_OR, 0))
+            buf.add_patch(condor_pos + 1, f"{base}_body_{i}", 4)
+        # 全假默认值 + 跳转链：PUSH_NIL 后跳过首个发出体（=末子句体）。
+        buf.emit(encode_op_noarg(PUSH_NIL))
+        jmp_pos = buf.pos()
+        buf.emit(encode_op_s32(JUMP, 0))
+        buf.add_patch(jmp_pos + 1, f"{base}_body_{n - 1}_end", 4)
+        # 结果体按源码倒序发出：POP + 结果；除最后发出体（=首子句）外各加 JUMP，
+        # 跳到下一个发出体之后（即其 JUMP 处），链式跳过其余体。
+        for k, i in enumerate(reversed(range(n))):
+            actions = clauses[i][1:]
+            buf.label(f"{base}_body_{i}")
+            buf.emit(encode_op_noarg(POP))
+            for a in actions[:-1]:
+                self._emit_expr(buf, a)
+                buf.emit(encode_op_noarg(POP))
+            if actions:
+                self._emit_expr(buf, actions[-1])
+            buf.label(f"{base}_body_{i}_end")
+            if k < n - 1:
+                jp = buf.pos()
+                buf.emit(encode_op_s32(JUMP, 0))
+                buf.add_patch(jp + 1, f"{base}_body_{i - 1}_end", 4)
 
     def _emit_repeat(self, buf: BytecodeBuffer, count_expr: Node, body: List[Node]):
         slot = self._get_local_slot("__repeat__")

@@ -1517,6 +1517,7 @@ class LispGenerator:
         stack: List[str] = []
         unresolved_ops: Set[str] = set()
         pending_logic: List[Dict[str, Any]] = []
+        cond_state: Optional[Dict[str, Any]] = None
         offset_to_idx = {inst.offset: idx for idx, inst in enumerate(instructions)}
 
         def pop_expr(default: Optional[str] = "nil") -> Optional[str]:
@@ -1543,6 +1544,30 @@ class LispGenerator:
         while i < end:
             inst = instructions[i]
             name = inst.op_name
+
+            if cond_state is not None and i == cond_state["info"]["jump_idx"]:
+                info = cond_state["info"]
+                n = len(cond_state["tests"])
+                clauses: List[str] = []
+                for j in range(n):
+                    test = cond_state["tests"][j]
+                    b_start = info["body_starts"][j] + 1
+                    b_end = info["body_ends"][j]
+                    body_lines = self._render_block(spec, instructions, b_start, b_end, indent + 2)
+                    results = [
+                        ln.strip()
+                        for ln in body_lines
+                        if ln.strip() and not ln.strip().startswith(";;")
+                    ]
+                    clauses.append(" ".join([test] + results))
+                cond_text = "(cond"
+                for c in clauses:
+                    cond_text += f"\n{'  ' * (indent + 1)}({c})"
+                cond_text += f"\n{'  ' * indent})"
+                stack.append(cond_text)
+                i = info["chain_end"]
+                cond_state = None
+                continue
 
             if name in ("BR_IF_TRUE", "JMP16_IF", "JMP16_IF_2", "JMP16_IFNOT", "JMP16_IFNOT_2"):
                 cond = pop_expr("T" if "IFNOT" not in name else "nil") or "nil"
@@ -1624,10 +1649,20 @@ class LispGenerator:
             elif name == "PUSH_VALUE" and inst.operands:
                 if not (self.is_stub_format and inst.size == 1):
                     # stub 单字节 PUSH_VALUE[0]：调用后清理，不压栈
+                    if self.is_stub_format:
+                        # cond 的 t 子句用 PUSH_VALUE 直接引用 T 符号槽（gvar 槽-1）
+                        raw_t = self._gvar_symbol_gvar(inst.operands[0])
+                        if raw_t and raw_t.upper() == "T":
+                            stack.append("t")
+                            i += 1
+                            continue
                     stack.append(self._value_from_gvar(inst.operands[0], spec))
             elif name == "GET_LOCAL" and inst.operands:
                 stack.append(self._local_name(inst.operands[0], spec))
             elif name == "PUSH_NIL":
+                if cond_state is not None and i == cond_state["info"]["jump_idx"] - 1:
+                    i += 1
+                    continue
                 stack.append("nil")
             elif name == "PUSH_T":
                 stack.append("T")
@@ -1723,6 +1758,17 @@ class LispGenerator:
                 flush_stack()
             elif name in ("COND_OR", "AND", "AND2"):
                 cond = pop_expr("nil") or "nil"
+                if name == "COND_OR":
+                    if cond_state is not None and i == cond_state["info"]["condors"][cond_state["next"]]:
+                        cond_state["tests"].append(cond)
+                        cond_state["next"] += 1
+                        i += 1
+                        continue
+                    cond_info = self._detect_cond(instructions, offset_to_idx, i, end)
+                    if cond_info is not None:
+                        cond_state = {"info": cond_info, "tests": [cond], "next": 1}
+                        i += 1
+                        continue
                 target_offset = inst.offset + inst.size + inst.operands[0] if inst.operands else None
                 pending_logic.append(
                     {
@@ -1920,6 +1966,76 @@ class LispGenerator:
             "else_start": None,
             "else_end": None,
             "after": self._skip_pops(instructions, target_idx, end),
+        }
+
+    def _detect_cond(self, instructions, offset_to_idx, cond_idx, end):
+        """从首个 COND_OR 检测 cond 结构（CAD/本编译器 stub 实测）；非 cond 返回 None。
+
+        结构：
+          test_0 ... COND_OR -> body_0
+          test_1 ... COND_OR -> body_1
+          ...
+          test_{n-1} ... COND_OR -> body_{n-1}
+          PUSH_NIL
+          JUMP -> J_{n-1}          # 默认路径，链式跳过所有 body
+          [body_{n-1}:] POP; result; JUMP -> J_{n-2}
+          ...
+          [body_0:] POP; result
+        """
+        condors: List[int] = []
+        jump_idx = None
+        j = cond_idx
+        while j < end:
+            inst = instructions[j]
+            if inst.op_name == "COND_OR" and inst.operands:
+                condors.append(j)
+                j += 1
+                continue
+            if inst.op_name == "PUSH_NIL" and j + 1 < end and instructions[j + 1].op_name in ("JUMP", "JUMP32"):
+                jump_idx = j + 1
+                break
+            j += 1
+        if not condors or jump_idx is None:
+            return None
+        n = len(condors)
+
+        chain_start = self._branch_target_index(instructions, offset_to_idx, jump_idx)
+        if chain_start is None or instructions[chain_start].op_name not in ("JUMP", "JUMP32"):
+            return None
+        # 链 = 每个 body 尾部 JUMP（除最后发出的 body），共 n-1 个。
+        # 链式结构嵌套 cond 时后续 JUMP 可能属于外层，故只取前 n-1 个链接，
+        # chain_end = 末链接目标（= body_0 尾部，即本 cond 结束处）。
+        chain: List[int] = [chain_start]
+        cur = chain_start
+        while len(chain) < n - 1:
+            tgt = self._branch_target_index(instructions, offset_to_idx, cur)
+            if tgt is None or tgt <= cur:
+                return None
+            if instructions[tgt].op_name not in ("JUMP", "JUMP32"):
+                return None
+            chain.append(tgt)
+            cur = tgt
+        chain_end = self._branch_target_index(instructions, offset_to_idx, chain[-1])
+        if chain_end is None or not (jump_idx < chain_end <= end):
+            return None
+        if len(chain) != n - 1:
+            return None
+        body_starts: List[int] = [0] * n
+        body_ends: List[int] = [0] * n
+        for j, condor in enumerate(condors):
+            start = self._branch_target_index(instructions, offset_to_idx, condor)
+            if start is None or not (jump_idx < start < chain_end):
+                return None
+            if instructions[start].op_name != "POP":
+                return None
+            body_starts[j] = start
+            body_ends[j] = chain_end if j == 0 else chain[n - 1 - j]
+        return {
+            "condors": condors,
+            "body_starts": body_starts,
+            "body_ends": body_ends,
+            "jump_idx": jump_idx,
+            "chain_end": chain_end,
         }
 
     def _looks_structured_condition(self, expr: str) -> bool:
