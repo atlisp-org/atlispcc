@@ -94,7 +94,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     gvar_map: dict = {}
     for idx, v in enumerate(fg):
         if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
-            gvar_map.setdefault(str(v[1]), idx)
+            gvar_map.setdefault(str(v[1]).upper(), idx)
     if not gvar_map:
         return seg0
     from decompiler.fas4_decompiler import Disassembler
@@ -130,7 +130,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 arg_i += 1
                 continue
         # 参数读取 PUSH_VALUE（仅多函数）
-        elif multi and inst.op_name == "PUSH_VALUE" and cur_args is not None and inst.operands:
+        elif multi and inst.op_name == "PUSH_VALUE" and inst.size == 3 and cur_args is not None and inst.operands:
             idx = inst.operands[0]
             argc = len(cur_args)
             i = idx - nsyms + argc
@@ -141,7 +141,9 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                     continue
         # 其余符号引用（仅多函数）：统一用 gvar 槽 - 1
-        if multi and inst.op_name in ("PUSH_VALUE", "PUSH_G", "SETQ_G") and inst.operands:
+        # 注意：CAD stub 中调用后的占位 PUSH_VALUE[0] 是单字节 `03`（size=1），
+        # 并非符号引用，必须跳过，否则被扩展成 3 字节破坏字节一致性。
+        if multi and inst.op_name in ("PUSH_VALUE", "PUSH_G", "SETQ_G") and inst.operands and inst.size == 3:
             sym = sym_of(inst.operands[0])
             if sym and sym in gvar_map:
                 new_idx = gvar_map[sym] - 1
