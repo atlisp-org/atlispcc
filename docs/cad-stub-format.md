@@ -101,7 +101,7 @@
 ```
 PUSH_G <idx:2>       # 参数绑定：codegen 用 nsyms-argc+i，
                       # _patch_usubr_idx 修正为 gvar_slot(arg)-1
-GET_LOCAL <i:2>      # 5c <slot:2>
+GET_LOCAL_WIDE <i:2>  # 5c <slot:2>
 ...
 INIT_ARGS <2*argc+1:2> # 18 05 00
 ```
@@ -244,7 +244,7 @@ GVARINIT(函数数+2, 函数数) + 1c (INIT_DONE)
 每个函数一条，offset 为该函数在 seg0 的字节偏移：
 
 ```
-5c 00 00          # GET_LOCAL 0
+5c 00 00          # GET_LOCAL_WIDE 0
 32 <offset:1>     # PUSH_INT8（offset>127 用 33 <i32>）
 5b <name>\x00 00  # 函数名符号
 3a                # DEFCODE（仅最后一个追加 01）

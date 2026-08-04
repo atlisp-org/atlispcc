@@ -8,6 +8,10 @@
 
 FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操作码表示一个栈操作、控制流指令或函数调用。
 
+> **本文档只描述 seg0 函数字节码的操作码**。seg1 资源流使用另一套**资源码**
+> （加载期建表指令，如 `5b`/`55`/`43`/`3a`/`39`/`1c`），详见
+> [fas-format.md §3.2「资源操作码」](fas-format.md) 与 §3.2a「操作码 vs 资源码」对照。
+
 存在**两种字节码布局**，操作码编码有差异：
 
 | 特性 | 自包含格式 | 紧凑 stub 格式（CAD） |
@@ -78,7 +82,7 @@ FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操
 | 十六进制 | 名称 | 格式 | 描述 | 发射位置 |
 |----------|------|------|------|----------|
 | `05` | GET_LOCAL | `1` | 压入局部变量值（短编码，slot<256） | `_emit_expr`、`_emit_init_args`（自包含格式） |
-| `5c` | GET_LOCAL | `2` | 压入局部变量值（长编码，slot≥256 或 stub 格式） | `_emit_expr`、`_emit_foreach`、`_emit_repeat`、`_emit_init_args`（stub 格式） |
+| `5c` | GET_LOCAL_WIDE | `2` | 压入局部变量值（长编码，slot≥256 或 stub 格式） | `_emit_expr`、`_emit_foreach`、`_emit_repeat`、`_emit_init_args`（stub 格式） |
 | `5d` | SET_LOCAL | `2` | 设置局部变量（栈顶→slot）。不用于 stub 格式 | `_emit_setq_expr`（局部 setq）、`_emit_foreach`（循环变量）、`_emit_repeat`（计数器更新）、`_emit_tail_call`（参数重绑定） |
 | `5e` | CLEAR_LOCAL | `2` | 清空局部变量为 nil（项目中未使用） | — |
 
@@ -159,9 +163,9 @@ FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操
 ; (defun f2 (a b) (+ a b))
 14 02 02 02 00   DEFUN argc=2
 09 03 00         PUSH_G 槽3 (a)       ; 参数符号名
-5c 00 00         GET_LOCAL 0          ;   →局部槽 0
+5c 00 00         GET_LOCAL_WIDE 0     ;   →局部槽 0
 09 02 00         PUSH_G 槽2 (b)       ; 参数符号名
-5c 01 00         GET_LOCAL 1          ;   →局部槽 1
+5c 01 00         GET_LOCAL_WIDE 1     ;   →局部槽 1
 18 05 00         INIT_ARGS 5          ; 2*argc+1=5
 03 03 00         PUSH_VALUE 槽3 (a)   ; 取 a 的值
 03 02 00         PUSH_VALUE 槽2 (b)   ; 取 b 的值
@@ -542,6 +546,33 @@ JUMP func_entry
 | `encode_defun(gvar, offset)` | 5 字节 | `encode_defun(1, 0)` → `14 01 00 00 00` |
 | `encode_eval(argc, flag)` | 3 字节 | `encode_eval(1, 0)` → `34 01 00` |
 | `encode_real(value)` | 可变 | `encode_real(3.14)` → `3b 33 2e 31 34 00` |
+
+---
+
+## 验证状态（2026-08-04）
+
+对操作码定义与编码的完整验证结果：
+
+**正确性确认 ✅**
+- `asm/opcodes.py` 与 `Disassembler.OPCODES` 两个表**完全一致**（`test_opcode_tables_in_sync` 守护）
+- 79 个 CAD golden/参考 FAS 反汇编**无未知 opcode**（`UNK_` 计数为 0）
+- 16 个 CAD golden + 15 个自产物 `disasm → asm` 往返 **seg0 字节级一致**
+- 全部编码函数输出与文档一致（`encode_usubr3`/`encode_func3`/`encode_op_*` 等 12 项抽查全对）
+- 11/15 的 t-series 与 CAD 编译器**逐字节一致**（seg0 + seg1 资源项均一致）
+- 关键语义 opcode 实测正确：`BR_IF_TRUE(0x67)` stub 条件跳转、`COND_OR(0x68)` cond 编译、
+  `CLEAR_ARGS(0x19)` stub 3 字节 `19 <argc:2> <00>`、`USUBR(0x35)`/`FUNC(0x51)` stub 3 字节
+
+**GET_LOCAL 二义性**：`0x05`（短）与 `0x5c`（宽）均为局部变量读取，但操作数宽度不同；
+`0x5c` 的规范名称为 `GET_LOCAL_WIDE`（与 `0x05` 的 `GET_LOCAL` 区分），汇编 `GET_LOCAL_WIDE N`
+强制发 `5c <u16>`，往返无损。
+
+**遗留差异非 opcode 问题**：t10/t11/t12/t14 与 CAD 的差异**不在操作码编码**，而在：
+- seg1 资源段符号槽顺序/构建（t10 混合模式、t12 常量顺序、t14 `vl-ACAD-defun`）
+- codegen 缺 `_al-bind-alist` 局部变量绑定序列（t11：CAD 用 `PUSH_G+FUNC`，我们直接
+  `PUSH_INT8+SETQ_G`——操作码均合法，只是生成策略不同）
+
+资源段指令（`0x43` GVARINIT、`0x55`/`0x56`/`0x5b` 符号/字符串、`0x3a` DEFCODE、`0x1c`
+INIT_DONE）不属于字节码 OPCODES 表，由 `ResourceBuilder`/`core.fas_core` 硬编码处理。
 
 ---
 

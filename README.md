@@ -27,7 +27,7 @@ python -m decompiler.fas4_decompiler input.fas output.lsp   # 反编译
 python -m tools.validate output.lsp                          # 验证
 ```
 
-> 在源码仓库中也可用 `python -m` 形式直接运行：`python -m compiler.cli ...`、`python -m decompiler.fas4_decompiler ...`、`python -m tools.validate ...`（**注意**：不要用 `python compiler/cli.py` 直接运行——`compiler/ast.py` 会遮蔽 stdlib `ast` 导致循环导入）。
+> 在源码仓库中也可用 `python -m` 形式直接运行：`python -m compiler.cli ...`、`python -m decompiler.fas4_decompiler ...`、`python -m tools.validate ...`（`python compiler/cli.py` 与 `python -m compiler.cli` 均可用——AST 模块已改名 `ast_nodes.py`，不再遮蔽 stdlib `ast`）。
 
 ## CLI 快速参考
 
@@ -203,6 +203,13 @@ atlispcc validate combined.lsp
 
 ## 在 CAD 中测试
 
+**自动化真机验证**（推荐）：
+```sh
+make cad-test    # 或: python scripts/cad_verify.py
+```
+`scripts/cad_verify.py` 逐个编译 t01-t15 → 在 CAD 加载 → 断言返回值（14 项通过）。
+
+手动测试：
 ```lisp
 ;; 加载编译后的 FAS 文件
 (load "D:/atlisp-test/add.fas")
@@ -280,7 +287,7 @@ atlispcc validate output.lsp
 
 ## 工具脚本
 
-源码仓库内的辅助分析工具（`tools/`，**不随 pip 包分发**，仅仓库内可用）：
+源码仓库内的辅助分析工具（`tools/`，随 pip 包一起分发，可用 `python -m` 形式调用）：
 
 - `tools.fas-analyzer` — FAS4 文件分析（`--dump`/`--json`）
 - `tools.fas-split` — 函数分割（`--trim`/`--outdir`）
@@ -305,6 +312,19 @@ atlispcc validate output.lsp
 - 外部依赖（其他 `.fas`、`.vlx`、`.arx`、`.dcl`、`.odcl`、`.lsp`）不会自动打包
 - 部分行为从字节码推断，非原始源码恢复
 - 输出可能需要手动清理
+
+## 开发者
+
+仓库提供 Makefile 快捷目标（`make help` 查看全部）：
+
+```sh
+make test        # pytest 全量测试
+make check       # 一键全量检查（py_compile + pytest + disasm→asm 往返 + byte-identity）
+make lint        # black --check + mypy
+make format      # black 格式化
+make build       # 构建分发包
+make clean       # 清理构建产物与缓存
+```
 
 ## 文档
 

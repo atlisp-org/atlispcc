@@ -164,8 +164,8 @@
 
 ### GET_LOCAL_WIDE（长编码局部变量）
 
-`GET_LOCAL` 存在两种字节编码：短形式 `05 <slot:1>` 与长形式 `5c <slot:2>`。
-反汇编器对长形式输出助记符 `GET_LOCAL_WIDE` 以区分；汇编 `GET_LOCAL_WIDE N` 强制编码为 `5c <u16>`。
+`GET_LOCAL` 存在两种字节编码：短形式 `05 <slot:1>`（助记符 `GET_LOCAL`）与长形式
+`5c <slot:2>`（助记符 `GET_LOCAL_WIDE`，规范名称）。汇编 `GET_LOCAL_WIDE N` 强制编码为 `5c <u16>`。
 
 ```
 0x000a: GET_LOCAL_WIDE 0      ; = 5c 00 00（3 字节）

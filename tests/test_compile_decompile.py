@@ -9,7 +9,7 @@ from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
-from compiler.ast import Defun
+from compiler.ast_nodes import Defun
 from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
 from tools.validate import tokenize, parse_tokens, validate_ast
 
@@ -37,7 +37,7 @@ def compile_and_decompile(src: str) -> str:
     symtab.collect_symbols(program)
 
     codegen = CodeGenerator(symtab)
-    from compiler.ast import Defun
+    from compiler.ast_nodes import Defun
 
     all_bc = BytecodeBuffer()
     func_offsets = {}
@@ -239,20 +239,54 @@ def test_complex_lsp_roundtrip_opt_level(level):
             os.unlink(out_path)
 
 
+def test_i18n_mixed_mode_roundtrip():
+    """Round-trip i18n.lsp (defun + top-level interleaved, C2 target) via CLI.
+
+    Mixed-mode files interleave defun definitions with top-level setq/princ;
+    the CLI pipeline compiles top-level forms into seg1 module code (CAD
+    standard). The roundtrip must decompile to valid, validated Lisp.
+    """
+    from compiler.cli import cmd_compile
+    src_path = os.path.join(os.path.dirname(__file__), 'cad', 'i18n.lsp')
+    if not os.path.exists(src_path):
+        pytest.skip('tests/cad/i18n.lsp mixed-mode fixture not present')
+    with open(src_path, encoding='utf-8') as f:
+        src = f.read()
+    out_path = os.path.join(tempfile.gettempdir(), f'i18n_rt_{os.urandom(4).hex()}.fas')
+    try:
+        cmd_compile(src, out_path)
+        parser = Fas4Parser()
+        fas = parser.parse(out_path)
+        disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+        insts = disasm.disassemble(fas.bytecode, fas.nsyms)
+        cfa = ControlFlowAnalyzer(insts, fas.function_catalog)
+        funcs = cfa.find_functions()
+        gen = LispGenerator(fas)
+        result = gen.generate(funcs, out_path)
+        ok, errs = _validate(result)
+        assert ok, f'i18n mixed-mode validation failed: {errs}'
+    finally:
+        if os.path.exists(out_path):
+            os.unlink(out_path)
+
+
 _T_SERIES = [
-    't01_math', 't02_recursion', 't03_fib', 't06_strcat', 't07_list',
-    't08_apply_mapcar', 't09_funcall', 't10_init', 't11_localvars',
-    't12_quote', 't13_nested_if', 't14_command', 't15_cad_funcs',
+    't01_math', 't02_recursion', 't03_fib', 't04_while', 't05_cond',
+    't06_strcat', 't07_list', 't08_apply_mapcar', 't09_funcall', 't10_init',
+    't11_localvars', 't12_quote', 't13_nested_if', 't14_command', 't15_cad_funcs',
 ]
 
 
 @pytest.mark.parametrize('name', _T_SERIES)
 def test_t_series_roundtrip(name):
-    """Compile→decompile→validate each CAD-compat matrix source (t01-t15)."""
+    """Compile→decompile→validate each CAD-compat matrix source (t01-t15).
+
+    Sources live in tests/cad/ alongside their CAD `vlisp-compile` goldens.
+    """
     from compiler.cli import cmd_compile
-    src_path = os.path.join(os.path.dirname(__file__), f'{name}.lsp')
+    src_path = os.path.join(os.path.dirname(__file__), 'cad', f'{name}.lsp')
     if not os.path.exists(src_path):
-        pytest.skip(f'tests/{name}.lsp fixture not present')
+        pytest.skip(f'tests/cad/{name}.lsp fixture not present')
     with open(src_path, encoding='utf-8') as f:
         src = f.read()
     out_path = os.path.join(tempfile.gettempdir(), f't_{name}_{os.urandom(4).hex()}.fas')

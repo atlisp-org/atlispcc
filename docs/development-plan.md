@@ -70,9 +70,10 @@
   （AutoCAD `vlisp-compile` 实测：`/` 局部变量不计入头）
 - `&optional`：`14 <max> <min> <max> 00`；`&rest`：`14 <min>x3 01`
 
-### 2.3 代码测试 200/200 ✅
+### 2.3 代码测试 239/239+4xfail ✅
 
-全部通过（含 `tests/test_variadic_args.py` 5 用例与 `test_t_series_roundtrip` 13 用例）。
+全部通过（含 `tests/test_variadic_args.py` 5 用例与 `test_t_series_roundtrip` 15 用例、
+`tests/test_resource_stream.py` 24 用例资源码专项）。
 新增：`tests/conftest.py` 已撤销（CLI 管线与裸管线顶层表达式差异，见 `AGENTS.md`「测试中的关键陷阱」）。
 
 ---
@@ -273,7 +274,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | P0 | t-series 剩余符号槽差异（t03/t09-t15） | 字节级兼容补齐（见 8.C1） |
 | P0 | i18n.lsp 混合模式 | defun+顶层交错持续块规则（见 8.C2） |
 | P1 | 工具链健壮性 | `compiler/cli.py` ast 遮蔽、README/打包矛盾、validate 补强（见 8.A） |
-| P1 | 测试与 CI 完善 | t03/t09-t15 byte-identity 回归、mypy、twine check（见 8.B） |
+| P1 | 测试与 CI 完善 | t-series byte-identity 回归（已落地 15 份 golden，11 项 identical，4 项 xfail）、i18n roundtrip、mypy、twine check（见 8.B） |
 | P2 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见 8.D） |
 | P2 | CAD 加载器内部逆向 | gvar 表精确模型 |
 | P2 | 性能与多版本兼容 | 工具链健壮性 |
@@ -284,8 +285,8 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 ## 6. 验收标准
 
-- **P0 完成**：`pytest` 200/200 通过；t01-t15 全部与 CAD golden 逐字节一致；i18n 混合模式字节一致
-- **P1 完成**：工具链健壮性修复落地；t03/t09-t15 byte-identity 回归不 xfail；CI 绿
+- **P0 完成**：`pytest` 200/200 通过；t-series 与 `tests/cad/` golden 逐字节一致（见 §8.C）；i18n 混合模式字节一致
+- **P1 完成**：工具链健壮性修复落地；t-series byte-identity 回归（239 passed + 4 xfailed）；i18n roundtrip 用例通过；CI 绿
 - **P2 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过；多版本 CAD 兼容；大文件性能达标
 
 ---
@@ -299,53 +300,70 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 ---
 
-## 8. 功能完善开发计划（2026-08）
+## 8. 功能完善开发计划（2026-08 版，v0.1.9 → v0.2）
 
 > 基于 v0.1.9（200/200 测试通过，9 个 golden 对字节一致）与 CAD golden 实测
-> 差异分析制定。四个方向按优先级：**字节级 CAD 兼容补齐（P0）** →
-> **工具链健壮性 / 测试与 CI（P1）** → **ZELX 复杂文件压缩（P2）**。
+> 差异分析制定。**均衡推进 A（健壮性）+ B（测试/CI）+ C（字节兼容）**，
+> ZELX（D）最后。
+>
+> **golden 实测样本位置**（本次核实）：全部位于 `tests/cad/`——
+> `t*.fas`（CAD 官方产物，配套 `t*.lsp` 源与 `t*_atlispcc.fas` 我方产物对比）、
+> `cadtest_v10-17.fas`（含 `.lsp`/反编译对照）、`i18n-cad.fas`/`i18n.fas`（i18n 混合模式目标）。
+> 原计划引用的 `D:/atlisp-test/cad_t*.fas` **当前不存在**，golden 一律以 `tests/cad/` 为准。
+>
+> **t-series golden 已补齐**（2026-08-04，AutoCAD 24.1s `vlisp-compile` 生成）：
+> 源码与 golden 均自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，15 份，含 t04/t05）。
+> 字节一致状态：
+> t01-t09/t13/t15 **byte-identity**（11 项已入 `test_t_series_byte_identity` 回归，
+> 2026-08-04 新增转正：t03/t09/t13/t15）；t10/t11/t12/t14 仍 xfail——其中 t12/t14
+> **字节码已与 CAD 一致**（仅资源段差异，CAD 实测可加载执行），t10 属混合模式（C2）、
+> t11 需 `_al-bind-alist` 局部变量协议。新增用例使总数 239 passed + 4 xfailed。
 
 ### 8.A 工具链健壮性（P1）
 
 | 任务 | 说明 |
 |------|------|
-| A1 修复 `python compiler/cli.py` 崩溃 | `compiler/ast.py` 遮蔽 stdlib `ast` 导致循环导入。建议重命名 `ast.py` → `ast_nodes.py`（更新全部 import）；或保留现状仅文档说明 |
-| A2 README 与打包矛盾 | 实测 wheel 已含 `tools/*.py`（15 个文件），README 却写"不随 pip 包分发"。修正表述 |
-| A3 validate.py 门禁补强 | 对应 §3.8 方案 A：增危险函数 `quit`/`exit`/`startapp`、未使用变量检测（~5 条），保持自包含 |
-| A4 `--analyze` 统计增强 | 补优化前后指令数差、符号槽数、seg 大小 |
+| A1 修复 `python compiler/cli.py` 崩溃 | ✅ **已修复**（2026-08-04）：`compiler/ast.py` 改名 `ast_nodes.py` 并更新全部 import（15 个文件），双入口 `python compiler/cli.py` 与 `python -m compiler.cli` 均可运行 |
+| A2 README 与打包矛盾 | `pyproject.toml` `packages.find` 已含 `tools*`（会随 wheel 分发），README §工具 却写"不随 pip 包分发"。修正 README 表述 |
+| A3 validate.py 门禁补强 | ✅ **已补**（2026-08-04）：新增 `validate_danger`（quit/exit/startapp warn）+ `validate_unused`（/ 局部变量未使用 warn），warn 不阻断返回码；附 4 个测试用例 |
+| A4 `--analyze` 统计增强 | ✅ **已补**（2026-08-04）：analyze 增 `symbol_slots`（stub nsyms 估算）；CLI `--analyze` 输出符号槽数、优化前后指令/符号槽 delta、编译后 seg0/seg1 字节数与实际 nsyms |
 
 ### 8.B 测试与 CI 完善（P1）
 
 | 任务 | 说明 |
 |------|------|
-| B1 t-series byte-identity 回归 | 把 `D:/atlisp-test/cad_t*.fas`（8/3 重新编译）拷入 `tests/cad/`，为 t03/t09-t15 增参数化 golden 用例；先 `xfail`（附差异说明），修复后转正 |
-| B2 CI mypy 校验 | CI 已跑 `mypy .`（4 版本矩阵）；本机无法装 mypy 验证，需单独确认零错误 |
-| B3 twine check 依赖 | dev 依赖补 `readme-renderer`，或发布文档注明 |
-| B4 混合模式 roundtrip 测试 | `tests/cad/i18n.lsp` 即混合模式 fixture，加 roundtrip 用例 |
+| B1 ~~t-series byte-identity 回归~~ | **恢复并已落地**（2026-08-04）：源码与 golden 自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，15 份）。`test_t_series_byte_identity` 覆盖 11 项（t01-t09/t13/t15），`test_t_series_byte_identity_known_diff` 覆盖 t10/t11/t12/t14（xfail，修复一个移一个）。t12/t14 字节码已一致，仅资源段差异 |
+| B2 CI mypy 校验 | CI 已跑 `mypy .`（3.10-3.13 矩阵，`pyproject.toml` 已配 mypy `python_version=3.10`）；本机 Python 3.9 无 mypy，以 CI 结果为准 |
+| B3 twine check 依赖 | ✅ **已补**（2026-08-04）：dev 依赖加 `build`/`readme-renderer`/`twine` |
+| B4 混合模式 roundtrip 测试 | ✅ **已加**（2026-08-04）：`test_i18n_mixed_mode_roundtrip`（`tests/cad/i18n.lsp` 编译→反编译→validate 通过，与 C2 共用目标） |
 
 ### 8.C 字节级 CAD 兼容补齐（P0，核心）
-
-**C1 符号槽序差异修复（t03/t09-t15，已实测定位）**
 
 实测差异汇总（`cad_symbols.py` 符号收集序与 CAD 不一致）：
 
 | 文件 | 差异数 | 差异形态 | 根因假设 |
 |---|---|---|---|
-| t03_fib | 9 处 | 偏移 -1（cc 槽=CAD 槽+1） | 递归多函数 USUBR/符号去重序 |
-| t09_funcall | 9 处 | 偏移 -1 | 同上（funcall 场景） |
-| t10_init | 4 处 | 偏移 +2/-2 | 顶层/init 符号序 |
-| t11_localvars | 59 处（-9 len） | 最大缺口 | 局部变量符号槽收集规则（`_al-bind-alist`） |
-| t12_quote | 13 处（+2 len） | 长度不同 | quote 常量符号处理 |
-| t13_nested_if | 9 处 | 槽 2↔4 互换 | if 嵌套参数槽序 |
-| t14_command | 1 处 | cc=06 cad=05 | `c:` 命令函数参数槽 |
-| t15_cad_funcs | 10 处 | 槽 4↔6、3↔5 互换 | 多独立函数 builtin 去重序 |
+| t03_fib | ✅ **已修复**（2026-08-04） | 递归函数名多次自身调用共享重复槽（t03 递归两次仅 1 重复 FIB） |
+| t09_funcall | ✅ **已修复**（2026-08-04） | 同函数内跨函数调用共享重复槽（sum-of-squares 两次调用 square） |
+| t10_init | 4 处 | 偏移 +2/-2 | 顶层/init 符号序（混合模式，见 C2） |
+| t11_localvars | 59 处（-9 len） | 最大缺口 | `_al-bind-alist` 局部变量绑定协议（CAD 实测功能正确，字节级需复刻绑定序列） |
+| t12_quote | 字节码已一致 | 仅资源段常量构建顺序 | dotted `'(1 . 2)` 常量注册（CAD 实测功能正确） |
+| t13_nested_if | ✅ **已修复**（2026-08-04） | 单函数参数绑定/读取逆序（simple3/t13 实测 `+ Z Y X`） |
+| t14_command | 字节码已一致 | 缺 `vl-ACAD-defun` 资源注册 | c: 命令识别（CAD 实测 `(c:add 3 4)`→7 可执行） |
+| t15_cad_funcs | ✅ **已修复**（2026-08-04） | 共享参数槽位（源码序最先使用者之后）+ 字符串 gvar 槽 |
 
-技术路线（每项用 CAD golden 实测迭代 `CadSymbolCollector`）：
-1. t15/t13（简单 swap）：改 `_collect_byteorder` 中 builtin 与函数名的去重顺序
-2. t03/t09（偏移 -1）：检查递归函数名重复槽与 builtin 共享槽的先后
-3. t11（局部变量）：`_collect_byteorder` 处理 `/ local` 符号的 CAD 特殊顺序（对照 `_al-bind-alist` 逆向）
-4. t12（quote 常量）：`to_const`/CONST_MARK 注册序与 CAD 的 LIST 块合并差异
-5. t14（c: 命令）：`c:` 前缀函数参数槽规则
+技术路线（每项用 `tests/cad/` golden 实测迭代 `CadSymbolCollector`）：
+1. ~~t15/t13（简单 swap）~~ ✅：改 `_collect_byteorder` builtin/函数名去重序、共享参数槽位、单函数参数逆序
+2. ~~t03/t09（偏移 -1）~~ ✅：递归/跨函数调用重复槽共享（多次调用仅 1 重复槽）
+3. t11（局部变量）：`_al-bind-alist` 绑定协议（对照 `_al-bind-alist` 逆向，codegen 生成绑定序列）
+4. t12（quote 常量）：dotted 常量已支持，资源段常量构建顺序待对齐
+5. t14（c: 命令）：字节码一致，补 `vl-ACAD-defun` 资源注册（§4.3 P1）
+
+> **样本来源**：源码与 golden 自包含于 `tests/cad/`——`t0X_xxx.lsp`（源）+
+> `t0X_xxx_cad.fas`（CAD `vlisp-compile` 2026-08-04 生成，15 份，含 t04/t05），
+> 另有 `tests/cad/t*.fas`/`t*_atlispcc.fas` 成对对比样本。t01/t02/t04/t05/t06/t07/t08/t15 已
+> byte-identity 回归（`test_t_series_byte_identity`）；t03/t09-t14 差异由
+> `test_t_series_byte_identity_known_diff` xfail 守护。
 
 **C2 i18n 混合模式（最大缺口，1139 字节差 / -69 len）**
 
@@ -355,13 +373,14 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
   1. 扩展 `CadSymbolCollector.collect_program` 支持 defun/顶层交错时的"持续块规则"
      （顶层表达式符号在函数体内建之前，按源码序跨块收集）
   2. `ResourceBuilder.build` 的 `module_entries` 切分逻辑改为按交错序
-  3. 用 `tests/cad/i18n.lsp` + `i18n-cad.fas` 迭代至字节一致
+  3. 用 `tests/cad/i18n.lsp` + `tests/cad/i18n-cad.fas` 迭代至字节一致
 - 验收：`i18n.lsp` 编译 seg0/seg1 与 CAD 逐字节一致
 
 **C3 补充 CAD 验证样本**
 
-- 建立 `samples/cad-compare/` 新样本集（while/cond/局部变量/foreach/repeat/
-  递归多函数/c: 命令），供 C1/C2 迭代对照
+- 扩充 `tests/cad/` 样本集（while/cond/局部变量/foreach/repeat/递归多函数/c: 命令），
+  供 C1/C2 迭代对照；新增样本需 CAD 实测产出（受 §3.7 环境稳定性约束，
+  用独立实例 + 快照流程）
 
 ### 8.D ZELX 复杂文件压缩（P2）
 
@@ -372,14 +391,13 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 ### 8.E 执行顺序与验收
 
-**执行顺序**：
-1. **8.C 先行**（P0）：t15→t13→t03/t09→t14→t12→t11→C2 i18n
-2. **8.B 并行**：B1 建立 xfail 回归框架，修复一个转正一个
-3. **8.A 穿插**（低风险）：A1 ast 重命名、A2 文档、A3 validate
-4. **8.D 最后**（P2，独立）
+**执行顺序（均衡推进 A+B+C）**：
+1. **8.A + 8.B 先行**（P1，低风险、可独立并行）：A1 ast 重命名、A2 文档、A3 validate、A4 analyze、B2 mypy、B3 readme-renderer、B4 i18n roundtrip
+2. **8.C 穿插**（P0，核心）：t15→t13→t03/t09→t14→t12→t11→C2 i18n（每项用 `tests/cad/` golden 迭代）
+3. **8.D 最后**（P2，独立）
 
 **验收标准**：
-- **8.C 完成**：t01-t15 全部与 CAD golden 逐字节一致；i18n 混合模式字节一致；`pytest` 全绿
-- **8.A 完成**：`python compiler/cli.py` 可运行；README 无矛盾；validate 增规则有测试
-- **8.B 完成**：t03/t09-t15 有 byte-identity 回归（转正后不 xfail）；CI 绿
+- **8.A 完成**：`python compiler/cli.py` 与 `python -m compiler.cli` 双入口可运行（✅）；README 无矛盾；validate 增规则有测试；`--analyze` 输出新增统计字段
+- **8.B 完成**：t-series byte-identity 回归落地（239 passed + 4 xfailed，11 项 identical，新增 test_resource_stream 24 用例）；B4 i18n roundtrip 用例通过；CI 绿（mypy + pytest）；dev 依赖含 readme-renderer
+- **8.C 完成**：t10/t11/t12/t14 由 xfail 全部转正为 byte-identity（移入 `CAD_T_SERIES_IDENTICAL`；t03/t09/t13/t15 已于 2026-08-04 转正）；i18n 混合模式字节一致；`pytest` 全绿（无 xfail）
 - **8.D 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过

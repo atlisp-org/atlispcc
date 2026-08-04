@@ -75,6 +75,49 @@ def test_cmd_validate_fail():
         os.unlink(p)
 
 
+def test_validate_dangerous_funcs_warn():
+    """quit/exit/startapp must be flagged (warning) but still validate (rc 0)."""
+    from tools.validate import tokenize, parse_tokens, validate_ast, validate_danger
+    src = '(defun run () (startapp "cmd.exe" "dir"))\n(defun stop () (quit))\n'
+    tokens, _ = tokenize(src)
+    forms, _ = parse_tokens(tokens)
+    assert validate_ast(forms) == []
+    warns = validate_danger(forms)
+    assert len(warns) == 2
+    assert all('dangerous' in w for w in warns)
+
+
+def test_validate_unused_local_warns():
+    """Declared-but-unused / locals must be flagged as warnings."""
+    from tools.validate import tokenize, parse_tokens, validate_unused
+    src = '(defun foo (x / a b) (+ x 1))\n'
+    tokens, _ = tokenize(src)
+    forms, _ = parse_tokens(tokens)
+    warns = validate_unused(forms)
+    names = [w for w in warns]
+    assert any('a' in w for w in names)
+    assert any('b' in w for w in names)
+    # used local must not warn
+    src2 = '(defun foo (x / a) (setq a (+ x 1)) a)\n'
+    tokens, _ = tokenize(src2)
+    forms, _ = parse_tokens(tokens)
+    assert validate_unused(forms) == []
+
+
+def test_validate_danger_unused_cli_rc_zero():
+    """CLI validate still returns 0 when only warnings are present."""
+    from tools.validate import validate_file
+    from pathlib import Path
+    p = _tmp('warn.lsp')
+    with open(p, 'w') as f:
+        f.write('(defun run () (startapp "cmd"))\n')
+    try:
+        assert validate_file(Path(p)) is True
+        assert cmd_validate(p) == 0
+    finally:
+        os.unlink(p)
+
+
 def test_cmd_link_roundtrip():
     f1 = cmd_compile('(defun a (x) (+ x 1))', _tmp('a.fas'))
     f2 = cmd_compile('(defun b (x) (a x))', _tmp('b.fas'))

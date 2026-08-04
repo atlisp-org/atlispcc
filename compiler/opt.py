@@ -1,7 +1,7 @@
 """AST optimization passes for the FAS4 compiler."""
 
 from typing import Dict, List, Optional, Set, Tuple, Any, Union
-from compiler.ast import (
+from compiler.ast_nodes import (
     Node,
     Program,
     Symbol,

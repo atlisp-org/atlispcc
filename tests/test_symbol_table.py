@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, '.')
 
 from compiler.parser import Parser
-from compiler.ast import Defun, Setq, Call, Symbol
+from compiler.ast_nodes import Defun, Setq, Call, Symbol
 from compiler.symbol_table import SymbolTable, BUILTIN_FUNCTIONS
 from compiler.packages import PackageTable
 

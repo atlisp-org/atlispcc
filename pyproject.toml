@@ -17,6 +17,9 @@ dev = [
     "pytest>=7.0.0",
     "black>=22.3.0",
     "mypy>=1.0.0",
+    "build>=1.0.0",
+    "readme-renderer>=40.0",
+    "twine>=5.0.0",
 ]
 
 [project.scripts]

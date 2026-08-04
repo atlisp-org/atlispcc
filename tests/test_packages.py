@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from compiler.parser import Parser
 from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
-from compiler.ast import Defun, Symbol, Call
+from compiler.ast_nodes import Defun, Symbol, Call
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
 from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator

@@ -2,7 +2,7 @@ import sys
 sys.path.insert(0, '.')
 
 import pytest
-from compiler.ast import (
+from compiler.ast_nodes import (
     Program, Defun, Symbol, Integer, String, Call, Setq,
     IfNode, WhileNode, Progn, Cond, ForeachNode, RepeatNode,
 )

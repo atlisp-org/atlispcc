@@ -1,6 +1,6 @@
 from typing import List, Optional
 from compiler.lexer import tokenize, Token
-from compiler.ast import (
+from compiler.ast_nodes import (
     Node, Program, Symbol, Integer, Real, String,
     ListExpr, QuotedExpr, Defun, Setq, IfNode, WhileNode,
     ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,

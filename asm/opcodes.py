@@ -21,7 +21,7 @@ OPCODES = {
     0x46: ('FIX_ADD', ''), 0x47: ('FIX_SUB', ''), 0x48: ('FIX_MUL', ''), 0x49: ('FIX_DIV', ''),
     0x4a: ('FIX_MOD', ''), 0x4b: ('FIX_LEQ', ''), 0x4c: ('FIX_GEQ', ''), 0x4d: ('FIX_LT', ''),
     0x4e: ('FIX_GT', ''), 0x4f: ('INC', ''), 0x50: ('DEC', ''),
-    0x51: ('FUNC', 'f'), 0x57: ('JUMP', 's4'), 0x5c: ('GET_LOCAL', '2'),
+    0x51: ('FUNC', 'f'), 0x57: ('JUMP', 's4'), 0x5c: ('GET_LOCAL_WIDE', '2'),
     0x5d: ('SET_LOCAL', '2'), 0x5e: ('CLEAR_LOCAL', '2'), 0x62: ('NOP_62', ''), 0x63: ('NOP_63', ''),
     0x67: ('BR_IF_TRUE', 's4'), 0x68: ('COND_OR', 's4'), 0x69: ('JUMP32', 's4'),
     0x6a: ('AND', 's4'), 0x6b: ('AND2', 's4'),

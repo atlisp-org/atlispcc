@@ -18,7 +18,7 @@ CAD 紧凑 stub 格式按符号槽编址。符号槽注册顺序按文件结构�
 逆向来源：samples/cad-compare/（m2/m3/cross/sh/multi 的 CAD 官方产物）与
 tests/（fact/fun/sf_cond/mix 的 CAD 官方产物）。
 """
-from compiler.ast import (
+from compiler.ast_nodes import (
     Symbol, String, Integer, Real, ListExpr, QuotedExpr,
     Defun, Setq, IfNode, WhileNode, ForeachNode, RepeatNode, Call, Progn,
     LambdaNode, Cond,
@@ -54,11 +54,16 @@ def to_const(node):
             return None
         return ('LIST', (('SYMBOL', 'lambda'), params) + body)
     if isinstance(node, ListExpr):
-        if node.dotted is not None:
-            return None
+        # CAD 把 dotted 引用 `'(1 . 2)` 编译为普通列表常量 `(1 2)`
+        # （resource 流 `INT8 1; INT8 2; BUILD_LIST 2`，t12_quote 实测）。
         items = tuple(to_const(i) for i in node.items)
         if any(i is None for i in items):
             return None
+        if node.dotted is not None:
+            d = to_const(node.dotted)
+            if d is None:
+                return None
+            items = items + (d,)
         return ('LIST', items)
     if isinstance(node, Call):
         items = (to_const(Symbol(node.name)),) + tuple(to_const(a) for a in node.args)
@@ -76,7 +81,6 @@ class CadSymbolCollector:
     def __init__(self):
         self.names = []
         self.shared = set()
-        self.deferred = []
         self.func_names = set()
 
     def add(self, name, force=False):
@@ -109,7 +113,6 @@ class CadSymbolCollector:
             for a in f.args:
                 arg_usage[a] = arg_usage.get(a, 0) + 1
         self.shared = {a for a, c in arg_usage.items() if c > 1}
-        self.deferred = []
 
         if len(defuns) <= 1:
             return self._collect_single(defuns, others)
@@ -126,11 +129,15 @@ class CadSymbolCollector:
             self.add(name, force=force)
 
         # 3. 函数体符号：按字节码引用序收集，逆序注册；唯一参数紧跟所属函数，
-        #    共享参数最后。CAD 实测（f4/f4b/f4c/f4d/f4e/f4x/f4r/f5/m3/cross/sh）：
+        #    共享参数注册在其源码序最先使用的函数之后。CAD 实测
+        #    （f4/f4b/f4c/f4d/f4e/f4x/f4r/f5/m3/cross/sh/multi/rt_e/t15）：
         #    函数体内符号按"字节码首次引用序"（后序：先内层调用后外层函数名，
         #    即 USUBR 出现序）逐函数收集，源函数序拼接、先到先得去重后整体逆序；
-        #    逆序后每函数引用组连续（源逆序），其唯一参数按逆序紧跟组末，
-        #    跨函数共享参数推迟到最后统一注册。链式/递归交叉调用下函数名
+        #    逆序后每函数引用组连续（源逆序），其唯一参数按逆序紧跟组末；
+        #    跨函数共享参数注册在**源码序最先使用它的函数**（逆序迭代最后一个
+        #    使用者）之后——multi 中 a/b 最先被源码第 0 个函数 add 使用，槽序
+        #    排末尾；t15 中 p1/p2 最先被 get-dist（源码第 1 个）使用，槽序 =
+        #    …DISTANCE, P2, P1, GETPOINT, STRING。链式/递归交叉调用下函数名
         #    由调用者引用组登记（递归名不重复槽）。
         seen_refs = set()
         kept_refs = []
@@ -139,26 +146,41 @@ class CadSymbolCollector:
             arg_names = set(f.args)
             for expr in f.body:
                 self._collect_byteorder(expr, refs, arg_names)
-            kept = [(n, fr) for n, fr in refs if n not in seen_refs]
-            seen_refs.update(n for n, _ in refs)
+            # 同一函数内对函数名的多次调用共享同一个重复槽（t09 中 sum-of-squares
+            # 两次调用 square 仅 1 个重复 SQUARE 槽；CAD 实测）。
+            seen_forced = set()
+            intra_dedup = []
+            for name, fr in refs:
+                if fr and name in seen_forced:
+                    continue
+                intra_dedup.append((name, fr))
+                if fr:
+                    seen_forced.add(name)
+            kept = [(n, fr) for n, fr in intra_dedup if n not in seen_refs]
+            seen_refs.update(n for n, _ in intra_dedup)
             kept_refs.append(kept)
 
-        for f, kept in zip(reversed(defuns), reversed(kept_refs)):
+        nfuncs = len(defuns)
+        # 每个共享参数：记录源码序最先使用它的函数索引（逆序迭代最后处理到）。
+        shared_first_user = {}
+        for i, f in enumerate(defuns):
+            for arg in f.args:
+                if arg in self.shared and arg not in shared_first_user:
+                    shared_first_user[arg] = i
+
+        for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             for name, force in reversed(kept):
                 self.add(name, force=force)
             for arg in reversed(f.args):
                 if arg in self.shared:
-                    if arg not in self.deferred:
-                        self.deferred.append(arg)
+                    # 逆序迭代索引 i 对应源码索引 nfuncs-1-i。
+                    if shared_first_user.get(arg) == nfuncs - 1 - i:
+                        self.add(arg)
                 elif arg not in self.names:
                     self.add(arg)
             for loc in reversed(f.locals):
                 self.add(loc)
 
-        # 4. 共享参数最后（CAD：跨函数共享的局部变量槽排末尾）
-        for arg in self.deferred:
-            if arg not in self.names:
-                self.add(arg)
         return self.names
 
     def _collect_single(self, defuns, others):
@@ -179,15 +201,27 @@ class CadSymbolCollector:
         for name, force in reversed(refs):
             self.add(name, force=force)
 
-        # 3. 函数体符号：字节码引用序正序收集，逆序注册；参数最后（共享不特殊处理）
+        # 3. 函数体符号：字节码引用序正序收集，逆序注册；参数最后（共享不特殊处理）。
+        #    CAD 单函数参数槽逆序（实测 simple3/t13：`+ Z Y X`、`> C B A`——
+        #    最后一个声明的参数槽最小，紧跟函数体符号）。
+        #    递归函数名：多次自身调用共享同一个重复槽（t03 递归两次仅 1 个重复
+        #    FIB 槽；fact 递归一次 1 个重复槽）。
         for f in reversed(defuns):
             arg_names = set(f.args)
             refs = []
             for expr in f.body:
                 self._collect_byteorder(expr, refs, arg_names)
-            for name, force in reversed(refs):
+            seen_forced = set()
+            deduped = []
+            for name, force in refs:
+                if force and name in seen_forced:
+                    continue
+                deduped.append((name, force))
+                if force:
+                    seen_forced.add(name)
+            for name, force in reversed(deduped):
                 self.add(name, force=force)
-            for arg in f.args:
+            for arg in reversed(f.args):
                 if arg not in self.names:
                     self.add(arg)
             for loc in reversed(f.locals):

@@ -1,5 +1,5 @@
 from typing import Dict, List, Set, Tuple, Optional
-from compiler.ast import (
+from compiler.ast_nodes import (
     Node,
     Program,
     Symbol,
@@ -203,12 +203,15 @@ def analyze(program: Program) -> Dict:
     user_funcs = {f.name for f in defuns}
     extern_calls = builtin_calls - user_funcs
 
+    # 符号槽数估算：CAD stub 下 nsyms = entries - 模块注册数 + 1。
+    # 模块注册数 = defun 数 + 顶层表达式符号数（顶层符号已在 entries 中）。
     return {
         "functions": len(defuns),
         "top_level_forms": len(other),
         "total_instructions": total_instructions,
         "constants_estimate": estimate_constants(program),
         "symbol_table_entries": len(symtab.entries),
+        "symbol_slots": len(symtab.entries) - len(defuns) - len(other) + 1,
         "function_offsets": len(symtab.function_offsets),
         "locals": sum(len(f.locals) for f in defuns),
         "tail_recursive_functions": tail_recursive,

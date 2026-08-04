@@ -1,5 +1,5 @@
 from typing import List, Dict, Tuple, Any, Optional, Set
-from compiler.ast import (
+from compiler.ast_nodes import (
     Node, Program, Symbol, Integer, Real, String,
     ListExpr, QuotedExpr, Defun, Setq, IfNode, WhileNode,
     ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,

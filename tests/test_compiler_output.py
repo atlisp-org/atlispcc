@@ -27,7 +27,7 @@ def _compile_to_fas(src: str) -> bytes:
     symtab.collect_symbols(program)
 
     codegen = CodeGenerator(symtab)
-    from compiler.ast import Defun
+    from compiler.ast_nodes import Defun
 
     all_bc = BytecodeBuffer()
     func_offsets = {}
@@ -185,7 +185,7 @@ def test_magic_roundtrip():
     symtab.collect_symbols(program)
 
     codegen = CodeGenerator(symtab)
-    from compiler.ast import Defun
+    from compiler.ast_nodes import Defun
 
     all_bc = BytecodeBuffer()
     func_offsets = {}
@@ -262,8 +262,21 @@ CAD_GOLDEN_PAIRS = [
     ('mix.lsp', 'mix_cad.fas'),
     ('multi.lsp', 'multi_cad.fas'),
     ('rt_e.lsp', 'rt_e_cad.fas'),
-    ('t04_while.lsp', 't04_while_cad.fas'),
-    ('t05_cond.lsp', 't05_cond_cad.fas'),
+]
+
+#: t-series sources whose compiled output is byte-identical to the CAD golden
+#: (generated via `vlisp-compile` on AutoCAD 24.1s, 2026-08-04).
+#: Source .lsp and golden .fas both live under tests/cad/.
+CAD_T_SERIES_IDENTICAL = [
+    't01_math', 't02_recursion', 't03_fib', 't04_while', 't05_cond',
+    't06_strcat', 't07_list', 't08_apply_mapcar', 't09_funcall',
+    't13_nested_if', 't15_cad_funcs',
+]
+
+#: t-series sources with KNOWN remaining byte diffs (see docs/development-plan.md 8.C1).
+#: Kept as xfail regression: when a gap is fixed, move it to CAD_T_SERIES_IDENTICAL.
+CAD_T_SERIES_DIFF = [
+    't10_init', 't11_localvars', 't12_quote', 't14_command',
 ]
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -285,8 +298,8 @@ def test_byte_identity_with_cad_golden(src_name, golden_name):
     Regression guard: multi-function + quoted-lambda previously emitted
     PUSH_G <symtab idx> for the lambda const instead of <gvar slot - 1>;
     single-function cases masked it (nfuncs == 1). rt_e.lsp covers the
-    multi+lambda path fixed in _patch_usubr_idx; t04_while/t05_cond cover
-    the while/cond bytecode alignment fixes.
+    multi+lambda path fixed in _patch_usubr_idx. while/cond alignment is
+    covered by the t-series golden tests (t04_while/t05_cond).
     """
     from compiler.cli import cmd_compile
     from decompiler.fas4_decompiler import Fas4Parser
@@ -307,4 +320,72 @@ def test_byte_identity_with_cad_golden(src_name, golden_name):
         )
         assert ours.resource_items == ref.resource_items, (
             f'{src_name}: seg1 resource items differ from CAD golden'
+        )
+
+
+def _t_series_golden_paths(name):
+    """Return (src, golden) for a t-series CAD golden under tests/cad/.
+
+    Both the source .lsp and the CAD golden .fas live in tests/cad/ so the
+    golden sample set is self-contained there.
+    """
+    _BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cad')
+    src = os.path.join(_BASE, f'{name}.lsp')
+    golden = os.path.join(_BASE, f'{name}_cad.fas')
+    if not (os.path.exists(src) and os.path.exists(golden)):
+        pytest.skip(f'missing t-series golden fixture: {name}')
+    return src, golden
+
+
+@pytest.mark.parametrize('name', CAD_T_SERIES_IDENTICAL)
+def test_t_series_byte_identity(name):
+    """t-series outputs confirmed byte-identical to CAD `vlisp-compile` goldens.
+
+    Goldens regenerated on AutoCAD 24.1s (2026-08-04), see tests/cad/t*_cad.fas.
+    """
+    from compiler.cli import cmd_compile
+    from decompiler.fas4_decompiler import Fas4Parser
+
+    src, golden = _t_series_golden_paths(name)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        ours = Fas4Parser().parse(out)
+        ref = Fas4Parser().parse(golden)
+        assert ours.nsyms == ref.nsyms, f'{name}: nsyms {ours.nsyms} != {ref.nsyms}'
+        assert ours.bytecode == ref.bytecode, (
+            f'{name}: seg0 bytecode differs from CAD golden\n'
+            f'  ours: {ours.bytecode.hex()}\n'
+            f'  CAD : {ref.bytecode.hex()}'
+        )
+        assert ours.resource_items == ref.resource_items, (
+            f'{name}: seg1 resource items differ from CAD golden'
+        )
+
+
+@pytest.mark.parametrize('name', CAD_T_SERIES_DIFF)
+def test_t_series_byte_identity_known_diff(name):
+    """t-series with KNOWN remaining byte diffs (see development-plan.md 8.C1).
+
+    xfail placeholder: as each gap is fixed, move the name into
+    CAD_T_SERIES_IDENTICAL and drop this expectation.
+    """
+    from compiler.cli import cmd_compile
+    from decompiler.fas4_decompiler import Fas4Parser
+
+    src, golden = _t_series_golden_paths(name)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        ours = Fas4Parser().parse(out)
+        ref = Fas4Parser().parse(golden)
+        if ours.nsyms == ref.nsyms and ours.bytecode == ref.bytecode \
+                and ours.resource_items == ref.resource_items:
+            pytest.fail(
+                f'{name}: now byte-identical! Move to CAD_T_SERIES_IDENTICAL '
+                f'and remove from CAD_T_SERIES_DIFF.'
+            )
+        pytest.xfail(
+            f'{name}: known byte diff vs CAD golden '
+            f'(nsyms {ours.nsyms}vs{ref.nsyms})'
         )

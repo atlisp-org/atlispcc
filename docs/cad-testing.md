@@ -4,6 +4,17 @@
 > CAD 的 Lisp 环境**。遵循本指南可避免「加载坏 FAS → 环境损坏 → 需重启
 > CAD/系统」的问题。
 
+## 自动化真机验证
+
+```sh
+make cad-test        # 或: bash scripts/run_tests.sh --cad
+python scripts/cad_verify.py          # 直接运行
+```
+
+`scripts/cad_verify.py` 逐个编译 t01-t15 → 独立 CAD 连接加载 → 断言返回值。
+**每个用例独立连接**（避免 CAD 会话累计失效）；t10 混合模式为已知缺陷
+（见 `docs/development-plan.md` §8.C2）。手动断言脚本见 `tests/cad_verify.lsp`。
+
 ## 为什么需要安全策略
 
 AutoLISP 的 `(load "...fas")` 在**加载阶段**解析字节码并建立符号/函数表。

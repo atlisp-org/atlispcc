@@ -354,7 +354,7 @@ class Disassembler:
         0x50: ("DEC", ""),
         0x51: ("FUNC", "f"),
         0x57: ("JUMP", "s4"),
-        0x5C: ("GET_LOCAL", "2"),
+        0x5C: ("GET_LOCAL_WIDE", "2"),
         0x5D: ("SET_LOCAL", "2"),
         0x5E: ("CLEAR_LOCAL", "2"),
         0x62: ("NOP_62", ""),
@@ -654,7 +654,7 @@ class ControlFlowAnalyzer:
         slots = []
         seen = set()
         for inst in instructions:
-            if inst.op_name in ("GET_LOCAL", "SET_LOCAL", "CLEAR_LOCAL") and inst.operands:
+            if inst.op_name in ("GET_LOCAL", "GET_LOCAL_WIDE", "SET_LOCAL", "CLEAR_LOCAL") and inst.operands:
                 slot = inst.operands[0]
                 if slot not in seen:
                     slots.append(slot)
@@ -1657,7 +1657,7 @@ class LispGenerator:
                             i += 1
                             continue
                     stack.append(self._value_from_gvar(inst.operands[0], spec))
-            elif name == "GET_LOCAL" and inst.operands:
+            elif name in ("GET_LOCAL", "GET_LOCAL_WIDE") and inst.operands:
                 stack.append(self._local_name(inst.operands[0], spec))
             elif name == "PUSH_NIL":
                 if cond_state is not None and i == cond_state["info"]["jump_idx"] - 1:
@@ -1880,7 +1880,10 @@ class LispGenerator:
         if body_start + 6 > body_end:
             return None
         seq = instructions[body_start : body_start + 6]
-        if [inst.op_name for inst in seq] != ["GET_LOCAL", "CAR", "SETQ_G", "GET_LOCAL", "CDR", "SET_LOCAL"]:
+        pat_short = ["GET_LOCAL", "CAR", "SETQ_G", "GET_LOCAL", "CDR", "SET_LOCAL"]
+        pat_wide = ["GET_LOCAL_WIDE", "CAR", "SETQ_G", "GET_LOCAL_WIDE", "CDR", "SET_LOCAL"]
+        ops_seq = [inst.op_name for inst in seq]
+        if ops_seq != pat_short and ops_seq != pat_wide:
             return None
         slot = seq[0].operands[0] if seq[0].operands else None
         if slot is None or not seq[3].operands or not seq[5].operands:
@@ -2059,7 +2062,7 @@ class LispGenerator:
         for inst in instructions[start:init_idx]:
             if inst.op_name == "PUSH_G" and inst.operands:
                 pushed.append(("name", inst.operands[0]))
-            elif inst.op_name == "GET_LOCAL" and inst.operands:
+            elif inst.op_name in ("GET_LOCAL", "GET_LOCAL_WIDE") and inst.operands:
                 pushed.append(("slot", inst.operands[0]))
             elif inst.op_name == "PUSH_NIL":
                 pushed.append(("nil", None))

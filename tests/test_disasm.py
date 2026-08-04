@@ -46,8 +46,11 @@ def test_disasm_pdi_offsets_monotonic():
 def test_disasm_pdi_structure():
     insts, _ = _disassemble(PDI_FAS)
     opnames = {i.op_name for i in insts}
-    for expected in ('DEFUN', 'END_DEFUN', 'INIT_ARGS', 'USUBR', 'PUSH_VALUE', 'GET_LOCAL', 'SET_LOCAL'):
+    for expected in ('DEFUN', 'END_DEFUN', 'INIT_ARGS', 'USUBR', 'PUSH_VALUE', 'SET_LOCAL'):
         assert expected in opnames, f'missing {expected} in {sorted(opnames)}'
+    assert 'GET_LOCAL' in opnames or 'GET_LOCAL_WIDE' in opnames, (
+        f'missing GET_LOCAL/GET_LOCAL_WIDE in {sorted(opnames)}'
+    )
 
 
 def test_disasm_cad_fas_no_unknown_opcodes():

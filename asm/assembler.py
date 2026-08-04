@@ -18,16 +18,9 @@ from compiler.fas_writer import FasWriter
 
 # ─── Disassembler (FAS → .lasm text) ─────────────────────────────────────────
 
-# Opcodes that share a name with another opcode — disambiguate in output
-_DUPLICATE_NAMES = {
-    0x5C: "GET_LOCAL_WIDE",  # shares name 'GET_LOCAL' with 0x05
-}
-
 
 def _disasm_op_name(opcode: int) -> str:
-    """Return the assembly mnemonic, disambiguating duplicates."""
-    if opcode in _DUPLICATE_NAMES:
-        return _DUPLICATE_NAMES[opcode]
+    """Return the assembly mnemonic for an opcode."""
     return OPCODE_TO_NAME.get(opcode, f"UNK_{opcode:02x}")
 
 
@@ -554,12 +547,10 @@ def _asm_instr(line: str, symtab: SymbolTable, symbols: List[str], compact: bool
     operands = _parse_ops(rest, symtab)
 
     if mnemonic == "GET_LOCAL_WIDE":
-        # Use wide GET_LOCAL opcode (0x5c) instead of standard (0x05)
+        # Wide GET_LOCAL opcode (0x5c); canonical name in NAME_TO_OPCODE.
         from asm.opcodes import encode_op_u16
 
-        op = NAME_TO_OPCODE.get("GET_LOCAL", 0xFF)
-        # Force opcode 0x5c
-        return encode_op_u16(0x5C, int(operands[0]) if operands else 0)
+        return encode_op_u16(NAME_TO_OPCODE["GET_LOCAL_WIDE"], int(operands[0]) if operands else 0)
 
     if compact:
         if mnemonic == "USUBR" and operands:

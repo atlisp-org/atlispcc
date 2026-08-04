@@ -212,16 +212,88 @@ def validate_ast(forms: List[Node]) -> List[str]:
     return errors
 
 
+#: 危险/不安全函数调用（warn 级，不阻断 validate 返回码）。
+DANGEROUS_FUNCS = frozenset(('quit', 'exit', 'startapp'))
+
+
+def validate_danger(forms: List[Node]) -> List[str]:
+    """Detect dangerous function calls (quit/exit/startapp) as warnings."""
+    warnings: List[str] = []
+
+    def walk(node: Node) -> None:
+        value = node.value
+        if node.kind != 'list' or not value:
+            return
+        head = value[0].value if value else None
+        if isinstance(head, str) and head.lower() in DANGEROUS_FUNCS:
+            warnings.append(
+                f'line {node.line}: warning: dangerous function call: {form_text(node)}'
+            )
+        for child in value:
+            walk(child)
+
+    for form in forms:
+        walk(form)
+    return warnings
+
+
+def validate_unused(forms: List[Node]) -> List[str]:
+    """Warn about declared-but-unused defun local variables (/ locals)."""
+    warnings: List[str] = []
+
+    def collect_symbols(node: Node, acc: List[str]) -> None:
+        value = node.value
+        if node.kind == 'symbol':
+            if is_symbol(node):
+                acc.append(str(value).lower())
+        elif node.kind == 'list':
+            for child in value:
+                collect_symbols(child, acc)
+
+    for form in forms:
+        if not isinstance(form.value, list) or not form.value:
+            continue
+        head = form.value[0].value
+        if head != 'defun' or len(form.value) < 3 or form.value[2].kind != 'list':
+            continue
+        params = form.value[2].value
+        sep = next((i for i, a in enumerate(params)
+                    if a.kind == 'symbol' and a.value == '/'), None)
+        if sep is None:
+            continue
+        locals_list = params[sep + 1:]
+        body = form.value[3:]
+        used: List[str] = []
+        for expr in body:
+            collect_symbols(expr, used)
+        used_set = set(used)
+        for local in locals_list:
+            if local.kind != 'symbol' or not is_symbol(local):
+                continue
+            name = str(local.value).lower()
+            if name not in used_set:
+                warnings.append(
+                    f'line {local.line}: warning: unused local variable: {name}'
+                )
+    return warnings
+
+
 def validate_file(path: Path) -> bool:
     text = path.read_text(encoding='utf-8')
     tokens, token_errors = tokenize(text)
     forms, parse_errors = parse_tokens(tokens)
     errors = token_errors + validate_balance(tokens) + parse_errors + validate_ast(forms)
+    warnings = validate_danger(forms) + validate_unused(forms)
     if errors:
         print(f'[FAIL] {path}')
         for error in errors:
             print(f'  {error}')
         return False
+    if warnings:
+        print(f'[WARN] {path}')
+        for warning in warnings:
+            print(f'  {warning}')
+        return True
     print(f'[PASS] {path}')
     return True
 

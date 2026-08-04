@@ -54,7 +54,7 @@ def test_parse_setq():
     f = prog.forms[0]
     assert len(f.body) == 1
     setq = f.body[0]
-    from compiler.ast import Setq
+    from compiler.ast_nodes import Setq
     assert isinstance(setq, Setq)
     assert setq.pairs[0][0].name == 'x'
     assert setq.pairs[0][1].value == 5
@@ -65,7 +65,7 @@ def test_parse_if():
     p = Parser(src)
     prog = p.parse()
     f = prog.forms[0]
-    from compiler.ast import IfNode
+    from compiler.ast_nodes import IfNode
     assert isinstance(f.body[0], IfNode)
     if_node = f.body[0]
 
@@ -75,7 +75,7 @@ def test_parse_while():
     p = Parser(src)
     prog = p.parse()
     f = prog.forms[0]
-    from compiler.ast import WhileNode
+    from compiler.ast_nodes import WhileNode
     assert isinstance(f.body[0], WhileNode)
 
 
@@ -84,7 +84,7 @@ def test_parse_cond():
     p = Parser(src)
     prog = p.parse()
     f = prog.forms[0]
-    from compiler.ast import Cond
+    from compiler.ast_nodes import Cond
     assert isinstance(f.body[0], Cond)
     assert len(f.body[0].clauses) == 3
 
@@ -101,7 +101,7 @@ def test_parse_quote():
     p = Parser(src)
     prog = p.parse()
     f = prog.forms[0]
-    from compiler.ast import QuotedExpr, ListExpr, Call
+    from compiler.ast_nodes import QuotedExpr, ListExpr, Call
     q = f.body[0].pairs[0][1]
     assert isinstance(q, QuotedExpr)
     assert isinstance(q.expr, (ListExpr, Call, tuple))
@@ -119,7 +119,7 @@ def test_parse_top_level_init():
     p = Parser(src)
     prog = p.parse()
     assert len(prog.forms) == 2
-    from compiler.ast import Setq, Defun
+    from compiler.ast_nodes import Setq, Defun
     assert isinstance(prog.forms[0], Setq)
     assert isinstance(prog.forms[1], Defun)
 
@@ -154,7 +154,7 @@ def test_lexer_function_macro():
 
 def test_parse_function_macro_symbol():
     """#'foo parses to QuotedExpr(Symbol foo), same as (function foo)."""
-    from compiler.ast import QuotedExpr, Symbol
+    from compiler.ast_nodes import QuotedExpr, Symbol
     p = Parser("(defun f () #'car)")
     f = p.parse().forms[0]
     q = f.body[0]
@@ -165,7 +165,7 @@ def test_parse_function_macro_symbol():
 
 def test_parse_function_macro_lambda():
     """#'(lambda ...) parses to QuotedExpr containing a lambda form."""
-    from compiler.ast import QuotedExpr, LambdaNode
+    from compiler.ast_nodes import QuotedExpr, LambdaNode
     p = Parser("(defun f () #'(lambda (x) (1+ x)))")
     f = p.parse().forms[0]
     q = f.body[0]
@@ -176,7 +176,7 @@ def test_parse_function_macro_lambda():
 
 def test_parse_function_macro_in_mapcar():
     """mapcar #'1+ compiles correctly via round-trip semantics."""
-    from compiler.ast import Call, QuotedExpr, Symbol
+    from compiler.ast_nodes import Call, QuotedExpr, Symbol
     p = Parser("(defun f (l) (mapcar #'1+ l))")
     f = p.parse().forms[0]
     call = f.body[0]
@@ -190,7 +190,7 @@ def test_parse_function_macro_in_mapcar():
 
 def test_parse_dotted_call():
     """(cons 1 . 2) in call position parses to Call with the dotted tail as arg."""
-    from compiler.ast import Call, Integer
+    from compiler.ast_nodes import Call, Integer
     p = Parser("(defun f () (cons 1 . 2))")
     f = p.parse().forms[0]
     call = f.body[0]
@@ -203,7 +203,7 @@ def test_parse_dotted_call():
 
 def test_parse_quoted_dotted_data():
     """'(a . b) in data position stays a dotted ListExpr (not a call)."""
-    from compiler.ast import QuotedExpr, ListExpr, Symbol
+    from compiler.ast_nodes import QuotedExpr, ListExpr, Symbol
     p = Parser("(defun f () (setq x '(a . b)))")
     f = p.parse().forms[0]
     val = f.body[0].pairs[0][1]

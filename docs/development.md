@@ -55,7 +55,7 @@ tools/
 | `core/fas_core.py` | 共享加密/解析/符号工具函数（`find_key`/`decrypt_stream`/`build_mvar_tables`/`build_function_catalog`） |
 | `compiler/cli.py` | CLI 入口，子命令分发 |
 | `compiler/parser.py` | Lisp 源码解析器 → AST |
-| `compiler/ast.py` | AST 节点定义（含 Defpackage、InPackage） |
+| `compiler/ast_nodes.py` | AST 节点定义（含 Defpackage、InPackage） |
 | `compiler/packages.py` | 包系统：PackageTable、名混淆/还原 |
 | `compiler/symbol_table.py` | 符号表构建与作用域分析（含包解析） |
 | `compiler/codegen.py` | 字节码生成器（AST → 指令流） |
@@ -198,8 +198,12 @@ FAS A + FAS B + ... → 合并符号表/函数目录
 ## 测试
 
 ```sh
-python -m pytest              # 运行所有测试（167 用例）
-python -m pytest tests/ -v   # 详细输出
+./scripts/run_tests.sh         # 一键全量检查（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）
+./scripts/run_tests.sh --cad   # 附加 CAD 真机验证（需 CAD 连接）
+python scripts/cad_verify.py   # CAD 真机验证（逐个编译 t01-t15 加载断言）
+python -m pytest               # 运行所有测试（239 用例）
+python -m pytest tests/ -v     # 详细输出
+python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 ```
 
 测试文件在 `tests/` 目录：

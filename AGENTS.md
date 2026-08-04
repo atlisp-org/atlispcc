@@ -55,7 +55,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | `core/fas_core.py` (707 行) | 共享加密/解析/符号 — 被工具脚本使用，主反编译器通过 import 复用其 `find_key`/`decrypt_stream`/`build_mvar_tables`/`build_function_catalog` |
 | `compiler/cli.py` | CLI 入口，子命令 dispatch |
 | `compiler/parser.py` | Lisp 源码解析器 → AST |
-| `compiler/ast.py` | AST 节点定义 |
+| `compiler/ast_nodes.py` | AST 节点定义 |
 | `compiler/symbol_table.py` | 符号表构建与作用域分析 |
 | `compiler/codegen.py` | 字节码生成器（AST → 指令流） |
 | `compiler/resource_builder.py` | 常量/符号/函数索引 → 资源段 |
@@ -110,26 +110,39 @@ black .                                 # 格式化
 mypy .                                  # 类型检查
 ```
 
+Makefile 快捷目标（`make help` 查看全部）：
+```sh
+make test        # pytest 全量测试
+make check       # 一键全量检查（等价 ./scripts/run_tests.sh）
+make lint        # black --check + mypy
+make format      # black 格式化
+make build       # 构建分发包
+make clean       # 清理构建产物与缓存
+```
+
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 200 用例）：
+**测试文件在 `tests/` 目录下**（pytest 风格，共 239 用例）：
 - `test_parser.py` — AST 解析器（19 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
-- `test_cli.py` — CLI 路径（13 用例：compile/-O/--analyze/validate/link/vlx/dispatch）
-- `test_compile_decompile.py` — 编译-反编译往返（43 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip）
-- `test_compiler_output.py` — FAS 输出正确性（20 用例，含 9 对 CAD golden 逐字节比对）
+- `test_cli.py` — CLI 路径（16 用例：compile/-O/--analyze/validate/link/vlx/dispatch + validate 补强规则）
+- `test_compile_decompile.py` — 编译-反编译往返（46 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式）
+- `test_compiler_output.py` — FAS 输出正确性（26 用例，含 7 对 CAD golden 逐字节比对 + 15 项 t-series byte-identity/xfail 回归）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
 - `test_assembler.py` — 反汇编/汇编往返（8 用例）
 - `test_disasm.py` — 反汇编健壮性（8 用例，含未处理操作码降级）
+- `test_resource_stream.py` — 资源码解析/资源段构建（24 用例：符号/字符串块、GVARINIT、DEFCODE、build_mvar_tables、资源码 vs 操作码区分）
 - `test_packages.py` — CL 风格包系统（4 用例）
 - `test_vlx_builder.py` — VLX 容器（3 用例）
 - `test_variadic_args.py` — &optional/&rest 编译（5 用例）
 - `test_zelx.py` — ZWCAD ZELX 构建/解析（5 用例）
 
-手动测试文件 `tests/test_*.lsp` 也在该目录；CAD 兼容矩阵源文件 `tests/t01_math.lsp`…`t15_cad_funcs.lsp` 是 `test_t_series_roundtrip` 的 fixture（编译→反编译→validate）。
+  一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。
+
+ 手动测试文件 `tests/test_*.lsp` 也在该目录；CAD 兼容矩阵源文件 `tests/cad/t01_math.lsp`…`t15_cad_funcs.lsp` 是 `test_t_series_roundtrip` 的 fixture（编译→反编译→validate），源码与 CAD golden `.fas` 自包含存放在 `tests/cad/`。
 
 ## 兼容性
 
@@ -162,8 +175,8 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 ## 测试中的关键陷阱
 
 - **CLI 与裸管线的顶层表达式差异**：`compiler.cli.cmd_compile`（CLI）把顶层表达式（defun 之外的 `setq`/`princ` 等）编译进 seg1 **模块代码**（CAD 标准），而 `tests/test_compile_decompile.py` 内的裸内存管线（`SymbolTable→Codegen→ResourceBuilder→FasWriter`）把它们留在 seg0 字节码。两者反编译结果不同——CLI 管线的顶层 `(princ "Loading...")` 反编译为 `nil`。写往返测试时二选一保持一致，**不要**把两个管线的 `compile_and_decompile` 混用。
-- **黄金比对（golden）fixture 必须是 CAD 重新编译的产物**：`D:/atlisp-test/cad_t*.fas`（7月31）版本戳是 `;A7/31/26`，当前编译器输出 `;A8/4/26`，整文件比对必然失败（即使 seg0 字节一致）。`tests/` 内 `*_cad.fas`（8月3-4）是重新在 CAD 编译的，可用作 byte-identity golden。
-- **t-series golden 覆盖现状**：`tests/t01_math.lsp`…`t15_cad_funcs.lsp` 是从 `D:/atlisp-test/` 复制的源文件（roundtrip fixture）。其中 t01/t02/t06/t07/t08 的 seg0 与 CAD 逐字节一致，其余（t03/t09-t15）有已知字节差异——差异是剩余的兼容性缺口，不是测试 bug。
+- **黄金比对（golden）fixture 必须是 CAD 重新编译的产物**：`D:/atlisp-test/cad_t*.fas`（7月31）版本戳是 `;A7/31/26`，当前编译器输出 `;A8/4/26`，整文件比对必然失败（即使 seg0 字节一致）。`tests/cad/` 内 `*_cad.fas`（8月3-4 重新在 CAD 编译）可用作 byte-identity golden。
+- **t-series golden 覆盖现状**：源文件与 golden 均自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，2026-08-04 CAD `vlisp-compile` 生成，共 15 份）。其中 11 项（t01-t09/t13/t15）已 byte-identity（`test_t_series_byte_identity`），t10/t11/t12/t14 有已知差异（`test_t_series_byte_identity_known_diff` xfail 守护，修复一个移一个）；CAD 真机功能验证见 `scripts/cad_verify.py`（14 项通过，t10 混合模式已知缺陷）。
 
 ## 文档
 
@@ -173,6 +186,14 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - `docs/development-plan.md` — 开发计划、已验证兼容性矩阵
 
 ## CAD 测试
+
+**自动化真机验证**（推荐，每用例独立 CAD 连接，避免会话失效）：
+```sh
+make cad-test        # 或: bash scripts/run_tests.sh --cad
+# 等价直接运行: python scripts/cad_verify.py
+```
+`scripts/cad_verify.py` 编译 t01-t15 → 逐项在 CAD 加载 → 断言返回值，14 项通过、
+t10 混合模式为已知缺陷（§8.C2 待修）。
 
 测试文件编译到 `D:/atlisp-test/`，在 CAD 中加载测试脚本：
 
@@ -187,6 +208,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - 尾递归、&optional/&rest ✅
 - 顶层 setq/set（defun 前后混合）✅
 - `fun.lsp`/`fact.lsp` 解密后与 CAD 逐字节一致 ✅
+- t-series 全部 14 项真机功能验证通过（`scripts/cad_verify.py`，t10 除外）✅
 
 ### 已知限制
 

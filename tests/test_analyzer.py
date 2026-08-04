@@ -4,7 +4,7 @@ sys.path.insert(0, '.')
 
 from compiler.parser import Parser
 from compiler.symbol_table import SymbolTable
-from compiler.ast import Defun
+from compiler.ast_nodes import Defun
 from compiler.analyzer import (
     count_instructions, find_tail_recursive, estimate_constants, analyze,
 )

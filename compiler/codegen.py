@@ -1,6 +1,6 @@
 import struct
 from typing import List, Optional, Dict, Any, Set, Tuple
-from compiler.ast import (
+from compiler.ast_nodes import (
     Node,
     Program,
     Symbol,
@@ -62,7 +62,7 @@ DEC = NAME_TO_OPCODE["DEC"]  # 0x50
 FIX_SUB = NAME_TO_OPCODE["FIX_SUB"]  # 0x47
 FIX_DIV = NAME_TO_OPCODE["FIX_DIV"]  # 0x49
 GET_LOCAL_8 = 0x05  # GET_LOCAL with 1-byte operand index
-GET_LOCAL_16 = 0x5C  # GET_LOCAL with 2-byte operand index
+GET_LOCAL_16 = 0x5C  # GET_LOCAL_WIDE with 2-byte operand index
 SET_LOCAL_16 = 0x5D  # SET_LOCAL with 2-byte operand index
 
 
@@ -217,7 +217,12 @@ class CodeGenerator:
                 buf.emit(encode_op_noarg(PUSH_NIL))
             elif self.stub_format:
                 if name in self.current_func_args:
-                    idx = self.nsyms - len(self.current_func_args) + self.local_slots[name]
+                    if len(self._defined_funcs) <= 1:
+                        # 单函数参数读取逆序（CAD simple3/t13 实测：`+ Z Y X`、
+                        # `> C B A`——源码第 i 个参数 → 槽 nsyms-1-i）。
+                        idx = self.nsyms - 1 - self.local_slots[name]
+                    else:
+                        idx = self.nsyms - len(self.current_func_args) + self.local_slots[name]
                 else:
                     idx = self.symtab.get_or_add(name)
                 buf.emit(encode_op_u16(PUSH_VALUE, idx))
@@ -733,8 +738,14 @@ class CodeGenerator:
             return
         if self.stub_format:
             argc = len(args)
+            # CAD stub 参数绑定：多函数（nfuncs>1）由 _patch_usubr_idx 统一修正
+            # 为 gvar 槽（codegen 保持正序占位）；单函数（nfuncs==1）无 patch，
+            # codegen 直接输出 CAD 槽——CAD 实测参数绑定逆序（`PUSH_G` 最后一个
+            # 参数先发射，如 t13 `PUSH_G [4],[3],[2]` = C,B,A）。
+            single = len(self._defined_funcs) <= 1
             for i, arg in enumerate(args):
-                idx = self.nsyms - argc + i
+                src_i = (argc - 1 - i) if single else i
+                idx = self.nsyms - argc + src_i
                 buf.emit(encode_op_u16(PUSH_G, idx))
                 buf.emit(encode_op_u16(GET_LOCAL_16, i))
             buf.emit(encode_op_u16(INIT_ARGS, len(args) * 2 + 1))

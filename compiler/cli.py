@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from compiler.parser import Parser, ParseError
 from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
-from compiler.ast import Defun, Defpackage, InPackage, Setq
+from compiler.ast_nodes import Defun, Defpackage, InPackage, Setq
 from compiler.opt import optimize
 from compiler.resource_builder import ResourceBuilder, build_module_code, count_resource_records, resolve_encoding
 from compiler.fas_writer import FasWriter
@@ -24,7 +24,7 @@ ENCODE_POP = bytes([0x0a])
 
 def _collect_builtins_for_stub(symtab, node):
     """stub 模式下将调用到的内建函数注册为符号槽（CAD stub 用符号槽编址调用）。"""
-    from compiler.ast import (
+    from compiler.ast_nodes import (
         Call, Defun, Setq, IfNode, WhileNode, ForeachNode,
         RepeatNode, Progn, ListExpr, QuotedExpr, LambdaNode, Cond, Symbol,
     )
@@ -154,9 +154,11 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             # 常量引用（quoted lambda 等 CONST 条目）：sym_of 只认 SYMBOL/STRING，
             # CONST 在 gvar 表里注册于 gvar 槽 = symtab 槽 - nfuncs + 2，
             # PUSH_G 操作数 = gvar 槽 - 1 = symtab 槽 - nfuncs + 1。
+            # 字符串（不在 GVARINIT 表）：gvar 槽 = symtab 槽 - (nfuncs-1)，
+            # PUSH_G 操作数 = gvar 槽（t15 实测字符串 entries idx 8 → 槽 6，nfuncs=3）。
             # 单函数（nfuncs=1）恰好使 codegen 原始槽 = gvar-1，无需此处处理。
             idx0 = inst.operands[0]
-            if 0 <= idx0 < len(symtab.entries) and symtab.entries[idx0][0] == "CONST":
+            if 0 <= idx0 < len(symtab.entries) and symtab.entries[idx0][0] in ("CONST", "STRING"):
                 new_idx = idx0 - len(func_args) + 1
                 if 0 <= new_idx <= 0xFFFF:
                     opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
@@ -199,7 +201,7 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
     out += bytes([0x09]) + struct.pack('<H', module_reg_count + 1) + b'\x0a'  # 占位
 
     # setq 语句用 CAD 的 DUP 模式；其余用 codegen 输出并槽 +1。
-    from compiler.ast import Symbol, String as _Str
+    from compiler.ast_nodes import Symbol, String as _Str
     cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
     stmt_list = []
     for form in other_forms:
@@ -239,7 +241,7 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
 
 def _slot_of(symtab, node):
     """返回 AST 节点的符号/字符串槽索引；非字面量返回 None。"""
-    from compiler.ast import Symbol, String as _Str
+    from compiler.ast_nodes import Symbol, String as _Str
     if isinstance(node, Symbol):
         return symtab.name_to_idx.get(node.name)
     if isinstance(node, _Str):
@@ -283,7 +285,7 @@ def _offset_slots(bc: bytes, n_sym: int) -> bytes:
 
 def _collect_symbol_nodes(node):
     """递归收集 AST 节点中的 Symbol/String 节点。"""
-    from compiler.ast import (
+    from compiler.ast_nodes import (
         Symbol, String, ListExpr, QuotedExpr, Setq, IfNode, WhileNode,
         ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
     )
@@ -415,8 +417,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     # 顶层表达式符号（defun 之外）：CAD 把它们的符号并入模块注册段。
     other_forms = [f for f in program.forms
                    if not isinstance(f, (Defun, Defpackage, InPackage))]
-    from compiler.ast import Symbol as _Sym
-    from compiler.ast import String as _StrNode
+    from compiler.ast_nodes import Symbol as _Sym
+    from compiler.ast_nodes import String as _StrNode
     _top_syms = []
     for form in other_forms:
         for _n in _collect_symbol_nodes(form):
