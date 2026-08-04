@@ -261,3 +261,53 @@ def test_exit_symbol_not_in_bytecode():
     _, bc, seg1, _ = _parse_fas(data)
     # 0x35 = USUBR opcode; exit must not be encoded as one
     assert b'\x35' not in bc, f'USUBR emitted for exit: {bc!r}'
+
+
+#: (source, cad_golden) pairs where our compact-stub output must be byte-identical
+#: to the AutoCAD `vlisp-compile` golden (bytecode AND resource items).
+CAD_GOLDEN_PAIRS = [
+    ('fact.lsp', 'fact_cad.fas'),
+    ('fun.lsp', 'fun-cad.fas'),
+    ('m1.lsp', 'm1_cad.fas'),
+    ('m2.lsp', 'm2_cad.fas'),
+    ('mix.lsp', 'mix_cad.fas'),
+    ('multi.lsp', 'multi_cad.fas'),
+    ('rt_e.lsp', 'rt_e_cad.fas'),
+    ('t04_while.lsp', 't04_while_cad.fas'),
+    ('t05_cond.lsp', 't05_cond_cad.fas'),
+]
+
+
+def test_byte_identity_with_cad_goldens():
+    """Compiled compact-stub output must be byte-identical to CAD goldens.
+
+    Regression guard: multi-function + quoted-lambda previously emitted
+    PUSH_G <symtab idx> for the lambda const instead of <gvar slot - 1>;
+    single-function cases masked it (nfuncs == 1). rt_e.lsp covers the
+    multi+lambda path fixed in _patch_usubr_idx.
+    """
+    from compiler.cli import cmd_compile
+    from decompiler.fas4_decompiler import Fas4Parser
+
+    base = os.path.dirname(__file__)
+    with tempfile.TemporaryDirectory() as tmp:
+        for src_name, golden_name in CAD_GOLDEN_PAIRS:
+            src = os.path.join(base, src_name)
+            golden = os.path.join(base, golden_name)
+            if not (os.path.exists(src) and os.path.exists(golden)):
+                continue
+            out = os.path.join(tmp, 'out.fas')
+            cmd_compile(src, out)
+            ours = Fas4Parser().parse(out)
+            ref = Fas4Parser().parse(golden)
+            assert ours.nsyms == ref.nsyms, (
+                f'{src_name}: nsyms {ours.nsyms} != {ref.nsyms}'
+            )
+            assert ours.bytecode == ref.bytecode, (
+                f'{src_name}: seg0 bytecode differs from CAD golden\n'
+                f'  ours: {ours.bytecode.hex()}\n'
+                f'  CAD : {ref.bytecode.hex()}'
+            )
+            assert ours.resource_items == ref.resource_items, (
+                f'{src_name}: seg1 resource items differ from CAD golden'
+            )
