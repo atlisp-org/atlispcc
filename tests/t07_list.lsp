@@ -1,0 +1,8 @@
+(defun get-first (lst)
+  (car lst))
+(defun get-rest (lst)
+  (cdr lst))
+(defun build-list ()
+  (list 1 2 3))
+(defun pair (a b)
+  (cons a b))

@@ -4,7 +4,7 @@
 
 **atlispcc** = **A**uto**L**ISP **C**ompiler **C**ollection，FAS4 字节码编译器套件：`.lsp` ↔ `.fas`（兼容 AutoLISP 的 CAD 平台）。
 
-`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持七个子命令：
+`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持九个子命令：
 
 ```
 atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]    # 编译 Lisp → FAS
@@ -15,7 +15,10 @@ atlispcc validate <input.lsp>                              # 语法验证
 atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]    # 多文件链接
 atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]  # VLX 容器
 atlispcc zelx <input.lsp|input.fas> [output.zelx]          # ZWCAD ZELX（逆向 LispConverter）
+atlispcc unzelx <input.zelx> [output.fas]                  # 从 .zelx 恢复 .fas
 ```
+
+子命令别名：`compile→c`、`decompile→d`、`validate→v`、`disasm→disassemble`、`asm→assemble`。
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
 
@@ -48,7 +51,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 
 | 文件 | 作用 |
 |---|---|
-| `decompiler/fas4_decompiler.py` (2540 行) | 主反编译器：解析 + 反汇编 + 分析 + 生成 |
+| `decompiler/fas4_decompiler.py` (2665 行) | 主反编译器：解析 + 反汇编 + 分析 + 生成 |
 | `core/fas_core.py` (707 行) | 共享加密/解析/符号 — 被工具脚本使用，主反编译器通过 import 复用其 `find_key`/`decrypt_stream`/`build_mvar_tables`/`build_function_catalog` |
 | `compiler/cli.py` | CLI 入口，子命令 dispatch |
 | `compiler/parser.py` | Lisp 源码解析器 → AST |
@@ -57,7 +60,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | `compiler/codegen.py` | 字节码生成器（AST → 指令流） |
 | `compiler/resource_builder.py` | 常量/符号/函数索引 → 资源段 |
 | `compiler/fas_writer.py` | 指令流 → FAS4 二进制 |
-| `compiler/opt.py` | 优化器：8 个 pass 跨 O1-O3 级别 |
+| `compiler/opt.py` | 优化器：9 个 pass 跨 O1-O3 级别 |
 | `compiler/analyzer.py` | 编译分析与统计（--analyze） |
 | `asm/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
 | `asm/opcodes.py` | 操作码定义与编码函数（codegen/linker/汇编共用） |
@@ -79,6 +82,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | CrossFuncConstPropagate | 常量返回的 0 参函数替换为常量 | O3 |
 | DeadCodeElim | 删除 `exit`/`quit` 后的死代码 | O3 |
 | InlineSmallFuncs | 内联单次调用的小函数 | O3 |
+| RemoveDeadFuncs | 删除未被引用且非命令的函数（仅当有入口点时） | O3 |
 
 ## 命令
 
@@ -86,11 +90,11 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 # 编译 + 优化
 atlispcc compile -O2 input.lsp output.fas
 
-# 反编译
-python -m decompiler.fas4_decompiler samples/bib.fas samples/bib_generic.lsp
+# 反编译（tests/cad/i18n-cad.fas 为仓库内 CAD 自包含样本）
+python -m decompiler.fas4_decompiler tests/cad/i18n-cad.fas output.lsp
 
 # 验证输出
-python -m tools.validate samples/bib_generic.lsp
+python -m tools.validate tests/bib_generic.lsp
 
 # 链接
 atlispcc link lib.fas main.fas -o combined.fas
@@ -108,23 +112,24 @@ mypy .                                  # 类型检查
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 167 用例）：
+**测试文件在 `tests/` 目录下**（pytest 风格，共 200 用例）：
 - `test_parser.py` — AST 解析器（19 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
-- `test_cli.py` — CLI 路径（10 用例：compile/-O/--analyze/validate/link/vlx/dispatch）
-- `test_compile_decompile.py` — 编译-反编译往返（29 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返）
-- `test_compiler_output.py` — FAS 输出正确性（12 用例）
+- `test_cli.py` — CLI 路径（13 用例：compile/-O/--analyze/validate/link/vlx/dispatch）
+- `test_compile_decompile.py` — 编译-反编译往返（43 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip）
+- `test_compiler_output.py` — FAS 输出正确性（20 用例，含 9 对 CAD golden 逐字节比对）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
-- `test_assembler.py` — 反汇编/汇编往返（5 用例）
+- `test_assembler.py` — 反汇编/汇编往返（8 用例）
 - `test_disasm.py` — 反汇编健壮性（8 用例，含未处理操作码降级）
 - `test_packages.py` — CL 风格包系统（4 用例）
 - `test_vlx_builder.py` — VLX 容器（3 用例）
 - `test_variadic_args.py` — &optional/&rest 编译（5 用例）
+- `test_zelx.py` — ZWCAD ZELX 构建/解析（5 用例）
 
-手动测试文件 `tests/test_*.lsp` 也在该目录。
+手动测试文件 `tests/test_*.lsp` 也在该目录；CAD 兼容矩阵源文件 `tests/t01_math.lsp`…`t15_cad_funcs.lsp` 是 `test_t_series_roundtrip` 的 fixture（编译→反编译→validate）。
 
 ## 兼容性
 
@@ -144,8 +149,8 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - 反编译回归参考：AutoCAD 产物 `tests/fun-cad.fas`（对应 `tests/fun.lsp`）
 
 反编译器同时支持两种布局：
-- **自包含格式**（`samples/bib.fas`/`samples/PDI.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
-- **紧凑 stub 格式**（AutoCAD 编译器输出）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
+- **自包含格式**（`tests/cad/i18n-cad.fas`、`tests/cad/i18n.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
+- **紧凑 stub 格式**（AutoCAD 编译器输出，`tests/fun-cad.fas`）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
 
 生成器会发出包装辅助函数以避免内建冲突：
 - `fas-polar1`、`fas-rtos1`、`fas-rtos3`、`fas-getvar2`、`fas-getvar3`
@@ -153,6 +158,12 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - 缺少 `Projet/PA_Projet` 框架时的后备选择提示
 
 解码器问题在 `decompiler/fas4_decompiler.py` 中修复，永远不要修改生成的 `.lsp`。
+
+## 测试中的关键陷阱
+
+- **CLI 与裸管线的顶层表达式差异**：`compiler.cli.cmd_compile`（CLI）把顶层表达式（defun 之外的 `setq`/`princ` 等）编译进 seg1 **模块代码**（CAD 标准），而 `tests/test_compile_decompile.py` 内的裸内存管线（`SymbolTable→Codegen→ResourceBuilder→FasWriter`）把它们留在 seg0 字节码。两者反编译结果不同——CLI 管线的顶层 `(princ "Loading...")` 反编译为 `nil`。写往返测试时二选一保持一致，**不要**把两个管线的 `compile_and_decompile` 混用。
+- **黄金比对（golden）fixture 必须是 CAD 重新编译的产物**：`D:/atlisp-test/cad_t*.fas`（7月31）版本戳是 `;A7/31/26`，当前编译器输出 `;A8/4/26`，整文件比对必然失败（即使 seg0 字节一致）。`tests/` 内 `*_cad.fas`（8月3-4）是重新在 CAD 编译的，可用作 byte-identity golden。
+- **t-series golden 覆盖现状**：`tests/t01_math.lsp`…`t15_cad_funcs.lsp` 是从 `D:/atlisp-test/` 复制的源文件（roundtrip fixture）。其中 t01/t02/t06/t07/t08 的 seg0 与 CAD 逐字节一致，其余（t03/t09-t15）有已知字节差异——差异是剩余的兼容性缺口，不是测试 bug。
 
 ## 文档
 
@@ -179,7 +190,5 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 
 ### 已知限制
 
-- 4+函数交叉引用：`build_module_code` PUSH_G 越界 → `count_resource_records` 修复后 `items` 计数正确，但模块代码布局仍需调整
 - `i18n.lsp` 混合模式：defun+顶层表达式混杂，`cad_symbols.py` 需支持持续块规则
-- lambda：`(mapcar '(lambda (x) ...) list)` 中 x 未正确局部化
 - MCP CAD 连接不稳定，建议手动测试

@@ -223,7 +223,7 @@ nsyms = len(entries) - 模块注册符号数 + 1
 | USUBR/FUNC | 5/6 字节 | 3 字节 |
 | GET_LOCAL | `05 <slot:1>` | `5c <slot:2>` |
 | 函数目录 | mvar 表重建 | DEFCODE 序列 |
-| 参考产物 | `samples/bib.fas` / `samples/PDI.fas` | `tests/fun-cad.fas` |
+| 参考产物 | `tests/cad/i18n-cad.fas` / `tests/cad/i18n.fas` | `tests/fun-cad.fas` |
 
 ---
 

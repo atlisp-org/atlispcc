@@ -15,18 +15,18 @@ def _tmp(name):
     return os.path.join(tempfile.gettempdir(), f'test_cli_{os.urandom(4).hex()}_{name}')
 
 
-def test_compile_all_opt_levels():
+@pytest.mark.parametrize('level', [0, 1, 2, 3])
+def test_compile_opt_level(level):
     src = '(defun add (a b) (+ a b))'
-    for level in (0, 1, 2, 3):
-        out = _tmp(f'l{level}.fas')
-        try:
-            result = cmd_compile(src, out, opt_level=level)
-            assert os.path.exists(result)
-            fas = Fas4Parser().parse(result)
-            assert len(fas.bytecode) > 0
-        finally:
-            if os.path.exists(out):
-                os.unlink(out)
+    out = _tmp(f'l{level}.fas')
+    try:
+        result = cmd_compile(src, out, opt_level=level)
+        assert os.path.exists(result)
+        fas = Fas4Parser().parse(result)
+        assert len(fas.bytecode) > 0
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)
 
 
 def test_compile_analyze_flag():

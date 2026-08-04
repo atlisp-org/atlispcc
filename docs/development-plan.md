@@ -2,7 +2,7 @@
 
 > 本文档记录 `atlispcc`（FAS4 编译器/反编译器工具链）当前功能完成情况、
 > 遗留问题与后续开发路线。基于 AutoCAD 24.1s 实测与代码测试状态
-> （167/167 通过）。
+> （200/200 通过，v0.1.9）。
 
 ---
 
@@ -70,9 +70,10 @@
   （AutoCAD `vlisp-compile` 实测：`/` 局部变量不计入头）
 - `&optional`：`14 <max> <min> <max> 00`；`&rest`：`14 <min>x3 01`
 
-### 2.3 代码测试 167/167 ✅
+### 2.3 代码测试 200/200 ✅
 
-全部通过（含 `tests/test_variadic_args.py` 5 用例）。
+全部通过（含 `tests/test_variadic_args.py` 5 用例与 `test_t_series_roundtrip` 13 用例）。
+新增：`tests/conftest.py` 已撤销（CLI 管线与裸管线顶层表达式差异，见 `AGENTS.md`「测试中的关键陷阱」）。
 
 ---
 
@@ -222,29 +223,30 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | 死代码清理 | ✅ | 移除 `Fas4Parser.build_mvar_tables`（~196 行，从未调用） |
 | 纯 `&rest` min=0 | ✅ | 已逆向（CAD 硬性不收集）+ 编译警告 |
 
-### 4.2 短期（P0，1-2 周）
+### 4.2 短期（P0）✅ 已完成
 
-目标：修复链接器 CAD 注册、4+函数交叉引用模块代码。
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 链接器多函数 CAD 注册（3.6） | ✅ | `derive_symbol_names` 复刻 + `fd_new == fd_cmd` 字节级一致 |
+| `build_module_code` PUSH_G 越界 | ✅ | n≥4 动态计算，4+函数交叉引用 CAD 实测通过 |
+| `_build_cad_module_code` 增强 | ✅ | 支持 defun 间夹杂 setq/if 的顶层表达式（模块代码） |
 
-| 任务 | 说明 |
-|------|------|
-| 链接器多函数 CAD 注册（3.6） | 模块代码/DEFCODE 与 CAD 对齐 |
-| `build_module_code` PUSH_G 越界 | n≥4 时 `2*n+1` 超出 `nsyms-1`，需动态计算 |
-| `_build_cad_module_code` 增强 | 支持 defun 间夹杂 setq/if 的复杂顶层表达式 |
+> 下一阶段工作计划见 **第 8 节「功能完善开发计划」**（2026-08 版本，四方向）。
 
-### 4.3 中期（P1，1-2 月）
+### 4.3 中期（P1）
 
 目标：扩大 CAD 兼容覆盖，字节码逐字节一致。
 
 | 任务 | 说明 |
 |------|------|
-| while/cond/局部变量符号槽 | 逆向 CAD 特殊规则（`_al-bind-alist` 等） |
+| t-series 剩余符号槽差异（t03/t09-t15） | 已实测定位，见第 8 节 C1 |
+| i18n.lsp 混合模式 | defun+顶层交错持续块规则，见第 8 节 C2 |
 | 命令函数 `c:` 特殊处理 | `vl-ACAD-defun` 注册 |
 | 复杂表达式 | mapcar/lambda/apply/foreach 的 CAD 编码 |
 | 错误处理函数 | `*error*`、条件子程序 |
 | CAD 兼容回归套件 | 扩展 D:\atlisp-test 测试集 |
 
-### 4.3 长期（P2，3-6 月）
+### 4.4 长期（P2，3-6 月）
 
 目标：完整工具链，健壮性与性能。
 
@@ -255,6 +257,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | CAD 版本兼容 | 多 AutoCAD 版本（2008-2025）FAS 变体 |
 | VLX 增强 | 依赖收集、eTransmit |
 | 文档完善 | 完整 FAS 格式规范 |
+| ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见第 8 节 D1） |
 
 ---
 
@@ -267,7 +270,11 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | ~~P0~~ | ~~`build_module_code` PUSH_G 越界~~ | ✅ 已修复（4+函数交叉引用 CAD 实测通过） |
 | ~~P1~~ | ~~lambda 参数绑定~~ | ✅ 已修复（λ 常量 PUSH_G 操作数 = gvar 槽-1 = symtab 槽-nfuncs+1） |
 | ~~P1~~ | ~~while/cond/局部变量符号槽~~ | ✅ 已修复（while 无 WHILE 槽/末体无 POP；cond 测试正序+结果倒序） |
-| P1 | i18n.lsp 混合模式 | defun+顶层表达式混杂，`cad_symbols.py` 持续块规则 |
+| P0 | t-series 剩余符号槽差异（t03/t09-t15） | 字节级兼容补齐（见 8.C1） |
+| P0 | i18n.lsp 混合模式 | defun+顶层交错持续块规则（见 8.C2） |
+| P1 | 工具链健壮性 | `compiler/cli.py` ast 遮蔽、README/打包矛盾、validate 补强（见 8.A） |
+| P1 | 测试与 CI 完善 | t03/t09-t15 byte-identity 回归、mypy、twine check（见 8.B） |
+| P2 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见 8.D） |
 | P2 | CAD 加载器内部逆向 | gvar 表精确模型 |
 | P2 | 性能与多版本兼容 | 工具链健壮性 |
 
@@ -277,9 +284,9 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 ## 6. 验收标准
 
-- **P0 完成**：`pytest` 167/167 通过；反编译参数名正确；链接输出 CAD 全部函数可调用
-- **P1 完成**：测试集 ≥ 20 个用例全部 CAD 执行正确；字节码逐字节一致；纯 `&rest` 编译警告已实施
-- **P2 完成**：多版本 CAD 兼容；大文件性能达标
+- **P0 完成**：`pytest` 200/200 通过；t01-t15 全部与 CAD golden 逐字节一致；i18n 混合模式字节一致
+- **P1 完成**：工具链健壮性修复落地；t03/t09-t15 byte-identity 回归不 xfail；CI 绿
+- **P2 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过；多版本 CAD 兼容；大文件性能达标
 
 ---
 
@@ -289,3 +296,90 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - `docs/fas-format.md` — FAS4 二进制格式
 - `docs/opcodes.md` — 操作码参考
 - `docs/development.md` — 架构详解
+
+---
+
+## 8. 功能完善开发计划（2026-08）
+
+> 基于 v0.1.9（200/200 测试通过，9 个 golden 对字节一致）与 CAD golden 实测
+> 差异分析制定。四个方向按优先级：**字节级 CAD 兼容补齐（P0）** →
+> **工具链健壮性 / 测试与 CI（P1）** → **ZELX 复杂文件压缩（P2）**。
+
+### 8.A 工具链健壮性（P1）
+
+| 任务 | 说明 |
+|------|------|
+| A1 修复 `python compiler/cli.py` 崩溃 | `compiler/ast.py` 遮蔽 stdlib `ast` 导致循环导入。建议重命名 `ast.py` → `ast_nodes.py`（更新全部 import）；或保留现状仅文档说明 |
+| A2 README 与打包矛盾 | 实测 wheel 已含 `tools/*.py`（15 个文件），README 却写"不随 pip 包分发"。修正表述 |
+| A3 validate.py 门禁补强 | 对应 §3.8 方案 A：增危险函数 `quit`/`exit`/`startapp`、未使用变量检测（~5 条），保持自包含 |
+| A4 `--analyze` 统计增强 | 补优化前后指令数差、符号槽数、seg 大小 |
+
+### 8.B 测试与 CI 完善（P1）
+
+| 任务 | 说明 |
+|------|------|
+| B1 t-series byte-identity 回归 | 把 `D:/atlisp-test/cad_t*.fas`（8/3 重新编译）拷入 `tests/cad/`，为 t03/t09-t15 增参数化 golden 用例；先 `xfail`（附差异说明），修复后转正 |
+| B2 CI mypy 校验 | CI 已跑 `mypy .`（4 版本矩阵）；本机无法装 mypy 验证，需单独确认零错误 |
+| B3 twine check 依赖 | dev 依赖补 `readme-renderer`，或发布文档注明 |
+| B4 混合模式 roundtrip 测试 | `tests/cad/i18n.lsp` 即混合模式 fixture，加 roundtrip 用例 |
+
+### 8.C 字节级 CAD 兼容补齐（P0，核心）
+
+**C1 符号槽序差异修复（t03/t09-t15，已实测定位）**
+
+实测差异汇总（`cad_symbols.py` 符号收集序与 CAD 不一致）：
+
+| 文件 | 差异数 | 差异形态 | 根因假设 |
+|---|---|---|---|
+| t03_fib | 9 处 | 偏移 -1（cc 槽=CAD 槽+1） | 递归多函数 USUBR/符号去重序 |
+| t09_funcall | 9 处 | 偏移 -1 | 同上（funcall 场景） |
+| t10_init | 4 处 | 偏移 +2/-2 | 顶层/init 符号序 |
+| t11_localvars | 59 处（-9 len） | 最大缺口 | 局部变量符号槽收集规则（`_al-bind-alist`） |
+| t12_quote | 13 处（+2 len） | 长度不同 | quote 常量符号处理 |
+| t13_nested_if | 9 处 | 槽 2↔4 互换 | if 嵌套参数槽序 |
+| t14_command | 1 处 | cc=06 cad=05 | `c:` 命令函数参数槽 |
+| t15_cad_funcs | 10 处 | 槽 4↔6、3↔5 互换 | 多独立函数 builtin 去重序 |
+
+技术路线（每项用 CAD golden 实测迭代 `CadSymbolCollector`）：
+1. t15/t13（简单 swap）：改 `_collect_byteorder` 中 builtin 与函数名的去重顺序
+2. t03/t09（偏移 -1）：检查递归函数名重复槽与 builtin 共享槽的先后
+3. t11（局部变量）：`_collect_byteorder` 处理 `/ local` 符号的 CAD 特殊顺序（对照 `_al-bind-alist` 逆向）
+4. t12（quote 常量）：`to_const`/CONST_MARK 注册序与 CAD 的 LIST 块合并差异
+5. t14（c: 命令）：`c:` 前缀函数参数槽规则
+
+**C2 i18n 混合模式（最大缺口，1139 字节差 / -69 len）**
+
+- 根因：`i18n.lsp` = defun + 顶层表达式**交错**（非先 defun 后顶层），
+  `cad_symbols.py` 与 `_build_cad_module_code` 只支持"函数块在前、顶层在后"
+- 方案：
+  1. 扩展 `CadSymbolCollector.collect_program` 支持 defun/顶层交错时的"持续块规则"
+     （顶层表达式符号在函数体内建之前，按源码序跨块收集）
+  2. `ResourceBuilder.build` 的 `module_entries` 切分逻辑改为按交错序
+  3. 用 `tests/cad/i18n.lsp` + `i18n-cad.fas` 迭代至字节一致
+- 验收：`i18n.lsp` 编译 seg0/seg1 与 CAD 逐字节一致
+
+**C3 补充 CAD 验证样本**
+
+- 建立 `samples/cad-compare/` 新样本集（while/cond/局部变量/foreach/repeat/
+  递归多函数/c: 命令），供 C1/C2 迭代对照
+
+### 8.D ZELX 复杂文件压缩（P2）
+
+| 任务 | 说明 |
+|------|------|
+| D1 复刻 ZWCAD 压缩重编码 | `zelx_build.py` 对小型/简单文件逐字节一致（15/15 样本）；复杂文件缺 ZWCAD 压缩重编码（模块代码重编码 + 符号重排）。对照 `docs/zelx-format.md` §5-§6 与 `tools/zelx_diff.py` 逆向 LispConverter.exe |
+| D2 ZELX 真实加载验证 | 现状标记"ZWCAD 能否加载需真实验证"；建立 ZWCAD 测试实例验证小型/复杂 zelx 加载 |
+
+### 8.E 执行顺序与验收
+
+**执行顺序**：
+1. **8.C 先行**（P0）：t15→t13→t03/t09→t14→t12→t11→C2 i18n
+2. **8.B 并行**：B1 建立 xfail 回归框架，修复一个转正一个
+3. **8.A 穿插**（低风险）：A1 ast 重命名、A2 文档、A3 validate
+4. **8.D 最后**（P2，独立）
+
+**验收标准**：
+- **8.C 完成**：t01-t15 全部与 CAD golden 逐字节一致；i18n 混合模式字节一致；`pytest` 全绿
+- **8.A 完成**：`python compiler/cli.py` 可运行；README 无矛盾；validate 增规则有测试
+- **8.B 完成**：t03/t09-t15 有 byte-identity 回归（转正后不 xfail）；CI 绿
+- **8.D 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过

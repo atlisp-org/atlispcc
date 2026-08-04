@@ -4,6 +4,7 @@ sys.path.insert(0, '.')
 
 import os
 import tempfile
+import pytest
 from compiler.parser import Parser
 from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
@@ -240,27 +241,15 @@ def test_multi_setq():
     assert SEG_TERMINATOR in data
 
 
-def test_exit_emits_exit_opcode():
-    """(exit) compiles to PUSH_T + EXIT_IF_NOT_ZERO (0x3e), not a bogus USUBR call."""
-    data = _compile_to_fas('(defun foo () (exit))')
+@pytest.mark.parametrize('form', ['(exit)', '(quit)'])
+def test_exit_quit_emits_exit_opcode(form):
+    """(exit)/(quit) compile to PUSH_T + EXIT_IF_NOT_ZERO (0x3e), not a USUBR."""
+    data = _compile_to_fas(f'(defun foo () {form})')
     _, bc, _, _ = _parse_fas(data)
     # PUSH_T (0x02) followed by EXIT_IF_NOT_ZERO (0x3e)
     assert b'\x02\x3e' in bc, f'Expected PUSH_T; EXIT_IF_NOT_ZERO, got {bc!r}'
-
-
-def test_quit_emits_exit_opcode():
-    """(quit) also compiles to the EXIT mechanism."""
-    data = _compile_to_fas('(defun foo () (quit))')
-    _, bc, _, _ = _parse_fas(data)
-    assert b'\x02\x3e' in bc, f'Expected PUSH_T; EXIT_IF_NOT_ZERO, got {bc!r}'
-
-
-def test_exit_symbol_not_in_bytecode():
-    """exit/quit are builtins and must not appear as USUBR external calls."""
-    data = _compile_to_fas('(defun foo () (exit))')
-    _, bc, seg1, _ = _parse_fas(data)
-    # 0x35 = USUBR opcode; exit must not be encoded as one
-    assert b'\x35' not in bc, f'USUBR emitted for exit: {bc!r}'
+    # 0x35 = USUBR opcode; exit/quit must not be encoded as one
+    assert b'\x35' not in bc, f'USUBR emitted for {form}: {bc!r}'
 
 
 #: (source, cad_golden) pairs where our compact-stub output must be byte-identical
@@ -277,37 +266,45 @@ CAD_GOLDEN_PAIRS = [
     ('t05_cond.lsp', 't05_cond_cad.fas'),
 ]
 
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def test_byte_identity_with_cad_goldens():
-    """Compiled compact-stub output must be byte-identical to CAD goldens.
+
+def _golden_paths(src_name, golden_name):
+    src = os.path.join(_BASE_DIR, src_name)
+    golden = os.path.join(_BASE_DIR, golden_name)
+    if not (os.path.exists(src) and os.path.exists(golden)):
+        pytest.skip(f'missing golden fixture: {src_name}/{golden_name}')
+    return src, golden
+
+
+@pytest.mark.parametrize('src_name,golden_name', CAD_GOLDEN_PAIRS,
+                         ids=[s for s, _ in CAD_GOLDEN_PAIRS])
+def test_byte_identity_with_cad_golden(src_name, golden_name):
+    """Compiled compact-stub output must be byte-identical to a CAD golden.
 
     Regression guard: multi-function + quoted-lambda previously emitted
     PUSH_G <symtab idx> for the lambda const instead of <gvar slot - 1>;
     single-function cases masked it (nfuncs == 1). rt_e.lsp covers the
-    multi+lambda path fixed in _patch_usubr_idx.
+    multi+lambda path fixed in _patch_usubr_idx; t04_while/t05_cond cover
+    the while/cond bytecode alignment fixes.
     """
     from compiler.cli import cmd_compile
     from decompiler.fas4_decompiler import Fas4Parser
 
-    base = os.path.dirname(__file__)
+    src, golden = _golden_paths(src_name, golden_name)
     with tempfile.TemporaryDirectory() as tmp:
-        for src_name, golden_name in CAD_GOLDEN_PAIRS:
-            src = os.path.join(base, src_name)
-            golden = os.path.join(base, golden_name)
-            if not (os.path.exists(src) and os.path.exists(golden)):
-                continue
-            out = os.path.join(tmp, 'out.fas')
-            cmd_compile(src, out)
-            ours = Fas4Parser().parse(out)
-            ref = Fas4Parser().parse(golden)
-            assert ours.nsyms == ref.nsyms, (
-                f'{src_name}: nsyms {ours.nsyms} != {ref.nsyms}'
-            )
-            assert ours.bytecode == ref.bytecode, (
-                f'{src_name}: seg0 bytecode differs from CAD golden\n'
-                f'  ours: {ours.bytecode.hex()}\n'
-                f'  CAD : {ref.bytecode.hex()}'
-            )
-            assert ours.resource_items == ref.resource_items, (
-                f'{src_name}: seg1 resource items differ from CAD golden'
-            )
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        ours = Fas4Parser().parse(out)
+        ref = Fas4Parser().parse(golden)
+        assert ours.nsyms == ref.nsyms, (
+            f'{src_name}: nsyms {ours.nsyms} != {ref.nsyms}'
+        )
+        assert ours.bytecode == ref.bytecode, (
+            f'{src_name}: seg0 bytecode differs from CAD golden\n'
+            f'  ours: {ours.bytecode.hex()}\n'
+            f'  CAD : {ref.bytecode.hex()}'
+        )
+        assert ours.resource_items == ref.resource_items, (
+            f'{src_name}: seg1 resource items differ from CAD golden'
+        )

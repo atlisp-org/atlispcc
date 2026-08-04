@@ -13,8 +13,13 @@ from decompiler.fas4_decompiler import (
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(TESTS_DIR)
 
-PDI_FAS = os.path.join(ROOT_DIR, 'samples', 'PDI.fas')
+PDI_FAS = os.path.join(ROOT_DIR, 'tests', 'cad', 'i18n.fas')
 CAD_FAS = os.path.join(TESTS_DIR, 'fun-cad.fas')
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(PDI_FAS),
+    reason='tests/cad/i18n.fas reference fixture not present',
+)
 
 
 def _disassemble(fas_path):
@@ -24,8 +29,6 @@ def _disassemble(fas_path):
 
 
 def test_disasm_pdi_no_unknown_opcodes():
-    if not os.path.exists(PDI_FAS):
-        pytest.skip('PDI.fas not found')
     insts, _ = _disassemble(PDI_FAS)
     assert len(insts) > 0
     unks = [i for i in insts if i.op_name.startswith('UNK')]
@@ -33,8 +36,6 @@ def test_disasm_pdi_no_unknown_opcodes():
 
 
 def test_disasm_pdi_offsets_monotonic():
-    if not os.path.exists(PDI_FAS):
-        pytest.skip('PDI.fas not found')
     insts, _ = _disassemble(PDI_FAS)
     for prev, inst in zip(insts, insts[1:]):
         assert inst.offset >= prev.offset + prev.size, (
@@ -43,8 +44,6 @@ def test_disasm_pdi_offsets_monotonic():
 
 
 def test_disasm_pdi_structure():
-    if not os.path.exists(PDI_FAS):
-        pytest.skip('PDI.fas not found')
     insts, _ = _disassemble(PDI_FAS)
     opnames = {i.op_name for i in insts}
     for expected in ('DEFUN', 'END_DEFUN', 'INIT_ARGS', 'USUBR', 'PUSH_VALUE', 'GET_LOCAL', 'SET_LOCAL'):

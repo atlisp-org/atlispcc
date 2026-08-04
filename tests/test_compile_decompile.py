@@ -1,7 +1,7 @@
+import os
 import sys
 sys.path.insert(0, '.')
 
-import os
 import tempfile
 import pytest
 from compiler.parser import Parser
@@ -212,31 +212,65 @@ def test_init_referenced_helper_kept():
     assert ok, f'Validation failed: {errs}'
 
 
-def test_complex_lsp_roundtrip_opt_levels():
-    """Round-trip a real complex LSP file at O2 and O3."""
+@pytest.mark.parametrize('level', [2, 3])
+def test_complex_lsp_roundtrip_opt_level(level):
+    """Round-trip a real complex LSP file at a given optimization level."""
     from compiler.cli import cmd_compile
     src_path = os.path.join(os.path.dirname(__file__), 'test_complex_roundtrip.lsp')
     with open(src_path, encoding='utf-8') as f:
         src = f.read()
-    for level in (2, 3):
-        out_path = os.path.join(tempfile.gettempdir(), f'cx_rt_{level}_{os.urandom(4).hex()}.fas')
-        try:
-            cmd_compile(src, out_path, opt_level=level)
-            parser = Fas4Parser()
-            fas = parser.parse(out_path)
-            disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
-            insts = disasm.disassemble(fas.bytecode, fas.nsyms)
-            cfa = ControlFlowAnalyzer(insts, fas.function_catalog)
-            funcs = cfa.find_functions()
-            gen = LispGenerator(fas)
-            result = gen.generate(funcs, out_path)
-            ok, errs = _validate(result)
-            assert ok, f'O{level} validation failed: {errs}'
-            assert 'while' in result.lower()
-            assert 'foreach' in result.lower()
-        finally:
-            if os.path.exists(out_path):
-                os.unlink(out_path)
+    out_path = os.path.join(tempfile.gettempdir(), f'cx_rt_{level}_{os.urandom(4).hex()}.fas')
+    try:
+        cmd_compile(src, out_path, opt_level=level)
+        parser = Fas4Parser()
+        fas = parser.parse(out_path)
+        disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+        insts = disasm.disassemble(fas.bytecode, fas.nsyms)
+        cfa = ControlFlowAnalyzer(insts, fas.function_catalog)
+        funcs = cfa.find_functions()
+        gen = LispGenerator(fas)
+        result = gen.generate(funcs, out_path)
+        ok, errs = _validate(result)
+        assert ok, f'O{level} validation failed: {errs}'
+        assert 'while' in result.lower()
+        assert 'foreach' in result.lower()
+    finally:
+        if os.path.exists(out_path):
+            os.unlink(out_path)
+
+
+_T_SERIES = [
+    't01_math', 't02_recursion', 't03_fib', 't06_strcat', 't07_list',
+    't08_apply_mapcar', 't09_funcall', 't10_init', 't11_localvars',
+    't12_quote', 't13_nested_if', 't14_command', 't15_cad_funcs',
+]
+
+
+@pytest.mark.parametrize('name', _T_SERIES)
+def test_t_series_roundtrip(name):
+    """Compile→decompile→validate each CAD-compat matrix source (t01-t15)."""
+    from compiler.cli import cmd_compile
+    src_path = os.path.join(os.path.dirname(__file__), f'{name}.lsp')
+    if not os.path.exists(src_path):
+        pytest.skip(f'tests/{name}.lsp fixture not present')
+    with open(src_path, encoding='utf-8') as f:
+        src = f.read()
+    out_path = os.path.join(tempfile.gettempdir(), f't_{name}_{os.urandom(4).hex()}.fas')
+    try:
+        cmd_compile(src, out_path)
+        parser = Fas4Parser()
+        fas = parser.parse(out_path)
+        disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+        insts = disasm.disassemble(fas.bytecode, fas.nsyms)
+        cfa = ControlFlowAnalyzer(insts, fas.function_catalog)
+        funcs = cfa.find_functions()
+        gen = LispGenerator(fas)
+        result = gen.generate(funcs, out_path)
+        ok, errs = _validate(result)
+        assert ok, f'{name} validation failed: {errs}'
+    finally:
+        if os.path.exists(out_path):
+            os.unlink(out_path)
 
 
 def test_args_preserved():
@@ -400,10 +434,10 @@ def test_defun_q():
 
 
 def test_real_fas_decompile():
-    """Decompile real FAS4 file (PDI.fas) and validate output."""
-    fas_path = os.path.join(os.path.dirname(__file__), '..', 'samples', 'PDI.fas')
+    """Decompile a real multi-function FAS file and validate output."""
+    fas_path = os.path.join(os.path.dirname(__file__), 'cad', 'i18n-cad.fas')
     if not os.path.exists(fas_path):
-        pytest.skip('PDI.fas not found')
+        pytest.skip('tests/cad/i18n-cad.fas reference fixture not present')
 
     from decompiler.fas4_decompiler import Fas4Parser, Disassembler, \
         ControlFlowAnalyzer, LispGenerator
@@ -422,10 +456,8 @@ def test_real_fas_decompile():
         result = gen.generate(functions, out_path)
 
     try:
-        assert '(defun c:' in result or '(defun C:' in result, \
-            f'Expected function definition in decompiled output'
-        assert 'dict_name' in result or 'pattern' in result or 'purge' in result.lower(), \
-            'Expected dictionary purge logic in output'
+        assert '(defun' in result, f'Expected function definitions in decompiled output'
+        assert len(result) > 500, f'Expected substantial decompiled output, got {len(result)} chars'
 
         ok, errs = _validate(result)
         assert ok, f'Validation failed: {errs}'

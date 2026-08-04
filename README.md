@@ -27,7 +27,7 @@ python -m decompiler.fas4_decompiler input.fas output.lsp   # 反编译
 python -m tools.validate output.lsp                          # 验证
 ```
 
-> 在源码仓库中也可直接运行脚本：`python compiler/cli.py ...`、`python decompiler/fas4_decompiler.py ...`、`python tools/validate.py ...`。
+> 在源码仓库中也可用 `python -m` 形式直接运行：`python -m compiler.cli ...`、`python -m decompiler.fas4_decompiler ...`、`python -m tools.validate ...`（**注意**：不要用 `python compiler/cli.py` 直接运行——`compiler/ast.py` 会遮蔽 stdlib `ast` 导致循环导入）。
 
 ## CLI 快速参考
 
@@ -48,13 +48,13 @@ atlispcc disasm <input.fas> [output.lasm]                        # 反汇编 FAS
 ## 快速开始
 
 ```sh
-# 反编译
-atlispcc decompile samples/bib.fas samples/bib_generic.lsp
+# 反编译（tests/cad/i18n-cad.fas 为仓库内 CAD 自包含样本）
+atlispcc decompile tests/cad/i18n-cad.fas output.lsp
 
 # 验证语法
-atlispcc validate samples/bib_generic.lsp
+atlispcc validate output.lsp
 
-# 期望输出： [PASS] bib_generic.lsp
+# 期望输出： [PASS] output.lsp
 ```
 
 ## 子命令详解
@@ -226,17 +226,21 @@ atlispcc validate combined.lsp
 | &optional/&rest | ✅ | `(f 3 2)` → 5, `(g 1 2 3)` → (1 (2 3)) |
 | 勾股定理 | ✅ | `(hypot 3 4)` → 5.0 |
 | 顶层 setq/set | ✅ | setq 在 defun 前后均正确执行 |
-| lambda/quote | ⚠️ | lambda 参数绑定待增强 |
+| lambda/quote | ✅ | `(map-inc '(1 2 3))` → (2 3 4)；lambda 参数局部化正确 |
 
 > 单函数文件（`fun.lsp`、`fact.lsp`）与 CAD 编译器输出解密后逐字节一致。
 
 ## 完整示例
 
 ```sh
-atlispcc decompile samples/bib.fas samples/bib_generic.lsp
-atlispcc validate samples/bib_generic.lsp
-atlispcc decompile samples/PDI.fas samples/PDI_generic.lsp
-atlispcc validate samples/PDI_generic.lsp
+# 编译 → 反编译 → 验证
+atlispcc compile input.lsp input.fas
+atlispcc decompile input.fas recovered.lsp
+atlispcc validate recovered.lsp
+
+# 反编译仓库内 CAD 样本
+atlispcc decompile tests/cad/i18n-cad.fas output.lsp
+atlispcc validate output.lsp
 ```
 
 ## 包系统 (CL-style Namespace)
@@ -309,7 +313,7 @@ atlispcc validate samples/PDI_generic.lsp
 - `docs/opcodes.md` — 操作码参考
 - `docs/lasm.md` — LASM 汇编语言参考（disasm/asm 文本格式）
 - `docs/development.md` — 开发者说明（架构、管线、测试、代码规范）
-- `docs/development-plan.md` — 开发计划、遗留问题与路线图
+- `docs/development-plan.md` — 开发计划、遗留问题与功能完善路线图
 
 ## 安全
 

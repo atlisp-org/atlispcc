@@ -2,7 +2,7 @@
 
 > 本文档是 `atlispcc`（FAS4 编译器/反编译器）对 **AutoCAD 编译器输出格式**
 > （紧凑 stub 格式）逆向与兼容实现的完整技术规范。所有结论均基于
-> AutoCAD 24.1s 实测验证与 `tests/fun-cad.fas`、`samples/PDI.fas`、`samples/bib.fas` 等
+> AutoCAD 24.1s 实测验证与 `tests/fun-cad.fas`、`tests/cad/i18n-cad.fas` 等
 > 参考文件逐字节对比。
 >
 > 实测成果：本项目编译的单函数 LSP 的 seg0 字节码与 AutoCAD 产物**逐字节一致**
@@ -22,7 +22,7 @@
 | 符号寻址 | function_gvars 间接 | 符号槽直接（注册序） |
 | USUBR/FUNC | 5/6 字节 | 3 字节 |
 | 函数目录 | mvar 表重建 | 资源段 DEFCODE 序列 |
-| 参考产物 | `samples/bib.fas` / `samples/PDI.fas` | `tests/fun-cad.fas` |
+| 参考产物 | `tests/cad/i18n-cad.fas` / `tests/cad/i18n.fas` | `tests/fun-cad.fas` |
 
 ### 1.2 文件总布局
 
@@ -331,7 +331,7 @@ for i in 0..len(data)-1:
 2. 检查资源段 DEFCODE 序列（`5c 00 00 32 <off> 5b <name> 00 00 3a`）
 3. 平局且无 gvar DEFUN → 用函数目录判定
 
-已验证：`fun-cad.fas`→stub，`samples/PDI.fas`/`samples/bib.fas`→自包含。
+已验证：`fun-cad.fas`→stub，`tests/cad/i18n-cad.fas`/`tests/cad/i18n.fas`→自包含。
 
 > **汇编器独立判定**（`asm/assembler.py` 的 `_detect_compact`）：
 > 反编译共享的 `is_compact_stub` 对多函数紧凑 stub（UNK 平局且函数目录非空）会误判为

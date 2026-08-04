@@ -238,8 +238,8 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - 反编译回归参考：AutoCAD 产物 `tests/fun-cad.fas`（对应 `tests/fun.lsp`）
 
 反编译器同时支持两种布局：
-- **自包含格式**（`samples/bib.fas`/`samples/PDI.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
-- **紧凑 stub 格式**（AutoCAD 编译器输出）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
+- **自包含格式**（`tests/cad/i18n-cad.fas`、`tests/cad/i18n.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
+- **紧凑 stub 格式**（AutoCAD 编译器输出，`tests/fun-cad.fas`）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
 
 生成器会发出包装辅助函数以避免内建冲突：
 - `fas-polar1`、`fas-rtos1`、`fas-rtos3`、`fas-getvar2`、`fas-getvar3`
@@ -273,7 +273,7 @@ python -m py_compile decompiler/fas4_decompiler.py
 python -m py_compile compiler/opt.py
 
 # 编译 + 反编译 + 验证
-python compiler/cli.py compile -O2 tests/test_while.lsp test.fas
+python -m compiler.cli compile -O2 tests/test_setq_while.lsp test.fas
 python -m decompiler.fas4_decompiler test.fas test.lsp
 python -m tools.validate test.lsp
 
@@ -295,23 +295,23 @@ mypy .
 
 ```sh
 # FAS4 文件分析
-python -m tools.fas-analyzer samples/bib.fas
-python -m tools.fas-analyzer samples/bib.fas --dump
-python -m tools.fas-analyzer samples/bib.fas --json
+python -m tools.fas-analyzer tests/cad/i18n-cad.fas
+python -m tools.fas-analyzer tests/cad/i18n-cad.fas --dump
+python -m tools.fas-analyzer tests/cad/i18n-cad.fas --json
 ```
 
 ### 函数分割
 
 ```sh
-python -m tools.fas-split samples/bib.fas
-python -m tools.fas-split samples/bib.fas --trim
-python -m tools.fas-split samples/bib.fas --outdir ./split_output
+python -m tools.fas-split tests/cad/i18n-cad.fas
+python -m tools.fas-split tests/cad/i18n-cad.fas --trim
+python -m tools.fas-split tests/cad/i18n-cad.fas --outdir ./split_output
 ```
 
 ### 解密/破解
 
 ```sh
-python -m tools.decrypt_fas4 samples/bib.fas
+python -m tools.decrypt_fas4 tests/cad/i18n-cad.fas
 python -m tools.crack_key encrypted.fas
 ```
 
