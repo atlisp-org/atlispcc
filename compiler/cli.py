@@ -151,6 +151,17 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
                     out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                     continue
+            # 常量引用（quoted lambda 等 CONST 条目）：sym_of 只认 SYMBOL/STRING，
+            # CONST 在 gvar 表里注册于 gvar 槽 = symtab 槽 - nfuncs + 2，
+            # PUSH_G 操作数 = gvar 槽 - 1 = symtab 槽 - nfuncs + 1。
+            # 单函数（nfuncs=1）恰好使 codegen 原始槽 = gvar-1，无需此处处理。
+            idx0 = inst.operands[0]
+            if 0 <= idx0 < len(symtab.entries) and symtab.entries[idx0][0] == "CONST":
+                new_idx = idx0 - len(func_args) + 1
+                if 0 <= new_idx <= 0xFFFF:
+                    opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
+                    out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                    continue
         elif inst.op_name == "USUBR" and len(inst.operands) >= 2:
             argc, idx = inst.operands[0], inst.operands[1]
             sym = sym_of(idx)

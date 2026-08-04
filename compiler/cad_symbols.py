@@ -223,7 +223,6 @@ class CadSymbolCollector:
             if node.else_expr:
                 self._collect_byteorder(node.else_expr, out, arg_names)
         elif isinstance(node, WhileNode):
-            out.append(("while", False))
             if node.cond:
                 self._collect_byteorder(node.cond, out, arg_names)
             for expr in node.body:
@@ -232,7 +231,6 @@ class CadSymbolCollector:
             for form in node.forms:
                 self._collect_byteorder(form, out, arg_names)
         elif isinstance(node, ForeachNode):
-            out.append(("foreach", False))
             for expr in node.body:
                 self._collect_byteorder(expr, out, arg_names)
             if node.list_expr:
@@ -240,14 +238,20 @@ class CadSymbolCollector:
             if node.var is not None:
                 self._collect_byteorder(node.var, out, arg_names)
         elif isinstance(node, RepeatNode):
-            out.append(("repeat", False))
             for expr in node.body:
                 self._collect_byteorder(expr, out, arg_names)
             if node.count:
                 self._collect_byteorder(node.count, out, arg_names)
         elif isinstance(node, Cond):
-            for clause in node.clauses:
-                for item in clause:
+            # CAD cond 字节码：测试体按源码序发出（各子句条件），结果体按源码
+            # 倒序发出（末子句体最先）。符号引用序 = 测试正序 + 结果倒序
+            # （t05_cond 实测：> < T zero positive negative）。
+            clauses = [c for c in node.clauses if c]
+            for clause in clauses:
+                if clause:
+                    self._collect_byteorder(clause[0], out, arg_names)
+            for clause in reversed(clauses):
+                for item in clause[1:]:
                     self._collect_byteorder(item, out, arg_names)
         elif isinstance(node, ListExpr):
             for item in node.items:

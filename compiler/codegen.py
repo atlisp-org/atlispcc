@@ -483,9 +483,11 @@ class CodeGenerator:
             buf.emit(encode_op_u16(JMP16_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_end, 2)
 
-        for form in node.body:
+        for i, form in enumerate(node.body):
             self._emit_expr(buf, form)
-            buf.emit(encode_op_noarg(POP))
+            # CAD stub：最后一个 form 后无 POP（结果被 while 丢弃）；中间 form 有。
+            if not self.stub_format or i < len(node.body) - 1:
+                buf.emit(encode_op_noarg(POP))
 
         jmp_back = buf.pos()
         buf.emit(encode_op_s32(JUMP, 0))
@@ -798,8 +800,12 @@ class CodeGenerator:
 
         for expr in func.body[:-1]:
             self._emit_expr(buf, expr)
-            # CAD stub: SETQ_G 自身消费栈顶值，中间 setq 后无 POP（v10/v11 实测）。
-            if not (self.stub_format and isinstance(expr, Setq)):
+            # CAD stub: SETQ_G 自身消费栈顶值，中间 setq 后无 POP（v10/v11 实测）；
+            # while 循环结束栈已清空（条件被 BR_IF_TRUE 消费、体结果各被 POP），
+            # 中间 while 后同样无 POP（t04_while 实测）。
+            if not self.stub_format or isinstance(expr, Setq) or isinstance(expr, WhileNode):
+                pass
+            else:
                 buf.emit(encode_op_noarg(POP))
         if func.body:
             self._emit_expr(buf, func.body[-1], _tail=True)
