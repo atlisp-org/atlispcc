@@ -842,7 +842,15 @@ class CodeGenerator:
         for name in set(self.local_slots.keys()) - set(arity_bound):
             pass
 
-        for expr in func.body[:-1]:
+        # CAD 忽略 defun 后第一个裸字符串（docstring，AutoLISP 惯例）：
+        # `(defun f () "文档说明" body...)` 编译时不生成该字符串
+        # （docstr.fas CAD 实测 strings 为空）。仅当它是函数体**首个**独立
+        # 字符串字面量时跳过，不影响 `(strcat "a" "b")` 等表达式内字符串。
+        body = func.body
+        if body and isinstance(body[0], String) and len(body) > 1:
+            body = body[1:]
+
+        for expr in body[:-1]:
             self._emit_expr(buf, expr)
             # CAD stub: SETQ_G 自身消费栈顶值，中间 setq 后无 POP（v10/v11 实测）；
             # while 循环结束栈已清空（条件被 JMP32_IFNOT 消费、体结果各被 POP），
@@ -851,8 +859,8 @@ class CodeGenerator:
                 pass
             else:
                 buf.emit(encode_op_noarg(POP))
-        if func.body:
-            self._emit_expr(buf, func.body[-1], _tail=True)
+        if body:
+            self._emit_expr(buf, body[-1], _tail=True)
         elif self.stub_format:
             buf.emit(encode_op_noarg(PUSH_NIL))
 

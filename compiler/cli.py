@@ -95,6 +95,36 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     for idx, v in enumerate(fg):
         if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
             gvar_map.setdefault(str(v[1]).upper(), idx)
+
+    def _strip_list_markers(v):
+        """symtab 常量结构 → fg 表可比较形式（规范化大小写/INT/REAL/LIST）。
+
+        fg 表里 BUILD_LIST 结果为裸内容元组（无 `'LIST'` 前缀），符号大写、
+        整数为裸 int、实数裸 float；symtab CONST entry 保留 `('LIST', items)`、
+        `('SYMBOL', name)`、`('INT', v)` 等标记。递归转换以便结构匹配。
+        """
+        if isinstance(v, tuple) and len(v) == 2:
+            if v[0] == 'LIST':
+                return tuple(_strip_list_markers(i) for i in v[1])
+            if v[0] == 'SYMBOL':
+                return ('SYMBOL', str(v[1]).upper())
+            if v[0] in ('INT', 'INT8', 'INT32'):
+                return int(v[1])
+            if v[0] == 'REAL':
+                return float(v[1])
+            if v[0] in ('STRING', 'T', 'NIL'):
+                return v
+        if isinstance(v, (list, tuple)):
+            return tuple(_strip_list_markers(i) for i in v)
+        return v
+
+    # CONST 常量（quoted lambda/list 等）在 fg 表里注册为嵌套结构；用结构匹配
+    # 建立 结构 → gvar 槽 映射，供 CONST 引用编址（i18n 实测 ANSI 表 fg[98]、
+    # loc-file 单元素列表 fg[94]）。排除原子（SYMBOL/STRING/REAL/CONS/FUNC）。
+    const_map: dict = {}
+    for idx, v in enumerate(fg):
+        if isinstance(v, tuple) and not (len(v) == 2 and v[0] in ('SYMBOL', 'STRING', 'REAL', 'CONS', 'FUNC')):
+            const_map.setdefault(v, idx)
     if not gvar_map:
         return seg0
     from decompiler.fas4_decompiler import Disassembler
@@ -152,19 +182,40 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                     continue
             # 常量引用（quoted lambda 等 CONST 条目）：sym_of 只认 SYMBOL/STRING，
-            # CONST 在 gvar 表里注册于 gvar 槽 = symtab 槽 - nfuncs + 2，
-            # PUSH_G 操作数 = gvar 槽 - 1 = symtab 槽 - nfuncs + 1。
+            # CONST 在 fg 表里注册为嵌套结构（gvar 槽 = const_map 命中槽），
+            # PUSH_G 操作数 = gvar 槽 - 1（i18n 实测 ANSI 表 fg[98] → 操作数 97）。
             # 字符串（不在 GVARINIT 表）：函数体字符串注册于符号槽末尾
             # （gvar 槽 = nsyms），PUSH_G 操作数 = gvar 槽 - 1 = nsyms - 1
             # （t15 实测 idx 8 → 槽 6、t10 混合模式 idx 8 → 槽 3，nsyms 分别为 7/4）。
             # 单函数（nfuncs=1）恰好使 codegen 原始槽 = gvar-1，无需此处处理。
             idx0 = inst.operands[0]
-            if 0 <= idx0 < len(symtab.entries) and symtab.entries[idx0][0] in ("CONST", "STRING"):
-                if symtab.entries[idx0][0] == "STRING":
+            if 0 <= idx0 < len(symtab.entries):
+                etype = symtab.entries[idx0][0]
+                if etype == "CONST":
+                    const_structure = symtab.entries[idx0][1]
+                    # quoted 单符号 `'sym`：作为符号引用，按 gvar 槽编址
+                    # （i18n 实测 `'sym` → SYM 的 gvar 槽；CAD quoted symbol）。
+                    if (isinstance(const_structure, tuple) and len(const_structure) == 2
+                            and const_structure[0] == 'SYMBOL'):
+                        gslot = gvar_map.get(str(const_structure[1]).upper())
+                        if gslot is not None:
+                            new_idx = gslot - 1
+                        else:
+                            new_idx = idx0 - len(func_args) + 1
+                    else:
+                        fgstruct = _strip_list_markers(const_structure)
+                        gslot = const_map.get(fgstruct)
+                        if gslot is not None:
+                            new_idx = gslot - 1
+                        else:
+                            # 未命中 fg（如简单常量）：沿用原公式
+                            # gvar 槽 = symtab 槽 - nfuncs + 2 → 操作数 = - nfuncs + 1。
+                            new_idx = idx0 - len(func_args) + 1
+                elif etype == "STRING":
                     new_idx = nsyms - 1
                 else:
-                    new_idx = idx0 - len(func_args) + 1
-                if 0 <= new_idx <= 0xFFFF:
+                    new_idx = None
+                if new_idx is not None and 0 <= new_idx <= 0xFFFF:
                     opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
                     out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                     continue

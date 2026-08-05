@@ -27,6 +27,18 @@ from compiler.ast_nodes import (
 CONST_MARK = '__const__'
 
 
+def strip_docstring(body):
+    """CAD 忽略 defun 后第一个裸字符串（docstring）。
+
+    `(defun f () "文档说明" ...)` 编译时丢弃该字符串（AutoLISP 惯例，
+    docstr.fas CAD 实测 strings 为空）。仅当它是函数体**首个**独立字符串
+    字面量时返回剥离后的列表；空体或仅 docstring 时返回原列表（保持空体）。
+    """
+    if len(body) > 1 and isinstance(body[0], String):
+        return body[1:]
+    return body
+
+
 def to_const(node):
     """把引用的字面量节点规范化为常量结构元组；不可常量化的返回 None。
 
@@ -148,7 +160,7 @@ class CadSymbolCollector:
         for f in defuns:
             refs = []
             arg_names = set(f.args)
-            for expr in f.body:
+            for expr in strip_docstring(f.body):
                 self._collect_byteorder(expr, refs, arg_names)
             # 同一函数内对函数名的多次调用共享同一个重复槽（t09 中 sum-of-squares
             # 两次调用 square 仅 1 个重复 SQUARE 槽；CAD 实测）。
@@ -180,6 +192,12 @@ class CadSymbolCollector:
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             for name, force in reversed(kept):
                 self.add(name, force=force or name in module_reg_names)
+            # CAD `/ 局部变量`（多函数）：与单函数一致注入 `_al-bind-alist` +
+            # `(quote (locals...))` 常量；`_al-bind-alist` 全文件共享一个符号槽
+            # （i18n-cad 实测仅 1 个 `_al-bind-alist`），locals 常量每函数独立。
+            if f.locals:
+                self.add('_al-bind-alist')
+                self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
             for arg in reversed(f.args):
                 if arg in self.shared:
                     # 逆序迭代索引 i 对应源码索引 nfuncs-1-i。
@@ -218,7 +236,7 @@ class CadSymbolCollector:
         for f in reversed(defuns):
             arg_names = set(f.args)
             refs = []
-            for expr in f.body:
+            for expr in strip_docstring(f.body):
                 self._collect_byteorder(expr, refs, arg_names)
             seen_forced = set()
             deduped = []
