@@ -271,14 +271,14 @@ class CadSymbolCollector:
                 self.add(loc)
         return self.names
 
-    def _collect_byteorder(self, node, out, arg_names):
+    def _collect_byteorder(self, node, out, arg_names, in_quote=False):
         """按字节码首次引用序向前收集 (name, forced) 列表（单函数算法）。"""
         if isinstance(node, Symbol):
             if node.name not in arg_names and not self._seen(out, node.name):
                 out.append((node.name, False))
         elif isinstance(node, Call):
             for a in node.args:
-                self._collect_byteorder(a, out, arg_names)
+                self._collect_byteorder(a, out, arg_names, in_quote)
             if node.name in ('and', 'or'):
                 # CAD 短路 and/or：编译为 JMP16 指令，不注册符号槽
                 # （i18n-cad 实测无 AND/OR 符号）。
@@ -290,39 +290,43 @@ class CadSymbolCollector:
         elif isinstance(node, Setq):
             for target, value in node.pairs:
                 if value:
-                    self._collect_byteorder(value, out, arg_names)
+                    self._collect_byteorder(value, out, arg_names, in_quote)
                 if isinstance(target, Symbol):
                     if target.name not in arg_names and not self._seen(out, target.name):
                         out.append((target.name, False))
                 else:
-                    self._collect_byteorder(target, out, arg_names)
+                    self._collect_byteorder(target, out, arg_names, in_quote)
         elif isinstance(node, IfNode):
+            # quoted 数据里 `(if ...)` 的 `if` 是符号（CAD 收集 IF，
+            # i18n-cad 实测 save-mt `'((if ...))` 收集 IF）；正常代码用条件指令不收集。
+            if in_quote and not self._seen(out, 'if'):
+                out.append(('if', False))
             if node.cond:
-                self._collect_byteorder(node.cond, out, arg_names)
+                self._collect_byteorder(node.cond, out, arg_names, in_quote)
             if node.then:
-                self._collect_byteorder(node.then, out, arg_names)
+                self._collect_byteorder(node.then, out, arg_names, in_quote)
             if node.else_expr:
-                self._collect_byteorder(node.else_expr, out, arg_names)
+                self._collect_byteorder(node.else_expr, out, arg_names, in_quote)
         elif isinstance(node, WhileNode):
             if node.cond:
-                self._collect_byteorder(node.cond, out, arg_names)
+                self._collect_byteorder(node.cond, out, arg_names, in_quote)
             for expr in node.body:
-                self._collect_byteorder(expr, out, arg_names)
+                self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, Progn):
             for form in node.forms:
-                self._collect_byteorder(form, out, arg_names)
+                self._collect_byteorder(form, out, arg_names, in_quote)
         elif isinstance(node, ForeachNode):
             for expr in node.body:
-                self._collect_byteorder(expr, out, arg_names)
+                self._collect_byteorder(expr, out, arg_names, in_quote)
             if node.list_expr:
-                self._collect_byteorder(node.list_expr, out, arg_names)
+                self._collect_byteorder(node.list_expr, out, arg_names, in_quote)
             if node.var is not None:
-                self._collect_byteorder(node.var, out, arg_names)
+                self._collect_byteorder(node.var, out, arg_names, in_quote)
         elif isinstance(node, RepeatNode):
             for expr in node.body:
-                self._collect_byteorder(expr, out, arg_names)
+                self._collect_byteorder(expr, out, arg_names, in_quote)
             if node.count:
-                self._collect_byteorder(node.count, out, arg_names)
+                self._collect_byteorder(node.count, out, arg_names, in_quote)
         elif isinstance(node, Cond):
             # CAD cond 字节码：测试体按源码序发出（各子句条件），结果体按源码
             # 倒序发出（末子句体最先）。符号引用序 = 测试正序 + 结果倒序
@@ -330,20 +334,22 @@ class CadSymbolCollector:
             clauses = [c for c in node.clauses if c]
             for clause in clauses:
                 if clause:
-                    self._collect_byteorder(clause[0], out, arg_names)
+                    self._collect_byteorder(clause[0], out, arg_names, in_quote)
             for clause in reversed(clauses):
                 for item in clause[1:]:
-                    self._collect_byteorder(item, out, arg_names)
+                    self._collect_byteorder(item, out, arg_names, in_quote)
         elif isinstance(node, ListExpr):
             for item in node.items:
-                self._collect_byteorder(item, out, arg_names)
+                self._collect_byteorder(item, out, arg_names, in_quote)
         elif isinstance(node, QuotedExpr):
             if node.expr is not None:
                 const = to_const(node.expr)
                 if const is not None:
                     out.append(((CONST_MARK, const), False))
                 else:
-                    self._collect_byteorder(node.expr, out, arg_names)
+                    # 不可常量化的 quoted 表达式运行时拆开构建：其内部
+                    # `(if ...)` 等特殊形式的 `if` 作为数据符号收集。
+                    self._collect_byteorder(node.expr, out, arg_names, in_quote=True)
         elif isinstance(node, LambdaNode):
             const = to_const(node)
             if const is not None:
@@ -352,7 +358,7 @@ class CadSymbolCollector:
                 out.append(("lambda", False))
                 lambda_args = set(node.args)
                 for expr in node.body:
-                    self._collect_byteorder(expr, out, arg_names | lambda_args)
+                    self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
         elif isinstance(node, String):
             if not self._seen(out, '"' + node.value + '"'):
                 out.append(('"' + node.value + '"', False))
