@@ -446,7 +446,7 @@ class ResourceBuilder:
         """``32 00 32 <len> 2a 39 01 00`` — CAD 代码引用字节（单函数）。"""
         if -128 <= length <= 127:
             return bytes([0x32, 0x00, 0x32, length & 0xFF, 0x2A, 0x39, 0x01, 0x00])
-        return bytes([0x32, 0x00]) + res_int32(length) + bytes([0x2A]) + res_u16(1) + b'\x00'
+        return bytes([0x32, 0x00]) + res_int32(length) + bytes([0x2A, 0x39, 0x01, 0x00])
 
     @staticmethod
     def _func_ranges_bytes(func_offsets: Dict[str, int], total_len: int) -> bytes:

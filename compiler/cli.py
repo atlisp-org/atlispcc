@@ -300,23 +300,38 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
         cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
         handled = False
         if isinstance(form, Setq):
-            for target, value in form.pairs:
+            # 多对 setq：CAD 输出全部 pair。中间 pair 用
+            # `PUSH_<值>; SETQ_G`（无 DUP），最后一个 pair 用
+            # `PUSH_<值>; DUP; SETQ_G`。值：`'()`/`nil` → PUSH_NIL，
+            # 符号/字符串 → PUSH_G <gvar 槽>。任一对值非常量（INT/REAL/
+            # 列表等，需 codegen）时整条退回通用 codegen 路径。
+            pairs_bc = bytearray()
+            n = len(form.pairs)
+            for i, (target, value) in enumerate(form.pairs):
                 t_idx = _slot_of(symtab, target)
-                v_idx = _slot_of(symtab, value)
-                if t_idx is not None and v_idx is not None:
-                    stmt = bytearray()
-                    stmt += bytes([0x09]) + struct.pack('<H', v_idx + 1)  # PUSH_G 值
-                    stmt += b'\x0b'  # DUP
-                    stmt += bytes([0x06]) + struct.pack('<H', t_idx + 1)  # SETQ_G 变量
-                    return bytes(stmt)
-                elif t_idx is not None and _is_empty_quote(value):
-                    # `(setq x '())`：CAD 用 `PUSH_NIL; DUP; SETQ_G`
-                    # （i18n_v2 顶层 `'()` 实测），值与槽均无需注册。
-                    stmt = bytearray()
-                    stmt += bytes([0x01])  # PUSH_NIL
-                    stmt += b'\x0b'        # DUP
-                    stmt += bytes([0x06]) + struct.pack('<H', t_idx + 1)  # SETQ_G
-                    return bytes(stmt)
+                if t_idx is None:
+                    break
+                pre = bytearray()
+                if _is_empty_quote(value):
+                    pre += bytes([0x01])  # PUSH_NIL
+                    v_ok = True
+                elif isinstance(value, Symbol) and value.name == 'nil':
+                    pre += bytes([0x01])  # PUSH_NIL（CAD 用 PUSH_NIL 值 nil）
+                    v_ok = True
+                else:
+                    v_idx = _slot_of(symtab, value)
+                    if v_idx is None:
+                        break  # 复杂值 → 退回通用路径
+                    pre += bytes([0x09]) + struct.pack('<H', v_idx + 1)  # PUSH_G
+                    v_ok = True
+                if not v_ok:
+                    break
+                if i == n - 1:
+                    pre += b'\x0b'  # DUP（仅在最后一对）
+                pre += bytes([0x06]) + struct.pack('<H', t_idx + 1)  # SETQ_G
+                pairs_bc += pre
+            else:
+                return bytes(pairs_bc)
         fb = BytecodeBuffer()
         cg._emit_expr(fb, form)
         fb.resolve()
