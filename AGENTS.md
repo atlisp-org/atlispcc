@@ -178,7 +178,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 
 - **CLI 与裸管线的顶层表达式差异**：`compiler.cli.cmd_compile`（CLI）把顶层表达式（defun 之外的 `setq`/`princ` 等）编译进 seg1 **模块代码**（CAD 标准），而 `tests/test_compile_decompile.py` 内的裸内存管线（`SymbolTable→Codegen→ResourceBuilder→FasWriter`）把它们留在 seg0 字节码。两者反编译结果不同——CLI 管线的顶层 `(princ "Loading...")` 反编译为 `nil`。写往返测试时二选一保持一致，**不要**把两个管线的 `compile_and_decompile` 混用。
 - **黄金比对（golden）fixture 必须是 CAD 重新编译的产物**：`D:/atlisp-test/cad_t*.fas`（7月31）版本戳是 `;A7/31/26`，当前编译器输出 `;A8/4/26`，整文件比对必然失败（即使 seg0 字节一致）。`tests/cad/` 内 `*_cad.fas`（8月3-4 重新在 CAD 编译）可用作 byte-identity golden。
-- **t-series golden 覆盖现状**：源文件与 golden 均自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，2026-08-04/08-05 CAD `vlisp-compile` 生成，共 15 份）。**15/15 已 byte-identity**（`test_t_series_byte_identity`，t10/t11/t12/t14 于 2026-08-05 转正，`CAD_T_SERIES_DIFF` 已清空）；CAD 真机功能验证见 `scripts/cad_verify.py`。
+- **t-series golden 覆盖现状**：源文件与 golden 均自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，2026-08-04/05 CAD `vlisp-compile` 生成，共 18 份）。**16/18 已 byte-identity**（`test_t_series_byte_identity`；t18_multi_recursive 于 2026-08-05 转正）；`t16_foreach`/`t17_repeat` 功能正确但字节存在 foreach/repeat 编码差异（`CAD_T_SERIES_DIFF`，见 §9.2）；CAD 真机功能验证见 `scripts/cad_verify.py`。
 
 ## 文档
 
@@ -194,8 +194,9 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 make cad-test        # 或: bash scripts/run_tests.sh --cad
 # 等价直接运行: python scripts/cad_verify.py
 ```
-`scripts/cad_verify.py` 编译 t01-t15 → 逐项在 CAD 加载 → 断言返回值，14 项通过、
-t10 混合模式为已知缺陷（§8.C2 待修）。
+`scripts/cad_verify.py` 编译 t01-t15 → 逐项在 CAD 加载 → 断言返回值，15 项全部通过
+（2026-08-05：t10_init 随 byte-identity 转正，KNOW_ISSUES 标记已除；t12_quote 断言
+曾误用 proper list 比对 dotted pair `'(1 . 2)`，已改为 car/cdr 校验）。
 
 测试文件编译到 `D:/atlisp-test/`，在 CAD 中加载测试脚本：
 
@@ -210,7 +211,7 @@ t10 混合模式为已知缺陷（§8.C2 待修）。
 - 尾递归、&optional/&rest ✅
 - 顶层 setq/set（defun 前后混合）✅
 - `fun.lsp`/`fact.lsp` 解密后与 CAD 逐字节一致 ✅
-- t-series 全部 14 项真机功能验证通过（`scripts/cad_verify.py`，t10 除外）✅
+- t-series 全部 15 项真机功能验证通过（`scripts/cad_verify.py`）✅
 
 ### 已知限制
 

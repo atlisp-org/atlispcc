@@ -38,16 +38,19 @@ CASES = [
     ("t09_funcall", '(list (square 6) (sum-of-squares 3 4))', [36, 25]),
     ("t10_init", '(get-version)', "1.0"),
     ("t11_localvars", '(sum-to-n 5)', 15),
-    ("t12_quote", '(list (test-nested-quote) (test-cons-quote))', [[1, 2, 3], [1, 2]]),
+    ("t12_quote",
+     '(list (test-nested-quote) (car (test-cons-quote)) (cdr (test-cons-quote)))',
+     [[1, 2, 3], 1, 2]),
     ("t13_nested_if", '(list (max3 3 1 2) (max3 1 5 2) (max3 2 1 7))', [3, 5, 7]),
     ("t14_command", '(list (c:add 3 4) (c:add 10 -2))', [7, 8]),
     ("t15_cad_funcs", '(list (get-dist \'(0 0) \'(3 4)) (get-ang \'(0 0) \'(1 0)))',
      [5.0, 0.0]),
+    ("t18_multi_recursive", '(list (is-even 4) (is-odd 3))', [True, True]),
 ]
 
 # 已知功能缺陷（混合模式，§8.C2 待修）：t10 的 get-version/hello 符号错位
 KNOWN_ISSUES = {
-    "t10_init": "混合模式（defun+顶层交错）函数体符号错位，get-version/hello 调用返回 nil",
+    # 2026-08-05: t10_init 已随 byte-identity 转正，从此处移除
 }
 
 

@@ -156,7 +156,11 @@ class CadSymbolCollector:
                     if force and name in seen_forced:
                         continue
                     n = name[1] if is_const_entry(name) else name
-                    if isinstance(n, str) and n not in module_seen:
+                    if is_const_entry(name):
+                        # 常量（如 '("syscodepage")）：结构元组，不按字符串去重，
+                        # 由 self.add 按结构去重并压入常量槽（CAD 资源流登记）。
+                        self.add(name, force=force)
+                    elif n not in module_seen:
                         module_seen.add(n)
                         self.add(name, force=force)
                     if force:

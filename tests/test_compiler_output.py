@@ -265,18 +265,21 @@ CAD_GOLDEN_PAIRS = [
 ]
 
 #: t-series sources whose compiled output is byte-identical to the CAD golden
-#: (generated via `vlisp-compile` on AutoCAD 24.1s, 2026-08-04).
+#: (generated via `vlisp-compile` on AutoCAD 24.1s, 2026-08-04/05).
 #: Source .lsp and golden .fas both live under tests/cad/.
 CAD_T_SERIES_IDENTICAL = [
     't01_math', 't02_recursion', 't03_fib', 't04_while', 't05_cond',
     't06_strcat', 't07_list', 't08_apply_mapcar', 't09_funcall',
     't10_init', 't11_localvars', 't12_quote', 't13_nested_if',
     't14_command', 't15_cad_funcs', 'andor', 'and2', 'or2', 'andval',
+    't18_multi_recursive',
 ]
 
 #: t-series sources with KNOWN remaining byte diffs (see docs/development-plan.md 8.C1).
 #: Kept as xfail regression: when a gap is fixed, move it to CAD_T_SERIES_IDENTICAL.
-CAD_T_SERIES_DIFF = []
+CAD_T_SERIES_DIFF = [
+    't16_foreach', 't17_repeat',
+]
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
