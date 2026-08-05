@@ -257,7 +257,10 @@ class ResourceBuilder:
             # 遇 STRING 分块；PUSH_NIL + GVARINIT。
             module_entries = entries[:len(func_names_all) + top_level_count]
             fn_bytes = bytearray()
-            # 函数名（逆序）在前，其后是顶层符号（entries 顺序）
+            # 函数名（逆序）在前，其后是顶层符号（entries 顺序）。
+            # 注意：cad_symbols 已把 entries 排为"源码逆序逐 form"（顶层与
+            # 函数名交错，mix2=setq 末→`X,B,A`，mix3=setq 首→`B,A,X`），
+            # 因此这里直接按 entries 自然序输出即可，勿再单独逆序函数名。
             if commands and func_names_all:
                 # CAD 命令模块注册：每个命令函数独立 5b 块，首命令后插入
                 # `56 vl-ACAD-defun 00 00`（t14_command 实测）。该符号保留
@@ -267,10 +270,7 @@ class ResourceBuilder:
                     out += b'\x5b' + self._enc_sym(fname) + b'\x00\x00'
                     if i == 0:
                         out += b'\x56' + self._enc('vl-ACAD-defun') + b'\x00\x00'
-            else:
-                for fname in reversed(func_names_all):
-                    fn_bytes += self._enc_sym(fname) + b'\x00'
-            for entry_type, entry_val in module_entries[len(func_names_all):]:
+            for entry_type, entry_val in module_entries if not (commands and func_names_all) else ():
                 if entry_type == 'SYMBOL':
                     fn_bytes += self._enc_sym(entry_val) + b'\x00'
                 elif entry_type == 'STRING':

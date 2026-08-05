@@ -263,7 +263,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
 
 
 def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: int = 0,
-                           top_level_count: int = 0) -> bytes:
+                           top_level_count: int = 0, top_after_defun: bool = False) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
     CAD 模块代码规则（逆向，AutoCAD 24.1s 实测）：
@@ -285,11 +285,19 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
     out = bytearray(b'\x14\x01\x00\x00\x00')  # DEFUN 模块头
     out += bytes([0x09]) + struct.pack('<H', module_reg_count + 1) + b'\x0a'  # 占位
 
-    # setq 语句用 CAD 的 DUP 模式；其余用 codegen 输出并槽 +1。
-    from compiler.ast_nodes import Symbol, String as _Str
-    cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
-    stmt_list = []
-    for form in other_forms:
+    # 顶层语句按源码位置分组：defun 之后的顶层语句（mix2 的 `(setq x 10)`）
+    # 排到函数注册尾之后；defun 之前的排在 JUMP 之前。
+    if top_after_defun and other_forms:
+        pre_forms = other_forms[:-1]
+        post_forms = [other_forms[-1]]
+    else:
+        pre_forms = other_forms
+        post_forms = []
+
+    def _stmt_bytes(form):
+        """把单个顶层 form 编译为模块代码语句（setq 用 CAD 的 DUP 模式）。"""
+        from compiler.ast_nodes import Symbol, String as _Str
+        cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
         handled = False
         if isinstance(form, Setq):
             for target, value in form.pairs:
@@ -300,8 +308,7 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
                     stmt += bytes([0x09]) + struct.pack('<H', v_idx + 1)  # PUSH_G 值
                     stmt += b'\x0b'  # DUP
                     stmt += bytes([0x06]) + struct.pack('<H', t_idx + 1)  # SETQ_G 变量
-                    stmt_list.append(bytes(stmt))
-                    handled = True
+                    return bytes(stmt)
                 elif t_idx is not None and _is_empty_quote(value):
                     # `(setq x '())`：CAD 用 `PUSH_NIL; DUP; SETQ_G`
                     # （i18n_v2 顶层 `'()` 实测），值与槽均无需注册。
@@ -309,33 +316,55 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
                     stmt += bytes([0x01])  # PUSH_NIL
                     stmt += b'\x0b'        # DUP
                     stmt += bytes([0x06]) + struct.pack('<H', t_idx + 1)  # SETQ_G
-                    stmt_list.append(bytes(stmt))
-                    handled = True
-        if not handled:
-            fb = BytecodeBuffer()
-            cg._emit_expr(fb, form)
-            fb.resolve()
-            stmt_list.append(_offset_slots(bytes(fb.data), len(symtab.entries)))
+                    return bytes(stmt)
+        fb = BytecodeBuffer()
+        cg._emit_expr(fb, form)
+        fb.resolve()
+        bc = bytes(fb.data)
+        if isinstance(form, Setq):
+            # setq 值非常量（INT/REAL/列表等）：CAD 在 SETQ_G 前插入 DUP
+            # 保留返回值（mix2 `(setq x 10)` 实测 `32 0a 0b 06 03 00`）。
+            import re
+            m = re.compile(b'\x06..', re.S).search(bc)
+            if m:
+                bc = bc[:m.start()] + b'\x0b' + bc[m.start():]
+        return _offset_slots(bc, len(symtab.entries))
 
-    for i, stmt in enumerate(stmt_list):
-        out += stmt if stmt is not None else b''
-        # 每个顶层语句后 POP；最后一个仅当无 defun（无函数注册尾）时省略。
-        if stmt is not None and (i < len(stmt_list) - 1 or n_funcs > 0):
-            out += b'\x0a'  # POP
+    def _emit_stmts(forms, last_no_pop: bool):
+        """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。"""
+        nonlocal out
+        for i, form in enumerate(forms):
+            stmt = _stmt_bytes(form)
+            out += stmt
+            if i < len(forms) - 1 or not last_no_pop:
+                out += b'\x0a'  # POP
+
+    _emit_stmts(pre_forms, last_no_pop=(n_funcs == 0 and not post_forms))
 
     if n_funcs > 0:
         # 有 defun：追加函数注册尾（CAD 实测）。多函数时每函数一组
         # `PUSH_G <b>; SETQ_G <c>`，组间 `PUSH_G <c>; POP; JUMP`；
-        # b = 2*n_funcs+1 + top_level_count - i（模块注册偏移），c = n_funcs - i。
+        # b = 2*n_funcs+1 + top_level_count - i（模块注册偏移）。
+        # c 槽 = 源码注册序递减：顶层在 defun 后时（top_after_defun）
+        # 函数占 c = n_funcs+1-i、顶层占 1；否则函数占 c = n_funcs-i、
+        # 末尾补 `PUSH_G 1`。
         out += b'\x57\x00\x00\x00\x00'  # JUMP
         for i in range(n_funcs):
             b = 2 * n_funcs + 1 + top_level_count - i
-            c = n_funcs - i
+            c = (n_funcs + 1 - i) if top_after_defun else (n_funcs - i)
             out += bytes([0x09]) + struct.pack('<H', b)  # PUSH_G b
             out += bytes([0x06]) + struct.pack('<H', c)  # SETQ_G c
+            if i < n_funcs - 1 or post_forms:
+                out += bytes([0x09]) + struct.pack('<H', c) + b'\x0a'
             if i < n_funcs - 1:
-                out += bytes([0x09]) + struct.pack('<H', c) + b'\x0a\x57\x00\x00\x00\x00'
-        out += bytes([0x09]) + struct.pack('<H', 1)  # PUSH_G 1
+                out += b'\x57\x00\x00\x00\x00'
+        if post_forms:
+            _emit_stmts(post_forms, last_no_pop=True)
+        elif not top_after_defun:
+            out += bytes([0x09]) + struct.pack('<H', 1)  # PUSH_G 1
+    else:
+        if post_forms:
+            _emit_stmts(post_forms, last_no_pop=True)
     out += b'\x16'  # END_DEFUN
     return bytes(out)
 
@@ -591,8 +620,14 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     fas_nsyms = len(symtab.entries) - module_reg_count + 1
     _pre_nsyms = fas_nsyms
     if other_forms:
+        # 顶层语句在源码中位于最后一个 defun 之后（如 `(set '_ @::_)`）时，
+        # 排到函数注册尾之后（mix2 实测：`(setq x 10)` 在 defun b 后）。
+        _last_overall = program.forms[-1] if program.forms else None
+        from compiler.ast_nodes import Defun as _Defun
+        _top_after_defun = _last_overall is not None and not isinstance(_last_overall, (_Defun, Defpackage, InPackage))
         module_code = _build_cad_module_code(top_level_code, symtab, other_forms,
-                                             n_funcs=len(defun_forms), top_level_count=top_level_count)
+                                             n_funcs=len(defun_forms), top_level_count=top_level_count,
+                                             top_after_defun=_top_after_defun)
     elif n_cmds:
         module_code = build_command_module_code(len(defun_forms))
     else:
