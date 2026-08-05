@@ -7,7 +7,7 @@ from typing import List, Optional, Dict, Any
 from compiler.symbol_table import SymbolTable
 
 
-FAS4_MAGIC = b'\r\n FAS4-FILE ; Do not change it!\r\n'
+FAS4_MAGIC = b'\r\n FAS4-FILE ; Built by atlispcc!\r\n'
 SEG_TERMINATOR = b'\x16\x24\r\n'
 CRUNCH_MARKER = b'\n;fas4 crunch\n;'
 

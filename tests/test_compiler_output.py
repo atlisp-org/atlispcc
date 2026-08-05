@@ -14,7 +14,7 @@ from core.fas_core import find_key as fas_find_key
 from core.fas_core import decrypt_stream as fas_decrypt_stream
 
 ENCODE_POP = bytes([0x0a])
-FAS4_MAGIC = b'\r\n FAS4-FILE ; Do not change it!\r\n'
+FAS4_MAGIC = b'\r\n FAS4-FILE ; Built by atlispcc!\r\n'
 SEG_TERMINATOR = b'\x16\x24\r\n'
 
 
@@ -400,9 +400,13 @@ PURE_TOP_LEVEL_CASES = [
 
 
 def _decrypt_seg1(path):
-    """返回 (文件头到 res 头前的字节, 解密后的 seg1)。"""
+    """返回 (magic 之后的文件头到 res 头前的字节, 解密后的 seg1)。
+
+    头部比较跳过 magic 文本（新产物用 `Built by atlispcc!`，CAD golden 用
+    `Do not change it!`），只比较 total_size/nsyms/seg0/res 头等结构部分。
+    """
     import re
-    from core.fas_core import CRUNCH_MARKER
+    from core.fas_core import CRUNCH_MARKER, find_fas4_magic
     data = open(path, 'rb').read()
     pos = data.find(CRUNCH_MARKER)
     assert pos > 0, f'{path}: no crunch marker'
@@ -416,9 +420,13 @@ def _decrypt_seg1(path):
             key = data[k:pos + len(CRUNCH_MARKER)]
             enc = data[m.end():k - 1]
             if len(enc) == rsz:
-                return data[:m.end()], fas_decrypt_stream(enc, key)
+                _, magic = find_fas4_magic(data)
+                head_start = 0 if magic is None else len(magic)
+                return data[head_start:m.end()], fas_decrypt_stream(enc, key)
     assert key is not None, f'{path}: cannot locate XOR key'
-    return data[:m.end()], fas_decrypt_stream(
+    _, magic = find_fas4_magic(data)
+    head_start = 0 if magic is None else len(magic)
+    return data[head_start:m.end()], fas_decrypt_stream(
         data[m.end():m.end() + rsz], key)
 
 

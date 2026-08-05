@@ -51,9 +51,9 @@ def parse_fas4_file(filepath):
         data = f.read()
     
     # Find header
-    hdr = b' FAS4-FILE ; Do not change it!\r\n'
-    hpos = data.find(hdr)
-    if hpos == -1:
+    from core.fas_core import find_fas4_magic
+    hpos, hdr = find_fas4_magic(data)
+    if hpos is None:
         raise ValueError("Not a valid FAS4 file")
     
     after = hpos + len(hdr)

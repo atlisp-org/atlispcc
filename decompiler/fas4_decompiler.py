@@ -235,8 +235,10 @@ class Fas4Parser:
     def parse(self, filepath: str) -> Fas4File:
         with open(filepath, "rb") as f:
             data = f.read()
-        hdr = b" FAS4-FILE ; Do not change it!\r\n"
-        hpos = data.find(hdr)
+        from core.fas_core import find_fas4_magic
+        hpos, hdr = find_fas4_magic(data)
+        if hpos is None:
+            raise ValueError("Not a valid FAS4 file")
         after = hpos + len(hdr)
         size_end = data.find(b"\r\n", after)
         total_size = int(data[after:size_end])

@@ -185,7 +185,7 @@ def zelx_to_fas(zelx_path: str, fas_path: str) -> dict:
     # zelx 不携带 crunch 日期，恢复的 fas 不伪造日期（保持确定性输出）。
     trailer = bytes([len(key)]) + key + b"$;"
 
-    magic = b"\r\n FAS4-FILE ; Do not change it!\r\n"
+    magic = b"\r\n FAS4-FILE ; Built by atlispcc!\r\n"
     data = magic + f"{total_size}\r\n".encode("ascii") + seg0_payload + \
            b"\x16\x24\r\n" + seg1_hdr + enc_seg1 + trailer
     with open(fas_path, "wb") as fh:

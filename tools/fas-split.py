@@ -20,7 +20,7 @@ from core.fas_core import (
     parse_fas4, extract_stubs,
     parse_resource_stream, build_mvar_tables, build_function_catalog,
     infer_code_ref_bias, resolve_symbol_name,
-    extract_symbol_names, build_single_function_fas, FAS4_MAGIC,
+    extract_symbol_names, build_single_function_fas, find_fas4_magic,
 )
 
 
@@ -138,8 +138,10 @@ def main():
     # ── 构建 magic header ──────────────────────────────────────────────────────
     with open(fpath, 'rb') as f:
         raw = f.read()
-    moff = raw.find(FAS4_MAGIC)
-    after = moff + len(FAS4_MAGIC)
+    moff, magic = find_fas4_magic(raw)
+    if moff is None:
+        raise ValueError('Not a valid FAS4 file')
+    after = moff + len(magic)
     magic_header = raw[:after]
 
     # seg0 total_size = raw number after magic

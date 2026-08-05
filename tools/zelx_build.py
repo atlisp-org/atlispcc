@@ -222,8 +222,11 @@ def rolling_xor(data: bytes, key: bytes) -> bytes:
 
 def parse_fas(path: str):
     f = open(path, "rb").read()
-    magic = b"\r\n FAS4-FILE ; Do not change it!\r\n"
-    i = len(magic); j = f.find(b"\r\n", i); i = j + 2
+    from core.fas_core import find_fas4_magic
+    hpos, magic = find_fas4_magic(f)
+    if hpos is None:
+        raise ValueError("Not a valid FAS4 file")
+    i = hpos + len(magic); j = f.find(b"\r\n", i); i = j + 2
     j = f.find(b" $", i); nsyms = int(f[i:j]); i = j + 2
     term = f.find(b"\x16\x24\r\n", i); seg0 = f[i:term]
     s1s = term + 4; j = f.find(b" $", s1s)

@@ -14,10 +14,26 @@ from typing import Any, List, Tuple
 
 # ─── 常量 ──────────────────────────────────────────────────────────────────────
 
-FAS4_MAGIC = b"\r\n FAS4-FILE ; Do not change it!\r\n"
+FAS4_MAGIC = b"\r\n FAS4-FILE ; Built by atlispcc!\r\n"
+# 旧版/ CAD 原生 magic（`Do not change it!`）：读取端须兼容两种。
+FAS4_MAGIC_LEGACY = b"\r\n FAS4-FILE ; Do not change it!\r\n"
 CRUNCH_MARKER = b"\n;fas4 crunch\n;"
 FUNC_DEF_OPCODE = bytes([0x14, 0x01, 0x01, 0x01, 0x00])
 SEG_TERMINATOR = b"\x16\x24\r\n"
+
+
+def find_fas4_magic(data: bytes) -> tuple:
+    """定位 FAS4 magic（兼容新/旧两种），返回 (pos, magic_bytes)。
+
+    写入端用新 magic（``Built by atlispcc!``）；CAD 原生及旧版产物用
+    旧 magic（``Do not change it!``）。读取端统一走本函数，二者皆可解析。
+    未找到返回 (None, None)。
+    """
+    for magic in (FAS4_MAGIC, FAS4_MAGIC_LEGACY):
+        pos = data.find(magic)
+        if pos >= 0:
+            return pos, magic
+    return None, None
 
 # ─── 加解密 ────────────────────────────────────────────────────────────────────
 
@@ -82,11 +98,11 @@ def parse_fas4(filepath: str, decrypt_seg1: bool = True) -> dict:
     with open(filepath, "rb") as f:
         data = f.read()
 
-    hpos = data.find(FAS4_MAGIC)
-    if hpos < 0:
+    hpos, magic = find_fas4_magic(data)
+    if hpos is None:
         raise ValueError("Not a valid FAS4 file")
 
-    after = hpos + len(FAS4_MAGIC)
+    after = hpos + len(magic)
     size_end = data.find(b"\r\n", after)
     total_size = int(data[after:size_end])
     payload_start = size_end + 2
