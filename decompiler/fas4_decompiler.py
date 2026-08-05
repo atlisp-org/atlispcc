@@ -247,7 +247,14 @@ class Fas4Parser:
         # 不覆盖 seg0 末尾 2 字节指令尾；用终止符定界可完整取得最后一条
         # 指令（CLEAR_ARGS）的操作数，保证反汇编/汇编字节可逆。
         term = data.find(b"\x16\x24\r\n", payload_start)
-        payload_end = term if term > payload_start else payload_start + total_size
+        if term > payload_start:
+            payload_end = term
+        else:
+            # 无 `16 24 0d 0a`：纯顶层（无 defun）文件 seg0 为空，终止符为
+            # `$\r\n`（CAD set5/setcmp 实测）。此时 total_size=len(seg0)+1，
+            # 无法覆盖 `{nsyms} $` 头，payload 止于首个 `$`（nsyms 头结束）。
+            dollar = data.find(b"$", payload_start)
+            payload_end = dollar + 1 if dollar > payload_start else payload_start + total_size
         payload = data[payload_start:payload_end]
 
         m = re.match(rb"(\d+) \$", payload)

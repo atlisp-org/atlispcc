@@ -130,3 +130,27 @@ def test_new_opcode_decoding():
     assert insts[2].op_name == 'DEFUN_ALT' and insts[2].size == 5
     assert insts[3].op_name == 'OP_40' and insts[3].size == 1
     assert insts[3].offset == 9
+
+
+def test_parse_empty_seg0_pure_top_level(tmp_path):
+    """纯顶层（无 defun）文件的空 seg0 可解析（回归：`atlispcc disasm`
+    对 `(alert "xx")` 编译产物曾报 "Bad FAS payload header"）。
+
+    空 seg0 无 `16 24 0d 0a` 终止符，须用 `{nsyms} $` 头的 `$` 定界 payload。
+    """
+    import tempfile
+    from compiler.cli import cmd_compile
+    from asm.assembler import disassemble_fas
+
+    src = '(alert "hello")\n'
+    fas_path = os.path.join(tempfile.gettempdir(), 'empty_seg0_test.fas')
+    try:
+        cmd_compile(src, fas_path)
+        fas = Fas4Parser().parse(fas_path)
+        assert fas.bytecode == b'', f'空 seg0 应无字节码: {fas.bytecode.hex()}'
+        # disasm 全链路不崩溃
+        text = disassemble_fas(fas_path)
+        assert 'ALERT' in text or 'alert' in text
+    finally:
+        if os.path.exists(fas_path):
+            os.unlink(fas_path)
