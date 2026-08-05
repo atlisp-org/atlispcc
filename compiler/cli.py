@@ -10,7 +10,7 @@ from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.ast_nodes import Defun, Defpackage, InPackage, Setq
 from compiler.opt import optimize
-from compiler.resource_builder import ResourceBuilder, build_module_code, count_resource_records, resolve_encoding
+from compiler.resource_builder import ResourceBuilder, build_module_code, build_command_module_code, count_resource_records, resolve_encoding
 from compiler.fas_writer import FasWriter
 from compiler.analyzer import analyze
 from compiler.linker import link_fas
@@ -267,7 +267,7 @@ def _offset_slots(bc: bytes, n_sym: int) -> bytes:
         raw = bc[inst.offset:inst.offset + inst.size]
         if name == "USUBR" and len(inst.operands) >= 2:
             out += bytes([0x35, inst.operands[0] & 0xFF, (inst.operands[1] + 1) & 0xFF])
-        elif name in ("PUSH_G", "SETQ_G", "PUSH_GLOBAL") and len(inst.operands) >= 1:
+        elif name in ("PUSH_G", "SETQ_G", "PUSH_G_ALT") and len(inst.operands) >= 1:
             idx = inst.operands[0] + 1
             out += bytes([raw[0]]) + struct.pack('<H', idx)
         elif name == "PUSH_VALUE":
@@ -475,6 +475,10 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     seg0 = bytes(all_bytecode.data)
 
     # 模块代码：含顶层表达式时用 CAD 风格完整模块代码；否则固定函数注册尾。
+    # c: 命令函数：CAD 在模块注册段插入 vl-ACAD-defun 符号并生成命令模块代码。
+    # vl-ACAD-defun 仅在模块注册段（resource_gvars）注册，不进符号表（不参与
+    # 函数符号槽编址），故 seg0 的 PUSH_VALUE 索引保持不变。
+    n_cmds = 1 if any(getattr(f, 'is_command', False) or str(f.name).startswith('c:') for f in defun_forms) else 0
     resource = ResourceBuilder(symtab, encoding=encoding)
     module_reg_count = len(defun_forms) + top_level_count
     fas_nsyms = len(symtab.entries) - module_reg_count + 1
@@ -482,6 +486,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     if other_forms:
         module_code = _build_cad_module_code(top_level_code, symtab, other_forms,
                                              n_funcs=len(defun_forms), top_level_count=top_level_count)
+    elif n_cmds:
+        module_code = build_command_module_code(len(defun_forms))
     else:
         module_code = build_module_code(len(defun_forms), nsyms=_pre_nsyms)
 
@@ -491,11 +497,11 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
 
     # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
     seg1 = resource.build(func_offsets, module_code=module_code, total_size=len(seg0) + 1, stub_format=True,
-                          top_level_count=top_level_count)
+                          top_level_count=top_level_count, commands=n_cmds)
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, [_all_params(f) for f in defun_forms])
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(func_offsets, module_code=module_code, total_size=len(seg0) + 1, stub_format=True,
-                           top_level_count=top_level_count)
+                           top_level_count=top_level_count, commands=n_cmds)
     sec2_items = count_resource_records(seg1)
     # 确保 items 与 CAD 编译器一致：CAD 的 items = 2 * 模块注册数 + 2
     # （模块注册数 = defun 数 + 顶层表达式数）。实测：1 函数→4、2 函数→6、

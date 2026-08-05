@@ -120,13 +120,13 @@ def test_new_opcode_decoding():
     bc = bytes([
         0x10,                       # OP_10: 1 byte
         0x1a, 0x34, 0x12,           # OP_1A: op + u16
-        0x15, 0, 0, 0, 0,           # DEFUN2: op + 4 bytes
+        0x15, 0, 0, 0, 0,           # DEFUN_ALT: op + 4 bytes
         0x40,                       # OP_40: 1 byte
     ])
     insts = Disassembler(short_subr=False).disassemble(bc, 8)
     assert insts[0].op_name == 'OP_10' and insts[0].size == 1
     assert insts[1].op_name == 'OP_1A' and insts[1].size == 3
     assert insts[1].operands == [0x1234]
-    assert insts[2].op_name == 'DEFUN2' and insts[2].size == 5
+    assert insts[2].op_name == 'DEFUN_ALT' and insts[2].size == 5
     assert insts[3].op_name == 'OP_40' and insts[3].size == 1
     assert insts[3].offset == 9

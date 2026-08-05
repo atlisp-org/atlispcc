@@ -306,12 +306,12 @@ class Disassembler:
         0x09: ("PUSH_G", "2"),
         0x0A: ("POP", ""),
         0x0B: ("DUP", ""),
-        0x0C: ("PUSH_GLOBAL", "2"),
+        0x0C: ("PUSH_G_ALT", "2"),
         0x0D: ("JMP16_IFNOT", "2"),
         0x0E: ("JMP16_IF", "2"),
         0x10: ("OP_10", ""),
         0x14: ("DEFUN", "h"),
-        0x15: ("DEFUN2", "h"),
+        0x15: ("DEFUN_ALT", "h"),
         0x16: ("END_DEFUN", ""),
         0x18: ("INIT_ARGS", "2"),
         0x19: ("CLEAR_ARGS", "2"),
@@ -330,13 +330,13 @@ class Disassembler:
         0x32: ("PUSH_INT8", "1"),
         0x33: ("PUSH_INT32", "4"),
         0x34: ("EVAL", "e"),
-        0x37: ("LIST_OBJ", "2"),
+        0x37: ("BUILD_LIST_ALT", "2"),
         0x38: ("OP_38", ""),
-        0x39: ("BUILD_LIST", "2"),
-        0x3A: ("DEFCODE", ""),
-        0x3B: ("PUSH_REAL", "z"),
-        0x3C: ("JMP16_IFNOT_2", "2"),
-        0x3D: ("JMP16_IF_2", "2"),
+         0x39: ("BUILD_LIST", "2"),
+         0x3A: ("DEFCODE", ""),
+         0x3B: ("PUSH_REAL", "z"),
+        0x3C: ("JMP16_IFNOT_ALT", "2"),
+        0x3D: ("JMP16_IF_ALT", "2"),
         0x3E: ("EXIT_IF_NOT_ZERO", ""),
         0x3F: ("EXIT_IF_ZERO", ""),
         0x40: ("OP_40", ""),
@@ -357,13 +357,13 @@ class Disassembler:
         0x5C: ("GET_LOCAL_WIDE", "2"),
         0x5D: ("SET_LOCAL", "2"),
         0x5E: ("CLEAR_LOCAL", "2"),
-        0x62: ("NOP_62", ""),
-        0x63: ("NOP_63", ""),
-        0x67: ("BR_IF_TRUE", "s4"),
+        0x62: ("NOP_ALT", ""),
+        0x63: ("NOP_ALT2", ""),
+        0x67: ("JMP32_IFNOT", "s4"),
         0x68: ("COND_OR", "s4"),
-        0x69: ("JUMP32", "s4"),
-        0x6A: ("AND", "s4"),
-        0x6B: ("AND2", "s4"),
+        0x69: ("JUMP_ALT", "s4"),
+        0x6A: ("COND_AND", "s4"),
+        0x6B: ("COND_AND2", "s4"),
     }
 
     def __init__(self, short_subr: bool = False):
@@ -1569,8 +1569,11 @@ class LispGenerator:
                 cond_state = None
                 continue
 
-            if name in ("BR_IF_TRUE", "JMP16_IF", "JMP16_IF_2", "JMP16_IFNOT", "JMP16_IFNOT_2"):
-                cond = pop_expr("T" if "IFNOT" not in name else "nil") or "nil"
+            if name in ("JMP32_IFNOT", "JMP16_IF", "JMP16_IF_ALT", "JMP16_IFNOT", "JMP16_IFNOT_ALT"):
+                # 短路重建依赖分支语义分类，不用名称子串判断（JMP32_IFNOT 名称含
+                # IFNOT 但语义为"真则跳转"——与 JMP16_IF 同类，勿用 "IFNOT" in name）。
+                ifnot_kind = name in ("JMP16_IFNOT", "JMP16_IFNOT_ALT")
+                cond = pop_expr("nil" if ifnot_kind else "T") or "nil"
                 target_idx = self._branch_target_index(instructions, offset_to_idx, i)
                 if target_idx is None and inst.operands:
                     target_offset = inst.offset + inst.size + inst.operands[0]
@@ -1580,11 +1583,11 @@ class LispGenerator:
                 if (
                     target_idx is not None
                     and start <= target_idx <= end
-                    and instructions[target_idx].op_name in ("JMP16_IF", "JMP16_IF_2", "JMP16_IFNOT", "JMP16_IFNOT_2")
+                    and instructions[target_idx].op_name in ("JMP16_IF", "JMP16_IF_ALT", "JMP16_IFNOT", "JMP16_IFNOT_ALT")
                 ):
                     pending_logic.append(
                         {
-                            "kind": "and" if "IFNOT" in name else "or",
+                            "kind": "and" if ifnot_kind else "or",
                             "expr": cond or "nil",
                             "target": instructions[target_idx].offset,
                         }
@@ -1644,7 +1647,7 @@ class LispGenerator:
                 i += 1
                 continue
 
-            if name in ("PUSH_G", "PUSH_GLOBAL") and inst.operands:
+            if name in ("PUSH_G", "PUSH_G_ALT") and inst.operands:
                 stack.append(self._literal_from_gvar(inst.operands[0]))
             elif name == "PUSH_VALUE" and inst.operands:
                 if not (self.is_stub_format and inst.size == 1):
@@ -1681,7 +1684,7 @@ class LispGenerator:
                 stack.append(f"(not {pop_expr()})")
             elif name == "ATOM":
                 stack.append(f"(atom {pop_expr()})")
-            elif name in ("BUILD_LIST", "LIST_OBJ") and inst.operands:
+            elif name in ("BUILD_LIST", "BUILD_LIST_ALT") and inst.operands:
                 args = pop_many(inst.operands[0])
                 args.reverse()
                 stack.append(self._make_call_text("list", args))
@@ -1756,7 +1759,7 @@ class LispGenerator:
             elif name == "END_DEFUN_CLEANUP" and inst.operands:
                 dropped = pop_many(inst.operands[0] + 2)
                 flush_stack()
-            elif name in ("COND_OR", "AND", "AND2"):
+            elif name in ("COND_OR", "COND_AND", "COND_AND2"):
                 cond = pop_expr("nil") or "nil"
                 if name == "COND_OR":
                     if cond_state is not None and i == cond_state["info"]["condors"][cond_state["next"]]:
@@ -1789,17 +1792,17 @@ class LispGenerator:
                     lines.append(self._statement_line("(exit)", indent))
                 else:
                     lines.append(self._statement_line(f"(if (not {cond}) (exit))", indent))
-            elif name in ("JUMP", "JUMP32"):
+            elif name in ("JUMP", "JUMP_ALT"):
                 flush_stack()
             elif name in ("CLEAR_ARGS", "END_DEFUN", "INIT_DONE"):
                 flush_stack()
             elif name in (
                 "NIL",
                 "NOP",
-                "NOP_62",
-                "NOP_63",
+                "NOP_ALT",
+                "NOP_ALT2",
                 "DEFUN",
-                "DEFUN2",
+                "DEFUN_ALT",
                 "ALPHA",
                 "BETA",
                 "DEFCODE",
@@ -1912,7 +1915,7 @@ class LispGenerator:
         back_jump_idx = None
         for idx in range(target_idx, branch_idx, -1):
             inst = instructions[idx]
-            if inst.op_name not in ("JUMP", "JUMP32") or not inst.operands:
+            if inst.op_name not in ("JUMP", "JUMP_ALT") or not inst.operands:
                 continue
             jump_target = self._branch_target_index(instructions, offset_to_idx, idx)
             if jump_target is None or jump_target >= idx:
@@ -1944,7 +1947,7 @@ class LispGenerator:
         jump_target = None
         for idx in range(branch_idx + 1, min(target_idx, end)):
             inst = instructions[idx]
-            if inst.op_name not in ("JUMP", "JUMP32") or not inst.operands:
+            if inst.op_name not in ("JUMP", "JUMP_ALT") or not inst.operands:
                 continue
             target = self._branch_target_index(instructions, offset_to_idx, idx)
             if target is None or target <= idx or target < target_idx:
@@ -1994,7 +1997,7 @@ class LispGenerator:
                 condors.append(j)
                 j += 1
                 continue
-            if inst.op_name == "PUSH_NIL" and j + 1 < end and instructions[j + 1].op_name in ("JUMP", "JUMP32"):
+            if inst.op_name == "PUSH_NIL" and j + 1 < end and instructions[j + 1].op_name in ("JUMP", "JUMP_ALT"):
                 jump_idx = j + 1
                 break
             j += 1
@@ -2003,7 +2006,7 @@ class LispGenerator:
         n = len(condors)
 
         chain_start = self._branch_target_index(instructions, offset_to_idx, jump_idx)
-        if chain_start is None or instructions[chain_start].op_name not in ("JUMP", "JUMP32"):
+        if chain_start is None or instructions[chain_start].op_name not in ("JUMP", "JUMP_ALT"):
             return None
         # 链 = 每个 body 尾部 JUMP（除最后发出的 body），共 n-1 个。
         # 链式结构嵌套 cond 时后续 JUMP 可能属于外层，故只取前 n-1 个链接，
@@ -2014,7 +2017,7 @@ class LispGenerator:
             tgt = self._branch_target_index(instructions, offset_to_idx, cur)
             if tgt is None or tgt <= cur:
                 return None
-            if instructions[tgt].op_name not in ("JUMP", "JUMP32"):
+            if instructions[tgt].op_name not in ("JUMP", "JUMP_ALT"):
                 return None
             chain.append(tgt)
             cur = tgt
@@ -2052,7 +2055,7 @@ class LispGenerator:
             if instructions[idx].op_name == "INIT_ARGS":
                 init_idx = idx
                 break
-            if instructions[idx].op_name in ("SETQ_G", "SET_LOCAL", "USUBR", "FUNC", "BR_IF_TRUE", "JUMP"):
+            if instructions[idx].op_name in ("SETQ_G", "SET_LOCAL", "USUBR", "FUNC", "JMP32_IFNOT", "JUMP"):
                 break
         if init_idx is None:
             return {"args": [], "body_start": start, "local_binding_names": []}

@@ -64,6 +64,9 @@ def to_const(node):
             if d is None:
                 return None
             items = items + (d,)
+            # dotted 引用 `'(a . b)`：CAD 以 `2a`(LIST_END) 收尾而非
+            # `39 <count>`（t12_quote 实测），需标记以便 _emit_const 正确编码。
+            return ('LIST', items, True)
         return ('LIST', items)
     if isinstance(node, Call):
         items = (to_const(Symbol(node.name)),) + tuple(to_const(a) for a in node.args)

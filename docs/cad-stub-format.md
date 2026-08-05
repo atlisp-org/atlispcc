@@ -147,11 +147,11 @@ gvar 槽 `idx+1` 处的符号。
 
 ### 2.6 控制流
 
-**if**（BR_IF_TRUE 语义为"栈顶为假则跳转"= IFNOT）：
+**if**（JMP32_IFNOT 语义为"栈顶为假则跳转"= IFNOT）：
 
 ```
 cond 求值
-BR_IF_TRUE <else 目标>   # 67 s4：假则跳 else
+JMP32_IFNOT <else 目标>   # 67 s4：假则跳 else
 then 分支
 JUMP <end>               # 57 s4
 else 分支

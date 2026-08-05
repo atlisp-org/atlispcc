@@ -270,13 +270,13 @@ CAD_GOLDEN_PAIRS = [
 CAD_T_SERIES_IDENTICAL = [
     't01_math', 't02_recursion', 't03_fib', 't04_while', 't05_cond',
     't06_strcat', 't07_list', 't08_apply_mapcar', 't09_funcall',
-    't13_nested_if', 't15_cad_funcs',
+    't12_quote', 't13_nested_if', 't14_command', 't15_cad_funcs',
 ]
 
 #: t-series sources with KNOWN remaining byte diffs (see docs/development-plan.md 8.C1).
 #: Kept as xfail regression: when a gap is fixed, move it to CAD_T_SERIES_IDENTICAL.
 CAD_T_SERIES_DIFF = [
-    't10_init', 't11_localvars', 't12_quote', 't14_command',
+    't10_init', 't11_localvars',
 ]
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))

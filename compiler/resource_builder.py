@@ -72,6 +72,37 @@ def build_module_code(n_funcs: int = 1, top_level: bytes = b'', nsyms: int = 0) 
     return bytes(out)
 
 
+def build_command_module_code(n_funcs: int, vl_idx: int = 2) -> bytes:
+    """生成 CAD 命令模块代码（c: 命令通过 vl-ACAD-defun 注册）。
+
+    REF（t14_command，n=2）实测字节序：
+    ``DEFUN | PUSH_G 4 POP JUMP0 | PUSH_G 6 SETQ_G 3 | PUSH_G 3 FUNC_REF 2
+    PUSH_NIL POP | PUSH_G 3 POP JUMP0 | PUSH_G 5 SETQ_G 1 | PUSH_G 1 FUNC_REF 2
+    PUSH_NIL POP | PUSH_G 1 END``
+
+    每命令：``PUSH_G <a> POP JUMP0``（占位）+ ``PUSH_G <b> SETQ_G <c>``
+    （把函数值放入目标槽）+ ``PUSH_G <c>; FUNC_REF <vl_idx>; PUSH_NIL; POP``
+    （vl-ACAD-defun 注册）。
+
+    槽位公式（n=2 与 golden 逐字节一致，n>2 按同一规律外推）：
+    - ``var_pos = n_funcs + 3``（函数注册基址）
+    - ``a = var_pos - 1 - i``，``b = var_pos + n_funcs - 1 - i``
+    - ``c = n_funcs + 1 - i``（i < n-1），末个 ``c = 1``（对应尾部 PUSH_G 1）
+    满足 a_i = c_{i-1}（i>=1）与末 c=1 的自我一致性。
+    """
+    var_pos = n_funcs + 3
+    out = bytearray(b'\x14\x01\x00\x00\x00')
+    for i in range(n_funcs):
+        a = var_pos - 1 - i
+        b = var_pos + n_funcs - 1 - i
+        c = n_funcs + 1 - i if i < n_funcs - 1 else 1
+        out += b'\x09' + res_u16(a) + b'\x0a\x57\x00\x00\x00\x00'
+        out += b'\x09' + res_u16(b) + b'\x06' + res_u16(c)
+        out += b'\x09' + res_u16(c) + b'\x35\x01' + res_u16(vl_idx) + b'\x01\x0a'
+    out += b'\x09' + res_u16(c) + b'\x16'
+    return bytes(out)
+
+
 def count_resource_records(res_stream: bytes) -> int:
     """统计资源流中的 GVARINIT(0x43) 与 INIT_DONE(0x1c) 记录数。
 
@@ -163,7 +194,7 @@ class ResourceBuilder:
         self.data.append(0x02)
 
     def build(self, func_offsets: Dict[str, int], module_code: bytes = b'', total_size: int = 0,
-              stub_format: bool = False, top_level_count: int = 0) -> bytes:
+              stub_format: bool = False, top_level_count: int = 0, commands: int = 0) -> bytes:
         """构建与 AutoCAD 编译器一致的 seg1 资源流。
 
         结构：
@@ -227,8 +258,18 @@ class ResourceBuilder:
             module_entries = entries[:len(func_names_all) + top_level_count]
             fn_bytes = bytearray()
             # 函数名（逆序）在前，其后是顶层符号（entries 顺序）
-            for fname in reversed(func_names_all):
-                fn_bytes += self._enc_sym(fname) + b'\x00'
+            if commands and func_names_all:
+                # CAD 命令模块注册：每个命令函数独立 5b 块，首命令后插入
+                # `56 vl-ACAD-defun 00 00`（t14_command 实测）。该符号保留
+                # 原始大小写（`Vl-ACAD-defun`），不同于普通符号的大写编码。
+                names = list(reversed(func_names_all))
+                for i, fname in enumerate(names):
+                    out += b'\x5b' + self._enc_sym(fname) + b'\x00\x00'
+                    if i == 0:
+                        out += b'\x56' + self._enc('vl-ACAD-defun') + b'\x00\x00'
+            else:
+                for fname in reversed(func_names_all):
+                    fn_bytes += self._enc_sym(fname) + b'\x00'
             for entry_type, entry_val in module_entries[len(func_names_all):]:
                 if entry_type == 'SYMBOL':
                     fn_bytes += self._enc_sym(entry_val) + b'\x00'
@@ -246,7 +287,7 @@ class ResourceBuilder:
             if fn_bytes:
                 out += b'\x5b' + bytes(fn_bytes) + b'\x00'
             out += b'\x01' * 2
-            out += res_gvar_init(0, len(module_entries) + 2) + b'\x0a'
+            out += res_gvar_init(0, len(module_entries) + 2 + commands) + b'\x0a'
         else:
             self._push_entry(out, entries[0])
             out += b'\x01' * (entry_count - 1)
@@ -327,7 +368,7 @@ class ResourceBuilder:
                 out += b'\x3a\x01'
         # DEFCODE 后 GVARINIT：var_pos = 模块注册符号数 + 2（函数名 + 顶层符号 + 2）。
         _nsyms = entry_count - len(func_names) - top_level_count + 1
-        gv_var_pos = len(func_names) + top_level_count + 2 if stub_format else max(0, entry_count - 1)
+        gv_var_pos = len(func_names) + top_level_count + 2 + commands if stub_format else max(0, entry_count - 1)
         gv_st_init = len(func_names) if stub_format else len(func_names)
         out += res_gvar_init(gv_var_pos, gv_st_init)
         out += b'\x1c'
@@ -379,9 +420,12 @@ class ResourceBuilder:
             encoded = self._enc(structure[1])
             out += b'\x55\x01\x00' + res_u16(len(encoded)) + encoded
         elif kind == 'LIST':
+            dotted = len(structure) > 2 and structure[2]
             for item in structure[1]:
                 self._emit_const(out, item)
-            out += b'\x39' + res_u16(len(structure[1]))
+            # dotted 引用 `'(1 . 2)`：CAD 用单字节 `2a`(LIST_END) 收尾
+            # （t12_quote 实测）；普通列表用 `39 <count>`。
+            out += b'\x2a' if dotted else (b'\x39' + res_u16(len(structure[1])))
         else:
             raise ValueError(f'Unknown constant kind: {kind}')
 

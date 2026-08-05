@@ -136,7 +136,7 @@
 |------|---------|---------|
 | `DEFUN` | 符号（gvar 引用） | 偏移 |
 | `FUNC` / `USUBR` | argc | 符号索引 |
-| `PUSH_VALUE` / `PUSH_G` / `PUSH_GLOBAL` / `SETQ_G` | 符号索引 | 附加字节 |
+| `PUSH_VALUE` / `PUSH_G` / `PUSH_G_ALT` / `SETQ_G` | 符号索引 | 附加字节 |
 
 ```
 0x0005: PUSH_VALUE f2, 0      ; f2 = 符号槽 0
@@ -180,7 +180,7 @@
 | `'1'` | 单字节 | `PUSH_INT8 5` |
 | `'2'` | 双字节 | `PUSH_G 3`、`SETQ_G x`、`INIT_ARGS 5` |
 | `'4'` | 四字节 | `PUSH_INT32 65536` |
-| `'s4'` | 有符号四字节 | `JUMP -12`、`BR_IF_TRUE 13` |
+| `'s4'` | 有符号四字节 | `JUMP -12`、`JMP32_IFNOT 13` |
 | `'bb'` | 两单字节 | `COPY_ELEM 1, 2` |
 | `'u'` | USUBR（argc, idx, flags） | `USUBR 2, 1, 0` |
 | `'f'` | FUNC（argc, idx, flags, zero） | `FUNC 1, 3, 0, 0` |
@@ -192,14 +192,14 @@
 
 `.lasm` 可编码 `docs/opcodes.md` 中列出的全部指令。常见助记符：
 
-- 栈：`NIL` `PUSH_NIL` `PUSH_T` `PUSH_VALUE` `PUSH_G` `PUSH_GLOBAL` `PUSH_INT8` `PUSH_INT32` `PUSH_REAL` `POP` `DUP`
+- 栈：`NIL` `PUSH_NIL` `PUSH_T` `PUSH_VALUE` `PUSH_G` `PUSH_G_ALT` `PUSH_INT8` `PUSH_INT32` `PUSH_REAL` `POP` `DUP`
 - 局部变量：`GET_LOCAL` `GET_LOCAL_WIDE` `SET_LOCAL` `CLEAR_LOCAL`
 - 赋值：`SETQ_G`
 - 调用：`USUBR` `FUNC` `EVAL`（`USUBR` 即 CAD 内部所称的 **Xsubr**，调用函数）
 - 算术/逻辑：`FIX_ADD` `FIX_SUB` `FIX_MUL` `FIX_DIV` `FIX_MOD` `FIX_LEQ` `FIX_GEQ` `FIX_LT` `FIX_GT` `INC` `DEC` `NOT` `ATOM` `CAR` `CDR` `CONS`
-- 控制流：`JUMP` `JUMP32` `BR_IF_TRUE` `JMP16_IFNOT` `JMP16_IF` `COND_OR` `AND` `AND2` `EXIT_IF_ZERO` `EXIT_IF_NOT_ZERO`
-- 函数定义：`DEFUN` `DEFUN2` `END_DEFUN` `END_DEFUN_CLEANUP` `INIT_ARGS` `CLEAR_ARGS` `ALPHA` `BETA` `INIT_DONE` `DEFCODE` `NOP`
-- 其他：`LIST_OBJ` `BUILD_LIST` `COPY_ELEM` `EVAL`
+- 控制流：`JUMP` `JUMP_ALT` `JMP32_IFNOT` `JMP16_IFNOT` `JMP16_IF` `COND_OR` `COND_AND` `COND_AND2` `EXIT_IF_ZERO` `EXIT_IF_NOT_ZERO`
+- 函数定义：`DEFUN` `DEFUN_ALT` `END_DEFUN` `END_DEFUN_CLEANUP` `INIT_ARGS` `CLEAR_ARGS` `ALPHA` `BETA` `INIT_DONE` `DEFCODE` `NOP`
+- 其他：`BUILD_LIST_ALT` `BUILD_LIST` `COPY_ELEM` `EVAL`
 
 ## 示例
 

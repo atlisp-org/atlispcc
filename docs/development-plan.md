@@ -401,3 +401,88 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - **8.B 完成**：t-series byte-identity 回归落地（239 passed + 4 xfailed，11 项 identical，新增 test_resource_stream 24 用例）；B4 i18n roundtrip 用例通过；CI 绿（mypy + pytest）；dev 依赖含 readme-renderer
 - **8.C 完成**：t10/t11/t12/t14 由 xfail 全部转正为 byte-identity（移入 `CAD_T_SERIES_IDENTICAL`；t03/t09/t13/t15 已于 2026-08-04 转正）；i18n 混合模式字节一致；`pytest` 全绿（无 xfail）
 - **8.D 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过
+
+---
+
+# 9. 字节兼容收尾开发计划（2026-08-05 版，v0.1.9 → v0.2）
+
+> **范围**：聚焦字节兼容 P0/P1（t11/t10/t12/t14/i18n 全转正），ZELX（8.D）暂缓。
+> **CAD 验证**：独立实例 + 快照流程（遵守 §3.7 安全策略，不手动 patch 字节码）。
+> **产出**：本文件作为单一事实源，逐阶段更新。
+
+## 9.1 现状核实（2026-08-05 实测，`pytest` 239 passed + 4 xfailed）
+
+| 项 | seg0 | seg1 | nsyms | 根因 | 优先级 |
+|---|---|---|---|---|---|
+| t11_localvars | ✗ | ✗ | 6vs8 | `_al-bind-alist` 局部变量绑定协议（最大单点缺口，-9 len） | P0 |
+| t10_init | ✗ | ✗ | 2vs4 | 顶层 init 混合模式符号序（与 i18n 同源） | P0 |
+| t12_quote | ✓ | ✗ | 5vs5 | **已转正 2026-08-05**（dotted 常量 `2a` 收尾） | P1 ✅ |
+| t14_command | ✓ | ✗ | 6vs6 | **已转正 2026-08-05**（`vl-ACAD-defun` 注册 + 命令模块代码） | P1 ✅ |
+| i18n 混合模式 | ✗ | ✗ | 92vs92 | defun+顶层交错持续块规则（最大整体，1133 seg0 diff） | P1 |
+
+## 9.2 已转正（byte-identity，13/15）✅
+`t01_math` `t02_recursion` `t03_fib` `t04_while` `t05_cond` `t06_strcat`
+`t07_list` `t08_apply_mapcar` `t09_funcall` `t12_quote` `t13_nested_if`
+`t14_command` `t15_cad_funcs`
+
+> **t12_quote 转正记录（2026-08-05）**：根因是 dotted 引用 `'(1 . 2)` 的常量在
+> seg1 资源流中以 `39 <count>` 收尾，而 CAD 用单字节 `2a`（LIST_END）。修复：
+> `cad_symbols.to_const` 为 dotted ListExpr 返回 3 元组 `('LIST', items, True)`，
+> `resource_builder._emit_const` 对 dotted 列表输出 `2a` 而非 `39 <count>`。
+> seg0 本就一致（`pytest` 240 passed + 3 xfailed，t12 移入 IDENTICAL）。
+
+> **t14_command 转正记录（2026-08-05）**：c: 命令需在模块注册段插入
+> `vl-ACAD-defun` 符号（`0x56` 编码、保留大小写 `Vl-ACAD-defun`），并使模块注册
+> GVARINIT st_init +1（4→5）、函数注册基址 gv_var_pos +1（4→5）。vl 仅存在于
+> resource_gvars（模块注册），不进 symtab.entries，故 seg0 引用的 function_gvars
+> 槽位不变。模块代码改用 `build_command_module_code`（每命令
+> `PUSH_G<c>; FUNC_REF 2; PUSH_NIL; POP` 注册）。`commands` 计数 = 1（vl 符号数，
+> 非命令函数数）。t14 移入 IDENTICAL，`pytest` 241 passed + 2 xfailed。
+
+## 9.3 执行阶段
+
+### 阶段 1：t11 `_al-bind-alist`（P0，最大 seg0 缺口）
+- 逆向 CAD 绑定序列（ref 用 `PUSH_G+FUNC`，我们直接 `GET_LOCAL`）
+  - ref seg0：`... 51 01 05 00 01 00 0a 32 ...`（FUNC `_al-bind-alist` 绑定 alist）
+  - ours：`... 09 05 5c 00 ...`（DEFUN 头 nsyms 后直接 GET_LOCAL）
+- 改 `compiler/codegen.py` `_emit_init_args` 生成 `_al-bind-alist` 协议；对齐 `cad_symbols.py` 符号槽（局部变量进符号表）
+- 回归防护：t04_while/t05_cond（含局部变量）必须保持 byte-identity
+
+### 阶段 2：t10_init（P0，小样本混合模式）
+- 对齐顶层 init 表达式符号收集序（nsyms 2→4）
+- 为阶段 4 i18n 预研持续块规则
+
+### 阶段 3：t12_quote + t14_command（P1，仅 seg1）✅ 已完成 2026-08-05
+- t12：dotted 常量 `2a` 收尾（`cad_symbols.to_const` + `resource_builder._emit_const`）
+- t14：`c:` 命令 `vl-ACAD-defun` 模块注册（`0x56` 保留大小写）+ `build_command_module_code`
+  - 根因：REF 在模块注册段于命令函数名间插入 `vl-ACAD-defun` 符号
+    （`C:ADD, vl-ACAD-defun, C:HELLO`），使模块注册 `st_init` 4→5、
+    函数注册基址 `var_pos` 4→5；模块代码每命令追加
+    `PUSH_G <c>; FUNC_REF 2; PUSH_NIL; POP`（`35 <argc> <idx> <01>`）而非 `PUSH_G <c>; POP`。
+  - REF 命令模块代码（n=2）：`14 01 00 00 00 | PUSH_G4 POP JUMP0 | PUSH_G6 SETQ_G3 |
+    PUSH_G3 FUNC_REF2 PUSH_NIL POP | PUSH_G3 POP JUMP0 | PUSH_G5 SETQ_G1 |
+    PUSH_G1 FUNC_REF2 PUSH_NIL POP | PUSH_G1 END`
+  - 槽位公式（n=2 与 golden 逐字节一致，n>2 外推）：`var_pos=n_funcs+3`；
+    `a=var_pos-1-i`、`b=var_pos+n_funcs-1-i`、`c=n_funcs+1-i`（i<n-1）、末 `c=1`。
+  - 关键约束：`vl-ACAD-defun` 仅在模块注册段（resource_gvars）注册，**不进**
+    `symtab.entries`（否则 seg0 引用的 function_gvars 槽位 +1 破坏字节一致）；
+    `commands` 计数 = 1（vl 符号数），非命令函数数。
+
+### 阶段 4：i18n 混合模式（P1，1133 处主战场）
+- `CadSymbolCollector.collect_program` 持续块规则（defun/顶层交错）
+- `ResourceBuilder` 模块代码切分改交错序
+- 迭代至 seg0/seg1 与 `i18n-cad.fas` 逐字节一致
+
+### 阶段 5：收尾
+- xfail → `CAD_T_SERIES_IDENTICAL` 逐项转正（`tests/test_compiler_output.py`）
+- 独立 CAD 实例 + 快照流程真机复核（`scripts/cad_verify.py`）
+- 更新本文件、AGENTS.md、兼容性矩阵
+
+## 9.4 涉及文件
+`compiler/codegen.py`、`compiler/cad_symbols.py`、`compiler/resource_builder.py`、
+`compiler/cli.py`、`tests/test_compiler_output.py`、`docs/development-plan.md`
+
+## 9.5 验收
+- `pytest` 全绿且 **0 xfail**；`CAD_T_SERIES_DIFF` 清空
+- t11/t10/t12/t14 移入 `CAD_T_SERIES_IDENTICAL`；i18n 字节一致
+- `cad_verify.py` 真机 15/15（独立实例流程）

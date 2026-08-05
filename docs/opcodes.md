@@ -56,7 +56,7 @@ FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操
 | `02` | PUSH_T | `''` | 压入 `T`（布尔真） | `_emit_expr`（`T` 字面量）、`_emit_call_expr`（`(exit)`/`(quit)`/`(abort)`、空 `(and)`） |
 | `03` | PUSH_VALUE | `2` | 由符号槽索引取值压栈。全局变量、参数、函数名引用均通过此指令 | `_emit_expr`（符号引用）、`_emit_arith` / `_emit_unary`（stub 结果取回） |
 | `09` | PUSH_G | `2` | 压入全局符号字面量。"G" = Global。字符串字面量、quoted 符号用此指令 | `_emit_expr`（字符串）、`_emit_quoted`、`_emit_init_args`（参数名注册） |
-| `0c` | PUSH_GLOBAL | `2` | 同 PUSH_G（备用编码，项目中未使用） | — |
+| `0c` | PUSH_G_ALT | `2` | 同 PUSH_G（备用编码，项目中未使用） | — |
 | `32` | PUSH_INT8 | `1` | 压入单字节有符号整数（−128~127） | `_emit_expr`（小整数）、`_emit_quoted` |
 | `33` | PUSH_INT32 | `4` | 压入四字节有符号整数（超出 `int8` 范围时） | `_emit_expr`（大整数）、`_emit_quoted` |
 | `3b` | PUSH_REAL | `z` | 压入实数（ASCII 字符串后跟 NUL） | `_emit_expr`（实数）、`_emit_quoted` |
@@ -138,7 +138,7 @@ FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操
 | 十六进制 | 名称 | 格式 | 描述 | 发射位置 |
 |----------|------|------|------|----------|
 | `14` | DEFUN | `h` | 函数定义开始。自包含: `14 <gvar:2> <offset:2>`；stub: `14 <argc>x3 00` | `_emit_defun_header`、`generate_function` |
-| `15` | DEFUN2 | `h` | DEFUN 变体（项目中未使用） | — |
+| `15` | DEFUN_ALT | `h` | DEFUN 变体（项目中未使用） | — |
 | `16` | END_DEFUN | `''` | 函数体结束标记。自包含格式末尾用此；stub 格式不生成，多函数时分隔符追加 `16` | `FasWriter`（写入时追加） |
 | `18` | INIT_ARGS | `2` | 初始化函数参数绑定。自包含: `2*argc`；stub: `2*argc+1` | `_emit_init_args`、`generate_function` |
 | `19` | CLEAR_ARGS | `2` | 清除函数参数绑定（返回前） | `_emit_clear_args` |
@@ -219,17 +219,17 @@ USUBR 操作数（紧凑 stub 格式）：
 | 十六进制 | 名称 | 格式 | 描述 | 发射位置 |
 |----------|------|------|------|----------|
 | `57` | JUMP | `s4` | 无条件跳转，4 字节有符号相对偏移 | `_emit_if`（跳过 else/到 end）、`_emit_while`/`_emit_foreach`/`_emit_repeat`（循环回跳）、`_emit_cond`（跳过剩余子句）、`_emit_tail_call`（尾递归跳转） |
-| `69` | JUMP32 | `s4` | 无条件跳转（备用编码，项目中未使用） | — |
-| `67` | BR_IF_TRUE | `s4` | 条件跳转。**CAD stub 格式中语义为"栈顶为假则跳转"(IFNOT)**，4 字节有符号偏移 | `_emit_if`（stub if 分支）、`_emit_while`（stub 循环退出） |
+| `69` | JUMP_ALT | `s4` | 无条件跳转（备用编码，项目中未使用） | — |
+| `67` | JMP32_IFNOT | `s4` | 条件跳转。**CAD stub 格式中语义为"栈顶为假则跳转"(IFNOT)**，4 字节有符号偏移 | `_emit_if`（stub if 分支）、`_emit_while`（stub 循环退出） |
 | `0d` | JMP16_IFNOT | `2` | 条件假跳转（短），2 字节有符号偏移 | `_emit_if`（自包含 if 分支）、`_emit_while`（自包含循环退出）、`_emit_short_circuit`（`and`）、`_emit_foreach`（空列表检测）、`_emit_repeat`（零计数检测）、`_emit_cond`（子句条件为假） |
 | `0e` | JMP16_IF | `2` | 条件真跳转（短），2 字节有符号偏移 | `_emit_short_circuit`（`or`） |
-| `3c` | JMP16_IFNOT_2 | `2` | 同 JMP16_IFNOT（备用编码，项目中未使用） | — |
-| `3d` | JMP16_IF_2 | `2` | 同 JMP16_IF（备用编码，项目中未使用） | — |
+| `3c` | JMP16_IFNOT_ALT | `2` | 同 JMP16_IFNOT（备用编码，项目中未使用） | — |
+| `3d` | JMP16_IF_ALT | `2` | 同 JMP16_IF（备用编码，项目中未使用） | — |
 | `3e` | EXIT_IF_NOT_ZERO | `''` | 栈顶非零则退出执行 | `_emit_call_expr`（`(exit)`/`(quit)`/`(abort)`） |
 | `3f` | EXIT_IF_ZERO | `''` | 栈顶为零则退出（项目中未使用） | — |
 | `68` | COND_OR | `s4` | 短路 OR（项目中未使用） | — |
-| `6a` | AND | `s4` | 短路 AND（项目中未使用） | — |
-| `6b` | AND2 | `s4` | AND 变体（项目中未使用） | — |
+| `6a` | COND_AND | `s4` | 短路 AND（项目中未使用） | — |
+| `6b` | COND_AND2 | `s4` | COND_AND 变体（项目中未使用） | — |
 
 #### 控制流结构
 
@@ -240,7 +240,7 @@ cond → JMP16_IFNOT else_target → then_body → JUMP after → else_body → 
 
 **if-then-else（紧凑 stub 格式）：**
 ```
-cond → BR_IF_TRUE else_target → then_body → JUMP after → else_body → after
+cond → JMP32_IFNOT else_target → then_body → JUMP after → else_body → after
 ```
 
 **while 循环（自包含格式）：**
@@ -250,7 +250,7 @@ loop: → cond → JMP16_IFNOT exit → body → JUMP loop → exit
 
 **while 循环（紧凑 stub 格式）：**
 ```
-loop: → cond → BR_IF_TRUE exit → body → JUMP loop → exit
+loop: → cond → JMP32_IFNOT exit → body → JUMP loop → exit
 ```
 
 #### 示例：if-then-else
@@ -274,7 +274,7 @@ loop: → cond → BR_IF_TRUE exit → body → JUMP loop → exit
 03 02 00       PUSH_VALUE 槽2 (x)       ; cond
 32 00          PUSH_INT8 0
 4e             FIX_GT
-67 0a 00 00 00 BR_IF_TRUE +10          ; 假→跳至 else
+67 0a 00 00 00 JMP32_IFNOT +10          ; 假→跳至 else
 ; then:
 09 03 00       PUSH_G 3 ("positive")
 57 03 00 00 00 JUMP +3                  ; 跳过 else
@@ -293,7 +293,7 @@ loop: → cond → BR_IF_TRUE exit → body → JUMP loop → exit
 03 02 00       PUSH_VALUE 槽2 (n)       ; 取 n
 32 00          PUSH_INT8 0
 4e             FIX_GT                   ; (> n 0)
-67 0e 00 00 00 BR_IF_TRUE +14          ; 假→exit
+67 0e 00 00 00 JMP32_IFNOT +14          ; 假→exit
 ; body:
 09 03 00       PUSH_G 3 (princ)         ; (princ n)
 03 02 00       PUSH_VALUE 槽2 (n)
@@ -392,7 +392,7 @@ loop: → cond → BR_IF_TRUE exit → body → JUMP loop → exit
 | `29` | CDR | `''` | 弹出列表，取其剩余部分压栈 | `(cdr list)` |
 | `2a` | CONS | `''` | 弹出两个值，构造点对 | `(cons a b)` / 点对字面量 `'(a . b)` |
 | `39` | BUILD_LIST | `2` | 弹出 n 个值，构造列表，结果压栈 | `(list a b c ...)` |
-| `37` | LIST_OBJ | `2` | 同 BUILD_LIST（备用编码，项目中未使用） | — |
+| `37` | BUILD_LIST_ALT | `2` | 同 BUILD_LIST（备用编码，项目中未使用） | — |
 | `23` | NOT | `''` | 弹出栈顶，逻辑取反后压栈 | `(not x)` |
 | `24` | ATOM | `''` | 弹出栈顶，判断是否为原子 | `(atom x)` |
 | `07` | COPY_ELEM | `bb` | 编译器内部元素复制（项目中未使用） | — |
@@ -424,7 +424,7 @@ PUSH a                         ;   再压 b
 | 十六进制 | 名称 | 格式 | 说明 |
 |----------|------|------|------|
 | `10` | OP_10 | `''` | 未知，未观察到使用 |
-| `15` | DEFUN2 | `h` | DEFUN 备用变体 |
+| `15` | DEFUN_ALT | `h` | DEFUN 备用变体 |
 | `1a` | OP_1A | `2` | 未知 |
 | `1b` | OP_1B | `2` | 未知 |
 | `1e` | ALPHA | `1` | 字母前缀标记（编译器内部） |
@@ -433,8 +433,8 @@ PUSH a                         ;   再压 b
 | `38` | OP_38 | `''` | 未知 |
 | `3a` | DEFCODE | `''` | 代码定义标记（seg1 资源段使用） |
 | `40` | OP_40 | `''` | 未知 |
-| `62` | NOP_62 | `''` | 空操作备用 |
-| `63` | NOP_63 | `''` | 空操作备用 |
+| `62` | NOP_ALT | `''` | 空操作备用 |
+| `63` | NOP_ALT2 | `''` | 空操作备用 |
 
 ---
 
@@ -558,21 +558,30 @@ JUMP func_entry
 - 79 个 CAD golden/参考 FAS 反汇编**无未知 opcode**（`UNK_` 计数为 0）
 - 16 个 CAD golden + 15 个自产物 `disasm → asm` 往返 **seg0 字节级一致**
 - 全部编码函数输出与文档一致（`encode_usubr3`/`encode_func3`/`encode_op_*` 等 12 项抽查全对）
-- 11/15 的 t-series 与 CAD 编译器**逐字节一致**（seg0 + seg1 资源项均一致）
-- 关键语义 opcode 实测正确：`BR_IF_TRUE(0x67)` stub 条件跳转、`COND_OR(0x68)` cond 编译、
+- 13/15 的 t-series 与 CAD 编译器**逐字节一致**（seg0 + seg1 资源项均一致）
+- 关键语义 opcode 实测正确：`JMP32_IFNOT(0x67)` stub 条件跳转、`COND_OR(0x68)` cond 编译、
   `CLEAR_ARGS(0x19)` stub 3 字节 `19 <argc:2> <00>`、`USUBR(0x35)`/`FUNC(0x51)` stub 3 字节
 
 **GET_LOCAL 二义性**：`0x05`（短）与 `0x5c`（宽）均为局部变量读取，但操作数宽度不同；
 `0x5c` 的规范名称为 `GET_LOCAL_WIDE`（与 `0x05` 的 `GET_LOCAL` 区分），汇编 `GET_LOCAL_WIDE N`
 强制发 `5c <u16>`，往返无损。
 
-**遗留差异非 opcode 问题**：t10/t11/t12/t14 与 CAD 的差异**不在操作码编码**，而在：
-- seg1 资源段符号槽顺序/构建（t10 混合模式、t12 常量顺序、t14 `vl-ACAD-defun`）
+**资源码补充**（2026-08-05 转正 t12/t14 后）：
+- `2a`（CONS）兼作 **dotted 常量收尾**——`'(1 . 2)` 以单字节 `2a` 结束，普通列表才用
+  `39 <count>`（t12_quote 修复：`_emit_const` 对 dotted 常量输出 `2a`）
+- `56` 单符号块**保留大小写**——命令模块注册的 `vl-ACAD-defun` 编码为 `Vl-ACAD-defun`
+  （t14_command 修复），区别于 `5b` 的大写化
+- `35`/`51`（FUNC_REF）亦出现于资源/模块代码——命令模块代码用其调用 `vl-ACAD-defun`
+  注册 c: 命令（t14_command）
+
+**遗留差异非 opcode 问题**：t10/t11 与 CAD 的差异**不在操作码编码**，而在：
+- seg1 资源段符号槽顺序/构建（t10 混合模式）
 - codegen 缺 `_al-bind-alist` 局部变量绑定序列（t11：CAD 用 `PUSH_G+FUNC`，我们直接
   `PUSH_INT8+SETQ_G`——操作码均合法，只是生成策略不同）
 
 资源段指令（`0x43` GVARINIT、`0x55`/`0x56`/`0x5b` 符号/字符串、`0x3a` DEFCODE、`0x1c`
-INIT_DONE）不属于字节码 OPCODES 表，由 `ResourceBuilder`/`core.fas_core` 硬编码处理。
+INIT_DONE、`0x35`/`0x51` FUNC_REF）不属于字节码 OPCODES 表，由
+`ResourceBuilder`/`core.fas_core` 硬编码处理，详见 [fas-format.md §3.2](fas-format.md)。
 
 ---
 

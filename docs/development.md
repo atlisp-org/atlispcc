@@ -181,7 +181,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录
 - **运算符**（FIX_ADD/CAR/CDR/NOT 等）：弹栈计算后压栈
 - **调用指令**（USUBR/FUNC）：弹参数 → 解析函数名 → 生成 `(name args)`
 - **POP**：弹出作为独立语句输出
-- **分支指令**（BR_IF_TRUE/JMP16_IFNOT 等）：尝试检测 if/while/foreach 结构
+- **分支指令**（JMP32_IFNOT/JMP16_IFNOT 等）：尝试检测 if/while/foreach 结构
   - `_detect_if`：识别 if-then-else 模式
   - `_detect_loop`：识别 while/foreach 模式
   - 无法识别则输出注释标记

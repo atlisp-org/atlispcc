@@ -387,7 +387,7 @@ def parse_resource_stream(res_data, res_vars):
             if pos + 2 <= len(res_data):
                 pos += 2
                 
-        elif op == 0x6A:  # AND/Cond
+        elif op == 0x6A:  # COND_AND
             pos += 1
             if pos + 4 <= len(res_data):
                 pos += 4

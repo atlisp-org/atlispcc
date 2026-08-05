@@ -36,7 +36,7 @@ AutoCAD 与 ZWCAD 的字节码引擎源自同一 Lisp 字节码血统，指令�
 | POP | 0a | 2a | — |
 | JMP16_IFNOT | 0d | 36 | s16 |
 | JMP16_IF | 0e | 37 | s16 |
-| BR_IF_TRUE | 67 | 1a | s32 |
+| JMP32_IFNOT | 67 | 1a | s32 |
 | JUMP | 57 | 16 | s32 |
 | CLEAR_ARGS | 19 | 06 | u16 |
 | END_DEFUN | 16 | 03 | — |
@@ -60,6 +60,8 @@ AutoCAD 与 ZWCAD 的字节码引擎源自同一 Lisp 字节码血统，指令�
 | INIT_DONE | 1c | 2c | — |
 | JUMP | 57 | 16 | s32 |
 | 符号块 | 5b | 57 | names\0... |
+| 单符号块（保留大小写） | 56 | — | name\0 00（`vl-ACAD-defun`） |
+| FUNC_REF | 35/51 | — | argc + idx（命令模块代码） |
 | 字符串块 | 55 | 55 | count + len + data |
 | END_DEFUN | 16 | 03 | — |
 
@@ -91,7 +93,7 @@ AutoCAD 与 ZWCAD 的字节码引擎源自同一 Lisp 字节码血统，指令�
 | 57 | JUMP | 符号块 |
 | 27 | （未定义）| SETQ_G |
 | 2c | （未定义）| INIT_DONE |
-| 1a | （未定义）| BR_IF_TRUE |
+| 1a | （未定义）| JMP32_IFNOT |
 | 36 | （未定义）| JMP16_IFNOT |
 | 37 | （未定义）| JMP16_IF |
 
@@ -102,7 +104,7 @@ AutoCAD 与 ZWCAD 的字节码引擎源自同一 Lisp 字节码血统，指令�
 
 - 两套字节码都含：压栈（PUSH_G/PUSH_VALUE/PUSH_INT8/PUSH_INT32）、
   局部变量（GET_LOCAL/SET_LOCAL）、赋值（SETQ_G）、调用（USUBR/FUNC）、
-  控制流（JUMP/BR_IF_TRUE/JMP16）、函数边界（DEFUN/END_DEFUN/CLEAR_ARGS）、
+  控制流（JUMP/JMP32_IFNOT/JMP16）、函数边界（DEFUN/END_DEFUN/CLEAR_ARGS）、
   资源注册（GVARINIT/DEFCODE/INIT_DONE/符号块/字符串块）
 - 对应指令的**操作数字段格式一致**（u8/u16/i32/s32/argc+idx）
 - 因此重映射 = 仅替换操作码字节，操作数原样保留 → 语义不变

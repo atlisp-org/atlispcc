@@ -148,11 +148,13 @@ for i in 0..len(data)-1:
 
 | 字节 | 名称 | 编码 | 说明 |
 |------|------|------|------|
-| `5b` | 符号块 | `5b <name1>\x00 <name2>\x00 ... \x00` | 连续符号合并为一块，末尾额外 `\x00`；遇字符串/常量/`5c` 分块 |
-| `56` | 符号块（备用） | 同 `5b` | 单个符号 `5b <name>\x00 00` 亦由 `_push_single_symbol` 使用 |
+| `5b` | 符号块 | `5b <name1>\x00 <name2>\x00 ... \x00` | 连续符号合并为一块，末尾额外 `\x00`；遇字符串/常量/`5c` 分块；符号名**统一大写**（`_enc_sym`） |
+| `56` | 单符号块 | `56 <name>\x00 00` | 单个符号，**保留原始大小写**（不经过 `_enc_sym` 大写化）；用于命令模块注册的 `vl-ACAD-defun`（t14 实测：`Vl-ACAD-defun`） |
 | `55` | 字符串块 | `55 <count:2>` + 每个 `55 <len:2> <bytes>` | 字符串字面量注册；`count`=串数 |
 
 > 符号名统一大写（`ResourceBuilder._enc_sym`），字符串字面量保持原样。
+> **例外**：`56` 单符号块保留原始大小写——命令模块注册的 `vl-ACAD-defun`
+> 在资源流中是 `Vl-ACAD-defun`（CAD 原样编码，t14_command 实测）。
 
 #### 3.2.3 栈操作
 
@@ -170,6 +172,12 @@ for i in 0..len(data)-1:
 | `23` | NOT | `23` | 逻辑取反 |
 | `24` | ATOM | `24` | 原子判断 |
 
+> **列表常量收尾规则**（t12_quote 实测）：
+> - **普通列表** `'(a b c)` → 逐项注册后 `39 <count>`（BUILD_LIST），count=项数
+> - **dotted 点对** `'(1 . 2)` → 逐项注册后**单字节 `2a`**（CONS）收尾，无 `39 <count>`
+> - `ResourceBuilder._emit_const` 对 dotted 常量（`('LIST', items, True)`）输出 `2a`，
+>   普通列表输出 `39 <count>`，与 CAD 逐字节一致。
+
 #### 3.2.4 函数/模块注册
 
 | 字节 | 名称 | 编码 | 说明 |
@@ -178,6 +186,7 @@ for i in 0..len(data)-1:
 | `15` | 模块头（备用） | 同 `14` | — |
 | `3a` | DEFCODE | `3a` | 弹出栈上 `(name, start, module)` 三元组注册函数目录；stub 最后一个追加 `3a 01` |
 | `43` | GVARINIT | `43 <var_pos:2> <st_init:2>` | 弹出栈顶 `st_init` 个值，倒序填入 `var_pos..var_pos+st_init-1` 槽；`module_id` 非空时写入函数 gvar 表 |
+| `35`/`51` | FUNC_REF | `35 <argc> <idx:2> 01` | 引用函数目录中 `idx` 处函数（命令模块代码调用 `vl-ACAD-defun` 注册命令，t14 实测） |
 | `1c` | INIT_DONE | `1c` | 模块初始化完成标记 |
 | `16` | END_DEFUN | `16` | 函数/模块代码结束 |
 | `5c` | GET_LOCAL_WIDE | `5c 00 00` | DEFCODE 前的固定序列（压入局部槽 0） |
@@ -189,7 +198,7 @@ for i in 0..len(data)-1:
 | `1e`/`1f` | ALPHA/BETA | `1e <v>` | 编译器内部标记 |
 | `1a`/`1b`/`0c`/`0d`/`0e`/`3c`/`3d`/`07` | 索引/短跳转 | `op <u16>` | 解析时按长度跳转，不产生资源项 |
 | `57`/`67`/`69`/`6a`/`6b`/`68` | 长跳转 | `op <i32>` | 模块代码中控制流（4 字节偏移） |
-| `37` | LIST_OBJ | `37 <n:2>` | 同 BUILD_LIST（备用） |
+| `37` | BUILD_LIST_ALT | `37 <n:2>` | 同 BUILD_LIST（备用） |
 | `20`/`62`/`63`/`3e`/`3f`/`38`/`40`/`21` | 空操作 | `op` | 单字节，无操作数 |
 
 > `build_mvar_tables`（`core/fas_core.py`）逐操作码模拟栈，`GVARINIT(0x43)` 将栈顶值
@@ -205,7 +214,7 @@ for i in 0..len(data)-1:
 | 定义 | `asm/opcodes.py`（`OPCODES` 表） | `ResourceBuilder` 生成 / `core.fas_core` 解析 |
 | 引用方式 | 函数体按符号槽编址（`PUSH_G`/`PUSH_VALUE`/`USUBR`） | 符号槽顺序即 seg1 注册顺序 |
 | 共享字节 | 与资源码共用 `14`/`32`/`33`/`5c`/`09`/`06` 等字节值 | 同上 |
-| 典型指令 | `PUSH_G`、`USUBR`、`JUMP`、`BR_IF_TRUE`、`FIX_ADD` | `5b`、`55`、`43`、`3a`、`39`、`1c` |
+| 典型指令 | `PUSH_G`、`USUBR`、`JUMP`、`JMP32_IFNOT`、`FIX_ADD` | `5b`、`55`、`43`、`3a`、`39`、`1c` |
 
 关键区分：同一字节 `32` 在 seg0 是运行时压整数，在 seg1 是加载期压整数值供 GVARINIT
 建表；`5c` 在 seg0 是 `GET_LOCAL_WIDE`（读局部变量），在 seg1 是 DEFCODE 前的固定标记。
@@ -217,6 +226,16 @@ for i in 0..len(data)-1:
 - **模块注册**：`GVARINIT(0, 函数数 + 2)`
 - **函数注册**：`GVARINIT(0, 符号数)`
 - **DEFCODE**：`GVARINIT(函数数 + 2, 函数数)`
+
+> **c: 命令模式偏移**（t14_command 实测）：含命令函数时，模块注册段额外注册
+> `vl-ACAD-defun`（`56` 单符号块），使模块注册 GVARINIT st_init 与 DEFCODE
+> 基址 `var_pos` 各 +1：
+> - 模块注册：`GVARINIT(0, 函数数 + 3)`
+> - DEFCODE：`GVARINIT(函数数 + 3, 函数数)`
+>
+> `vl-ACAD-defun` 仅注册于模块注册段（resource_gvars），**不进**符号表
+> `symtab.entries`，因此函数注册 GVARINIT st_init（= nsyms）与 seg0 引用的
+> function_gvars 槽位保持不变。
 
 ### 3.4 DEFCODE（函数定义）
 
@@ -243,6 +262,31 @@ CAD 风格模块入口（`build_module_code`），引用 seg0 中注册的符号
 09 03 00 06 01 00 # PUSH_G + SETQ_G
 09 01 00 16       # PUSH_G + END_DEFUN
 ```
+
+### 3.5a 命令模块代码（`build_command_module_code`，t14_command 实测）
+
+含 `c:` 命令函数时，模块代码对每个命令用 `FUNC_REF`（`35`）调用 `vl-ACAD-defun`
+注册为 CAD 命令。n=2 实测字节序：
+
+```
+14 01 00 00 00            # DEFUN 头
+09 04 00 0a 57 00 00 00 00  # PUSH_G 4; POP; JUMP 0        （占位）
+09 06 00 06 03 00         # PUSH_G 6; SETQ_G 3            （函数值入目标槽）
+09 03 00 35 01 02 00 01 0a # PUSH_G 3; FUNC_REF 2; PUSH_NIL; POP（vl-ACAD-defun 注册）
+09 03 00 0a 57 00 00 00 00  # PUSH_G 3; POP; JUMP 0
+09 05 00 06 01 00         # PUSH_G 5; SETQ_G 1
+09 01 00 35 01 02 00 01 0a # PUSH_G 1; FUNC_REF 2; PUSH_NIL; POP
+09 01 00 16               # PUSH_G 1; END_DEFUN
+```
+
+槽位公式（n=2 与 golden 逐字节一致，n>2 按同一规律外推，`var_pos = 函数数 + 3`）：
+- `a = var_pos - 1 - i`（占位）、`b = var_pos + 函数数 - 1 - i`（函数值槽）
+- `c = 函数数 + 1 - i`（i < n-1），末个 `c = 1`（对应尾部 `PUSH_G 1`）
+- 满足 `a_i = c_{i-1}`（i>=1）与末 `c=1` 的自我一致性
+
+每个命令函数：`PUSH_G <a>; POP; JUMP 0` + `PUSH_G <b>; SETQ_G <c>` +
+`PUSH_G <c>; FUNC_REF <vl_idx>; PUSH_NIL; POP`。`FUNC_REF` 的 `35 <argc> <idx:2> 01`
+中 `idx` 为 `vl-ACAD-defun` 在函数目录中的索引（t14 实测为 2）。
 
 ---
 

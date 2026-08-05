@@ -47,7 +47,7 @@ DUP = NAME_TO_OPCODE["DUP"]  # 0x0b
 SETQ_G = NAME_TO_OPCODE["SETQ_G"]  # 0x06
 JMP16_IFNOT = NAME_TO_OPCODE["JMP16_IFNOT"]  # 0x0d
 JMP16_IF = NAME_TO_OPCODE["JMP16_IF"]  # 0x0e
-BR_IF_TRUE = NAME_TO_OPCODE["BR_IF_TRUE"]  # 0x67
+JMP32_IFNOT = NAME_TO_OPCODE["JMP32_IFNOT"]  # 0x67
 COND_OR = NAME_TO_OPCODE["COND_OR"]  # 0x68
 JUMP = NAME_TO_OPCODE["JUMP"]  # 0x57
 CONS = NAME_TO_OPCODE["CONS"]
@@ -433,11 +433,11 @@ class CodeGenerator:
         self._emit_expr(buf, node.cond or Symbol("nil"))
 
         if self.stub_format:
-            # CAD stub: cond + BR_IF_TRUE <else> + then + JUMP <end> + else。
-            # 注意：CAD 的 BR_IF_TRUE(0x67) 语义为"栈顶为假则跳转"(IFNOT)。
+            # CAD stub: cond + JMP32_IFNOT <else> + then + JUMP <end> + else。
+            # 注意：CAD 的 JMP32_IFNOT(0x67) 语义为"栈顶为假则跳转"(IFNOT)。
             # 无 else 分支时 CAD 不生成 else 代码，label_else 与 label_end 重合于 JUMP 之后。
             jmp_pos = buf.pos()
-            buf.emit(encode_op_s32(BR_IF_TRUE, 0))
+            buf.emit(encode_op_s32(JMP32_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_else, 4)
             self._emit_expr(buf, node.then or Symbol("nil"), _tail=self._in_tail_context)
             jmp2_pos = buf.pos()
@@ -482,7 +482,7 @@ class CodeGenerator:
         self._emit_expr(buf, node.cond or Symbol("nil"))
         jmp_pos = buf.pos()
         if self.stub_format:
-            buf.emit(encode_op_s32(BR_IF_TRUE, 0))
+            buf.emit(encode_op_s32(JMP32_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_end, 4)
         else:
             buf.emit(encode_op_u16(JMP16_IFNOT, 0))
@@ -812,7 +812,7 @@ class CodeGenerator:
         for expr in func.body[:-1]:
             self._emit_expr(buf, expr)
             # CAD stub: SETQ_G 自身消费栈顶值，中间 setq 后无 POP（v10/v11 实测）；
-            # while 循环结束栈已清空（条件被 BR_IF_TRUE 消费、体结果各被 POP），
+            # while 循环结束栈已清空（条件被 JMP32_IFNOT 消费、体结果各被 POP），
             # 中间 while 后同样无 POP（t04_while 实测）。
             if not self.stub_format or isinstance(expr, Setq) or isinstance(expr, WhileNode):
                 pass

@@ -38,7 +38,7 @@ def _fas_is_stub(fas) -> bool:
 
 _DATA_TYPES = {"SYMBOL", "STRING", "INT8", "INT32", "REAL"}
 
-_SYM_REF_INSTS = {"PUSH_VALUE", "PUSH_G", "PUSH_GLOBAL", "SETQ_G"}
+_SYM_REF_INSTS = {"PUSH_VALUE", "PUSH_G", "PUSH_G_ALT", "SETQ_G"}
 _FUNC_REF_INSTS = {"FUNC", "USUBR"}
 
 
@@ -99,7 +99,7 @@ def _patch_operands(inst, file_sym_map: Dict[int, int], file_sym_slot_map: Dict[
         return ops
     if name in _SYM_REF_INSTS:
         # PUSH_G/SETQ_G 用符号槽（CAD/单文件编译器约定）；PUSH_VALUE 用 gvar 槽-1
-        if name in ("PUSH_G", "PUSH_GLOBAL", "SETQ_G") and file_sym_slot_map:
+        if name in ("PUSH_G", "PUSH_G_ALT", "SETQ_G") and file_sym_slot_map:
             slot_map = file_sym_slot_map
         else:
             slot_map = file_sym_map

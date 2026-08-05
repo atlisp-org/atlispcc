@@ -151,8 +151,8 @@ def _fmt_inst(inst, symbols: List[str], sym_types: Optional[List[str]] = None) -
         if len(ops) > 2:
             rest.extend(str(o) for o in ops[2:])
         return f'{prefix} {name} {", ".join(rest)}'
-    # PUSH_VALUE/PUSH_G/SETQ_G/PUSH_GLOBAL: first operand is a symbol index
-    if name in ("PUSH_VALUE", "PUSH_G", "PUSH_GLOBAL", "SETQ_G") and ops:
+    # PUSH_VALUE/PUSH_G/SETQ_G/PUSH_G_ALT: first operand is a symbol index
+    if name in ("PUSH_VALUE", "PUSH_G", "PUSH_G_ALT", "SETQ_G") and ops:
         sym_info = _resolve_sym_safe(symbols, ops[0], sym_types)
         rest = [sym_info]
         rest.extend(str(o) for o in ops[1:3])
