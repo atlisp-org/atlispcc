@@ -272,14 +272,12 @@ CAD_T_SERIES_IDENTICAL = [
     't06_strcat', 't07_list', 't08_apply_mapcar', 't09_funcall',
     't10_init', 't11_localvars', 't12_quote', 't13_nested_if',
     't14_command', 't15_cad_funcs', 'andor', 'and2', 'or2', 'andval',
-    't18_multi_recursive',
+    't18_multi_recursive', 't16_foreach', 't17_repeat',
 ]
 
 #: t-series sources with KNOWN remaining byte diffs (see docs/development-plan.md 8.C1).
 #: Kept as xfail regression: when a gap is fixed, move it to CAD_T_SERIES_IDENTICAL.
-CAD_T_SERIES_DIFF = [
-    't16_foreach', 't17_repeat',
-]
+CAD_T_SERIES_DIFF = []
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 

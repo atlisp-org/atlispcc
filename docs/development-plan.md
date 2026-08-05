@@ -314,9 +314,10 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 > **t-series golden 已补齐**（2026-08-04/05，AutoCAD 24.1s `vlisp-compile` 生成）：
 > 源码与 golden 均自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，18 份，含 t04/t05）。
 > 字节一致状态：
-> t01-t15/t18 **byte-identity**（16 项已入 `test_t_series_byte_identity` 回归，
-> 2026-08-04 转正 t03/t09/t13/t15，2026-08-05 转正 t10/t11/t12/t14 + 新增 t18）；
-> `CAD_T_SERIES_DIFF` 含 t16/t17 两项 xfail 守护，`pytest` 252 passed + 2 xfailed。
+> t01-t15/t18 **byte-identity**（18 项已入 `test_t_series_byte_identity` 回归，
+> 2026-08-04 转正 t03/t09/t13/t15，2026-08-05 转正 t10/t11/t12/t14 + 新增 t18，
+> 2026-08-06 转正 t16/t17）；
+> `CAD_T_SERIES_DIFF` 已空，`pytest` 254 passed。
 
 ### 8.A 工具链健壮性（P1）
 
@@ -331,7 +332,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 | 任务 | 说明 |
 |------|------|
-| B1 ~~t-series byte-identity 回归~~ | **恢复并已落地**（2026-08-04/05）：源码与 golden 自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，18 份）。`test_t_series_byte_identity` 覆盖 **16 项**（`CAD_T_SERIES_DIFF` 含 t16/t17 两项 xfail）。t12/t14 于 08-05 转正（资源段 + `vl-ACAD-defun` 注册），t10/t11 同日转正（混合模式符号序 / `_al-bind-alist` 协议），t18 同日新增转正（互递归多函数） |
+| B1 ~~t-series byte-identity 回归~~ | **恢复并已落地**（2026-08-04/06）：源码与 golden 自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，18 份）。`test_t_series_byte_identity` 覆盖 **18 项**（t16/t17 于 08-06 转正，`CAD_T_SERIES_DIFF` 空）。t12/t14 于 08-05 转正（资源段 + `vl-ACAD-defun` 注册），t10/t11 同日转正（混合模式符号序 / `_al-bind-alist` 协议），t18 同日新增转正（互递归多函数），t16/t17 08-06 转正（foreach/repeat stub 协议） |
 | B2 CI mypy 校验 | CI 已跑 `mypy .`（3.10-3.13 矩阵，`pyproject.toml` 已配 mypy `python_version=3.10`）；本机 Python 3.9 无 mypy，以 CI 结果为准 |
 | B3 twine check 依赖 | ✅ **已补**（2026-08-04）：dev 依赖加 `build`/`readme-renderer`/`twine` |
 | B4 混合模式 roundtrip 测试 | ✅ **已加**（2026-08-04）：`test_i18n_mixed_mode_roundtrip`（`tests/cad/i18n.lsp` 编译→反编译→validate 通过，与 C2 共用目标） |
@@ -361,7 +362,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 > **样本来源**：源码与 golden 自包含于 `tests/cad/`——`t0X_xxx.lsp`（源）+
 > `t0X_xxx_cad.fas`（CAD `vlisp-compile` 2026-08-04/05 生成，18 份，含 t04/t05），
 > 另有 `tests/cad/t*.fas`/`t*_atlispcc.fas` 成对对比样本。t01-t15/t18 **全部**
-> byte-identity 回归（`test_t_series_byte_identity`，16/18，t16/t17 由 xfail 守护）。
+> byte-identity 回归（`test_t_series_byte_identity`，18/18，t16/t17 于 2026-08-06 转正）。
 
 **C2 i18n 混合模式（最大缺口，1139 字节差 / -69 len）**
 
@@ -381,7 +382,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
   - **新增 t16_foreach、t17_repeat、t18_multi_recursive**（互递归多函数），
     源码与 CAD golden（`vlisp-compile 'st` 真机生成）自包含于 `tests/cad/`
   - CAD 实测产出命令：`(vlisp-compile 'st "src.lsp" "out.fas")`
-- 现状：t18 byte-identity 转正（16/18）；t16/t17 功能正确但字节存在 foreach/repeat 编码差异（见 §9.2）
+- 现状：**18/18 全部 byte-identity 转正**（t16/t17 于 2026-08-06 转正，见 §9.2 记录；i18n 混合模式仍待续）
 
 ### 8.D ZELX 复杂文件压缩（P2）
 
@@ -411,7 +412,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 > **CAD 验证**：独立实例 + 快照流程（遵守 §3.7 安全策略，不手动 patch 字节码）。
 > **产出**：本文件作为单一事实源，逐阶段更新。
 
-## 9.1 现状核实（2026-08-05 实测，`pytest` 252 passed + 2 xfailed）
+## 9.1 现状核实（2026-08-06 实测，`pytest` 254 passed）
 
 | 项 | seg0 | seg1 | nsyms | 根因 | 优先级 |
 |---|---|---|---|---|---|
@@ -421,26 +422,31 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | t14_command | ✓ | ✓ | 6vs6 | **已转正 2026-08-05**（`vl-ACAD-defun` 注册 + 命令模块代码） | P1 ✅ |
 | i18n 混合模式 | ✗ | ✗ | 92vs92 | defun+顶层交错持续块规则（roundtrip 通过，字节一致待续） | P1 |
 | t18_multi_recursive | ✓ | ✓ | 7vs7 | **已转正 2026-08-05**（互递归多函数，天然一致） | C3 ✅ |
-| t16_foreach | ✗ | ✗ | 5vs5 | foreach 编译为内建调用协议（`INIT_ARGS 3`+`JMP32_IFNOT`） | C3 待修 |
-| t17_repeat | ✗ | ✗ | 4vs4 | repeat 递减循环（`JMP32_IFNOT` + USUBR argc） | C3 待修 |
+| t16_foreach | ✓ | ✓ | 5vs5 | **已转正 2026-08-06**（CAD stub foreach 内建调用协议：`PUSH_G/PUSH_NIL/INIT_ARGS 3` 预载 + `JMP32_IFNOT` + 尾 `CLEAR_ARGS 1`） | C3 ✅ |
+| t17_repeat | ✓ | ✓ | 4vs4 | **已转正 2026-08-06**（repeat 递减循环：`GET_LOCAL; PUSH_INT8 0; FIX_LEQ; JMP32_IFNOT` + 体前 `DEC`） | C3 ✅ |
 
-## 9.2 已转正（byte-identity，16/18）✅
+## 9.2 已转正（byte-identity，18/18）✅
 `t01_math` `t02_recursion` `t03_fib` `t04_while` `t05_cond` `t06_strcat`
 `t07_list` `t08_apply_mapcar` `t09_funcall` `t10_init` `t11_localvars`
 `t12_quote` `t13_nested_if` `t14_command` `t15_cad_funcs`
-`t18_multi_recursive`（2026-08-05 新增：互递归多函数，CAD 真机 `(is-even 4)`→T 已验证）
-（`CAD_T_SERIES_DIFF` 含 t16_foreach/t17_repeat 两项 xfail 守护，`pytest` 252 passed + 2 xfailed）
+`t18_multi_recursive` `t16_foreach` `t17_repeat`
+（2026-08-06：t16/t17 转正后 `CAD_T_SERIES_DIFF` 空，`pytest` 254 passed）
 
 > **t18_multi_recursive 转正记录（2026-08-05）**：互递归（`is-even`/`is-odd` 互相调用）
 > 属"多函数 + 递归重复槽"场景，符号槽/字节码与 CAD 天然一致，无需新逻辑。
 
-> **t16_foreach / t17_repeat 已知差异（2026-08-05，字节级待修）**：
-> CAD 把 `foreach`/`repeat` 编译为**对内建函数的真实调用协议**，与我们的 while 展开不同：
-> - foreach：`PUSH_G <var>; PUSH_NIL; INIT_ARGS 3` 参数构造 + `JMP32_IFNOT`（32 位）
->   + `USUBR n, fn, 3`（第三操作数 = argc）
-> - repeat：`GET_LOCAL; DEC; SET_LOCAL` 递减 + `JMP32_IFNOT` + `USUBR 1, fn, 3`
-> - 我们的产物：`JMP16_IFNOT` + `USUBR n, fn`（无 argc）+ 尾 `NIL; PUSH_VALUE[0]; POP` 清理
-> 差异不影响功能（CAD 真机 `(sum-foreach '(1 2 3 4))`→10 ✓），属 codegen 循环编码 work。
+> **t16_foreach / t17_repeat 转正记录（2026-08-06）**：CAD 把 `foreach`/`repeat`
+> 编译为**对内建遍历的真实调用协议**，codegen 改为与之逐字节一致的 stub 编码：
+> - **foreach**：列表求值→存局部槽 → `PUSH_G <var>; PUSH_NIL; INIT_ARGS 3`（预载）
+>   → loop 头 `GET_LOCAL; JMP32_IFNOT` → 体 `GET_LOCAL; CAR; SETQ_G <var>;
+>   GET_LOCAL; CDR; SET_LOCAL` 推进 → 体各式无 POP → `JUMP` → 尾 `CLEAR_ARGS 1` 清理预载
+> - **repeat**：次数→存局部槽 → loop 头 `GET_LOCAL; PUSH_INT8 0; FIX_LEQ; JMP32_IFNOT`
+>   （n<=0 退出）→ 体前先 `GET_LOCAL; DEC; SET_LOCAL` 递减 → 体各式无 POP → `JUMP`；
+>   无预载，尾部无 CLEAR_ARGS
+> - **DEFUN 头**：含 foreach/repeat 的函数 `b1=argc+1`（`14 <argc+1> <argc> <argc> 00`）
+> - **反编译器**：`_defun_headers_are_argc` 的 stub 检测允许 `b1 == b3+1`
+>   （否则 `is_stub_format` 误判 False，带 foreach/repeat 多函数文件函数命名失败）
+> 差异不影响功能（CAD 真机 `(sum-foreach '(1 2 3 4))`→10 ✓，`scripts/cad_verify.py` 15/15）。
 
 > **t12_quote 转正记录（2026-08-05）**：根因是 dotted 引用 `'(1 . 2)` 的常量在
 > seg1 资源流中以 `39 <count>` 收尾，而 CAD 用单字节 `2a`（LIST_END）。修复：
@@ -514,16 +520,24 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 ### 阶段 5：收尾 ✅ 已完成 2026-08-05
 - xfail → `CAD_T_SERIES_IDENTICAL` 逐项转正（`tests/test_compiler_output.py`）
-  - ✅ t10/t11/t12/t14 全部转正，`CAD_T_SERIES_DIFF` 清空
+  - ✅ t10/t11/t12/t14 全部转正，`CAD_T_SERIES_DIFF` 空
 - 独立 CAD 实例 + 快照流程真机复核（`scripts/cad_verify.py`）
 - 更新本文件、AGENTS.md、兼容性矩阵
+
+### 阶段 6：t16_foreach + t17_repeat（C3，foreach/repeat 内建调用协议）✅ 已完成 2026-08-06
+- codegen `_emit_foreach_stub` / `_emit_repeat_stub`（CAD 逐字节实测，见 §9.2 记录）
+- DEFUN `b1=argc+1`（`_ast_contains_loop` 递归检测，`_emit_defun_header` 应用）
+- 函数体中间 foreach/repeat 后无 POP（foreach 自带 `CLEAR_ARGS 1`，repeat 栈已平衡）
+- 反编译器 `_defun_headers_are_argc` 允许 `b1 == b3+1`
+- 回归防护：t04_while/t11_localvars/t18/t-complex O2（含 foreach/repeat 混合）保持一致 ✅
+- t16/t17 移入 `CAD_T_SERIES_IDENTICAL`，`pytest` 254 passed
 
 ## 9.4 涉及文件
 `compiler/codegen.py`、`compiler/cad_symbols.py`、`compiler/resource_builder.py`、
 `compiler/cli.py`、`tests/test_compiler_output.py`、`docs/development-plan.md`
 
 ## 9.5 验收
-- ✅ `pytest` 全绿（252 passed + 2 xfailed）；t16/t17 由 `CAD_T_SERIES_DIFF` xfail 守护
-- ✅ t11/t10/t12/t14/t18 移入 `CAD_T_SERIES_IDENTICAL`（16/18 字节级一致）
+- ✅ `pytest` 全绿（254 passed，无 xfail）；t16/t17 已转正，`CAD_T_SERIES_DIFF` 空
+- ✅ t11/t10/t12/t14/t18 + t16/t17 移入 `CAD_T_SERIES_IDENTICAL`（18/18 字节级一致）
 - ⏳ i18n 字节一致：roundtrip 通过，模块注册交错序待续（阶段 4）
 - `cad_verify.py` 真机 15/15（独立实例流程）

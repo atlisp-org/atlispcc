@@ -62,6 +62,7 @@ INC = NAME_TO_OPCODE["INC"]  # 0x4f
 DEC = NAME_TO_OPCODE["DEC"]  # 0x50
 FIX_SUB = NAME_TO_OPCODE["FIX_SUB"]  # 0x47
 FIX_DIV = NAME_TO_OPCODE["FIX_DIV"]  # 0x49
+FIX_LEQ = NAME_TO_OPCODE["FIX_LEQ"]  # 0x4b
 GET_LOCAL_8 = 0x05  # GET_LOCAL with 1-byte operand index
 GET_LOCAL_16 = 0x5C  # GET_LOCAL_WIDE with 2-byte operand index
 SET_LOCAL_16 = 0x5D  # SET_LOCAL with 2-byte operand index
@@ -90,6 +91,22 @@ UNARY_OP_TO_FAS = {
 
 LOCAL_SLOT_MAP: Dict[str, int] = {}
 NEXT_LOCAL_SLOT = 0
+
+
+def _ast_contains_loop(node) -> bool:
+    """递归检测 AST 是否含 foreach/repeat（CAD 对其 DEFUN 头 b1 加 1）。"""
+    if isinstance(node, (ForeachNode, RepeatNode)):
+        return True
+    if isinstance(node, Node):
+        for val in vars(node).values():
+            if isinstance(val, Node):
+                if _ast_contains_loop(val):
+                    return True
+            elif isinstance(val, (list, tuple)):
+                for it in val:
+                    if isinstance(it, Node) and _ast_contains_loop(it):
+                        return True
+    return False
 
 
 class BytecodeBuffer:
@@ -509,6 +526,9 @@ class CodeGenerator:
         buf.label(label_end)
 
     def _emit_foreach(self, buf: BytecodeBuffer, node: ForeachNode):
+        if self.stub_format:
+            self._emit_foreach_stub(buf, node)
+            return
         var_name = node.var.name if isinstance(node.var, Symbol) else "item"
         slot = self._get_local_slot(f"__foreach_list__{buf.pos()}")
         item_slot = self._get_local_slot(f"__foreach_item__{buf.pos()}")
@@ -547,6 +567,49 @@ class CodeGenerator:
         buf.add_patch(jmp_back + 1, label_loop, 4)
 
         buf.label(label_end)
+
+    def _emit_foreach_stub(self, buf: BytecodeBuffer, node: ForeachNode):
+        """CAD stub 的 foreach 内建调用协议（t16_foreach 逐字节实测）：
+
+        ``列表存 slot → PUSH_G <var>; PUSH_NIL; INIT_ARGS 3（预载）→
+        loop: GET_LOCAL; JMP32_IFNOT end; GET_LOCAL; CAR; SETQ_G <var>;
+        GET_LOCAL; CDR; SET_LOCAL; body(无 POP); JUMP loop; end: CLEAR_ARGS 1``
+        """
+        var_name = node.var.name if isinstance(node.var, Symbol) else "item"
+        slot = self._get_local_slot(f"__foreach_list__{buf.pos()}")
+        v_idx = self.symtab.get_or_add(var_name)
+
+        self._emit_expr(buf, node.list_expr or Symbol("nil"))
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
+        # CAD 预载：PUSH_G <var>; PUSH_NIL; INIT_ARGS 3
+        buf.emit(encode_op_u16(PUSH_G, v_idx))
+        buf.emit(encode_op_noarg(PUSH_NIL))
+        buf.emit(encode_op_u16(INIT_ARGS, 3))
+
+        label_loop = f"_foreach_stub_loop_{buf.pos()}"
+        label_end = f"_foreach_stub_end_{buf.pos()}"
+        buf.label(label_loop)
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        jmp_pos = buf.pos()
+        buf.emit(encode_op_s32(JMP32_IFNOT, 0))
+        buf.add_patch(jmp_pos + 1, label_end, 4)
+
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        buf.emit(encode_op_noarg(CAR))
+        buf.emit(encode_op_u16(SETQ_G, v_idx))
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        buf.emit(encode_op_noarg(CDR))
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
+
+        for form in node.body:
+            self._emit_expr(buf, form)
+
+        jmp_back = buf.pos()
+        buf.emit(encode_op_s32(JUMP, 0))
+        buf.add_patch(jmp_back + 1, label_loop, 4)
+        buf.label(label_end)
+        # 预载参数清理（CAD 实测：foreach 结果不被 POP，而用 CLEAR_ARGS 1）
+        buf.emit(encode_op_u16(CLEAR_ARGS, 1))
 
     def _emit_short_circuit(self, buf: BytecodeBuffer, op_name: str, args: List[Node]):
         # CAD 对 and/or 用 COND_AND(0x6a)/COND_OR(0x68) 4 字节相对偏移指令
@@ -662,6 +725,9 @@ class CodeGenerator:
                 buf.add_patch(jp + 1, f"{base}_body_{i - 1}_end", 4)
 
     def _emit_repeat(self, buf: BytecodeBuffer, count_expr: Node, body: List[Node]):
+        if self.stub_format:
+            self._emit_repeat_stub(buf, count_expr, body)
+            return
         slot = self._get_local_slot("__repeat__")
         self._emit_expr(buf, count_expr)
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
@@ -678,6 +744,39 @@ class CodeGenerator:
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
         buf.emit(encode_op_noarg(DEC))
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
+        jmp_back = buf.pos()
+        buf.emit(encode_op_s32(JUMP, 0))
+        buf.add_patch(jmp_back + 1, label_loop, 4)
+        buf.label(label_end)
+
+    def _emit_repeat_stub(self, buf: BytecodeBuffer, count_expr: Node, body: List[Node]):
+        """CAD stub 的 repeat 递减循环协议（t17_repeat 逐字节实测）：
+
+        ``count 存 slot → loop: GET_LOCAL; PUSH_INT8 0; FIX_LEQ; JMP32_IFNOT end;
+        GET_LOCAL; DEC; SET_LOCAL; body(无 POP); JUMP loop; end``
+        无预载（不像 foreach），循环结束栈平衡，无需 CLEAR_ARGS。
+        """
+        slot = self._get_local_slot("__repeat__")
+        self._emit_expr(buf, count_expr)
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
+
+        label_loop = f"_repeat_stub_loop_{buf.pos()}"
+        label_end = f"_repeat_stub_end_{buf.pos()}"
+        buf.label(label_loop)
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        buf.emit(encode_op_u8(PUSH_INT8, 0))
+        buf.emit(encode_op_noarg(FIX_LEQ))
+        jmp_pos = buf.pos()
+        buf.emit(encode_op_s32(JMP32_IFNOT, 0))
+        buf.add_patch(jmp_pos + 1, label_end, 4)
+
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        buf.emit(encode_op_noarg(DEC))
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
+
+        for form in body:
+            self._emit_expr(buf, form)
+
         jmp_back = buf.pos()
         buf.emit(encode_op_s32(JUMP, 0))
         buf.add_patch(jmp_back + 1, label_loop, 4)
@@ -766,7 +865,10 @@ class CodeGenerator:
                 total = argc + len(func.optional)
                 buf.emit(bytes([0x14, total & 0xFF, argc & 0xFF, total & 0xFF, 0]))
             else:
-                buf.emit(bytes([0x14]) + bytes([argc & 0xFF] * 3 + [0]))
+                # 普通定参函数：b1=总参数(=argc)，b2/b3=argc。
+                # CAD 对含 foreach/repeat 的函数 b1 加 1（t16/t17 实测 `14 02 01 01 00`）。
+                b1 = argc + (1 if _ast_contains_loop(func) else 0)
+                buf.emit(bytes([0x14, b1 & 0xFF, argc & 0xFF, argc & 0xFF, 0]))
             return
         idx = self.symtab.idx_of(func.name) or self.symtab.get_or_add(func.name)
         buf.emit(encode_defun(idx, 0))
@@ -886,7 +988,10 @@ class CodeGenerator:
             # CAD stub: SETQ_G 自身消费栈顶值，中间 setq 后无 POP（v10/v11 实测）；
             # while 循环结束栈已清空（条件被 JMP32_IFNOT 消费、体结果各被 POP），
             # 中间 while 后同样无 POP（t04_while 实测）。
-            if not self.stub_format or isinstance(expr, Setq) or isinstance(expr, WhileNode):
+            # foreach stub 自带 CLEAR_ARGS 1 清理预载，repeat stub 栈已平衡，
+            # 二者中间体后均无 POP（t16/t17 实测）。
+            if not self.stub_format or isinstance(expr, (Setq, WhileNode,
+                                                         ForeachNode, RepeatNode)):
                 pass
             else:
                 buf.emit(encode_op_noarg(POP))

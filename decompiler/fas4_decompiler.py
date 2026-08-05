@@ -812,9 +812,10 @@ class LispGenerator:
                 if off + 5 > len(bc) or bc[off] != 0x14:
                     return False
                 a, b_, c, d = bc[off + 1], bc[off + 2], bc[off + 3], bc[off + 4]
-                # 有限参数：b1(参数+无名变量) == b3(大参数)；无限参数：d=01 且 b1==b2==b3
+                # 有限参数：b1(参数+无名变量) == b3(大参数)；
+                # 含 foreach/repeat 的函数 b1 = argc + 1（循环占一个局部槽，t16/t17 实测）
                 if d == 0:
-                    if a != c:
+                    if a not in (c, c + 1):
                         return False
                 elif d == 1:
                     if not (a == b_ == c):
