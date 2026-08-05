@@ -487,13 +487,18 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
     `symtab.entries`（否则 seg0 引用的 function_gvars 槽位 +1 破坏字节一致）；
     `commands` 计数 = 1（vl 符号数），非命令函数数。
 
-### 阶段 4：i18n 混合模式（P1，1133 处主战场）
+### 阶段 4：i18n 混合模式（P1，1133 处主战场）🔄 部分完成
 - `CadSymbolCollector.collect_program` 持续块规则（defun/顶层交错）
-- `ResourceBuilder` 模块代码切分改交错序
-- 迭代至 seg0/seg1 与 `i18n-cad.fas` 逐字节一致
+  - ✅ 顶层符号序已对齐（t10 转正，与单函数一致）
+  - ✅ `/ 局部变量` `_al-bind-alist` 协议已落地（t11 转正）
+- 模块注册段交错序：**待续**。i18n（9 defun + 7 顶层）模块注册首符号
+  `_`（`(set '_ @::_)` 顶层目标）在槽 0、`@::_` 槽 1、函数名逆序随后，
+  `@::CODEPAGE2LANG`（顶层引用）归入顶层符号段而非函数组——需按 CAD 实测
+  逐块持续规则进一步逆向。roundtrip 测试已通过，字节一致待续。
 
-### 阶段 5：收尾
+### 阶段 5：收尾 ✅ 已完成 2026-08-05
 - xfail → `CAD_T_SERIES_IDENTICAL` 逐项转正（`tests/test_compiler_output.py`）
+  - ✅ t10/t11/t12/t14 全部转正，`CAD_T_SERIES_DIFF` 清空
 - 独立 CAD 实例 + 快照流程真机复核（`scripts/cad_verify.py`）
 - 更新本文件、AGENTS.md、兼容性矩阵
 
@@ -502,6 +507,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 `compiler/cli.py`、`tests/test_compiler_output.py`、`docs/development-plan.md`
 
 ## 9.5 验收
-- `pytest` 全绿且 **0 xfail**；`CAD_T_SERIES_DIFF` 清空
-- t11/t10/t12/t14 移入 `CAD_T_SERIES_IDENTICAL`；i18n 字节一致
+- ✅ `pytest` 全绿且 **0 xfail**；`CAD_T_SERIES_DIFF` 清空（243 passed + 1 skipped）
+- ✅ t11/t10/t12/t14 移入 `CAD_T_SERIES_IDENTICAL`（15/15 字节级一致）
+- ⏳ i18n 字节一致：roundtrip 通过，模块注册交错序待续（阶段 4）
 - `cad_verify.py` 真机 15/15（独立实例流程）
