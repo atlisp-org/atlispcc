@@ -134,37 +134,14 @@ class CadSymbolCollector:
         self.shared = {a for a, c in arg_usage.items() if c > 1}
 
         if len(defuns) <= 1:
-            return self._collect_single(defuns, others)
+            return self._collect_single(defuns, others, program)
 
-        # 1. 模块注册域（CAD：按源码逆序逐 form 交错收集）。
+        # 1. 模块注册域（CAD：按源码逆序逐 form 交错，defun 与顶层表达式均参与）。
         #    defun → 函数名；顶层 → 其字节码引用符号（逆序）。混合模式
         #    （i18n）下顶层表达式与 defun 按源码逆序交错，最后出现的顶层
         #    `(set '_ @::_)` 的 `_` 排在模块注册最前（i18n-cad 实测）。
         #    纯函数文件（无顶层）退化为"函数名逆序"，与多函数实测一致。
-        forms_all = [f for f in program.forms if not isinstance(f, (Defpackage, InPackage))]
-        module_seen = set()
-        for form in reversed(forms_all):
-            if isinstance(form, Defun):
-                if form.name not in module_seen:
-                    module_seen.add(form.name)
-                    self.add(form.name)
-            else:
-                form_refs = []
-                self._collect_byteorder(form, form_refs, set())
-                seen_forced = set()
-                for name, force in reversed(form_refs):
-                    if force and name in seen_forced:
-                        continue
-                    n = name[1] if is_const_entry(name) else name
-                    if is_const_entry(name):
-                        # 常量（如 '("syscodepage")）：结构元组，不按字符串去重，
-                        # 由 self.add 按结构去重并压入常量槽（CAD 资源流登记）。
-                        self.add(name, force=force)
-                    elif n not in module_seen:
-                        module_seen.add(n)
-                        self.add(name, force=force)
-                    if force:
-                        seen_forced.add(n)
+        self._register_module(program)
 
         # 3. 函数体符号：按字节码引用序收集，逆序注册；唯一参数紧跟所属函数，
         #    共享参数注册在其源码序最先使用的函数之后。CAD 实测
@@ -232,23 +209,25 @@ class CadSymbolCollector:
 
         return self.names
 
-    def _collect_single(self, defuns, others):
-        """单函数文件（≤1 defun）：字节码引用序逆序收集（CAD fact/sf_cond 实测）。
+    def _collect_single(self, defuns, others, program):
+        """单函数文件（≤1 defun）：模块注册与函数体符号按 CAD 序收集。
 
         函数体符号按首次字节码引用序的逆序注册（调用内参数先于函数名出现在
         字节码中：PUSH_G arg… → USUBR func，逆序后函数名在前），参数（含共享）
         放最后；递归函数名产生重复槽但不提前。
         """
-        # 1. 函数名逆序（模块注册域）
-        for f in reversed(defuns):
-            self.add(f.name)
-
-        # 2. 顶层代码（CAD：顶层表达式符号排在函数体内建/参数之前，源码逆序）
-        refs = []
-        for form in others:
-            self._collect_byteorder(form, refs, set())
-        for name, force in reversed(refs):
-            self.add(name, force=force)
+        # 模块注册域：有 defun 时（含纯函数与混合模式）CAD 按源码逆序逐 form
+        # 交错注册（顶层符号可能穿插在 defun 名前后）。纯顶层文件（无 defun）
+        # 退化为：函数名字段为空 + 顶层 refs 全局逆序（setcmp/set5/setqa 实测）。
+        if program and defuns:
+            self._register_module(program)
+        elif others:
+            # 纯顶层文件：顶层 refs 按字节码引用序收集后全局逆序注册。
+            refs = []
+            for form in others:
+                self._collect_byteorder(form, refs, set())
+            for name, force in reversed(refs):
+                self.add(name, force=force)
 
         # 3. 函数体符号：字节码引用序正序收集，逆序注册；参数最后（共享不特殊处理）。
         #    CAD 单函数参数槽逆序（实测 simple3/t13：`+ Z Y X`、`> C B A`——
@@ -282,6 +261,40 @@ class CadSymbolCollector:
             for loc in reversed(f.locals):
                 self.add(loc)
         return self.names
+
+    def _register_module(self, program):
+        """模块注册域：按源码逆序逐 form 交错注册（defun 与顶层表达式均参与）。
+
+        defun → 函数名；顶层 → _collect_byteorder 字节码引用符号（逆序注册）。
+        混合模式（i18n）下顶层表达式与 defun 按源码逆序交错：位于源码尾部
+        的顶层 form 其符号排在模块注册最前（i18n-cad/p03 实测：
+        `(setq @::*codepage* (vl-catch-all-apply ...))` 在 defun 之后，其符号
+        @::*CODEPAGE* VL-CATCH-ALL-APPLY syscodepage GETVAR 排在 @::CODEPAGE2LANG
+        之前）。纯函数文件（无顶层）退化为"函数名逆序"。
+        """
+        forms_all = [f for f in program.forms
+                     if not isinstance(f, (Defpackage, InPackage))]
+        module_seen = set()
+        for form in reversed(forms_all):
+            if isinstance(form, Defun):
+                if form.name not in module_seen:
+                    module_seen.add(form.name)
+                    self.add(form.name)
+            else:
+                form_refs = []
+                self._collect_byteorder(form, form_refs, set())
+                seen_forced = set()
+                for name, force in reversed(form_refs):
+                    if force and name in seen_forced:
+                        continue
+                    n = name[1] if is_const_entry(name) else name
+                    if is_const_entry(name):
+                        self.add(name, force=force)
+                    elif n not in module_seen:
+                        module_seen.add(n)
+                        self.add(name, force=force)
+                    if force:
+                        seen_forced.add(n)
 
     def _collect_byteorder(self, node, out, arg_names, in_quote=False):
         """按字节码首次引用序向前收集 (name, forced) 列表（单函数算法）。"""

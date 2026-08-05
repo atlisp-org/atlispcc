@@ -272,7 +272,7 @@ CAD_T_SERIES_IDENTICAL = [
     't06_strcat', 't07_list', 't08_apply_mapcar', 't09_funcall',
     't10_init', 't11_localvars', 't12_quote', 't13_nested_if',
     't14_command', 't15_cad_funcs', 'andor', 'and2', 'or2', 'andval',
-    't18_multi_recursive', 't16_foreach', 't17_repeat',
+    't18_multi_recursive', 't16_foreach', 't17_repeat', 'chinese',
 ]
 
 #: t-series sources with KNOWN remaining byte diffs (see docs/development-plan.md 8.C1).
@@ -457,3 +457,49 @@ def test_pure_top_level_byte_identity(src_name, golden_name):
             f'  ours: {ours_seg1.hex()}\n'
             f'  CAD : {ref_seg1.hex()}'
         )
+
+
+#: i18n 拆分件（tests/cad/i18n_split/pXX.lsp）与其 CAD 真机 golden
+#: （golden/pXX_cad.fas，2026-08-06 AutoCAD 24.1s vlisp-compile 生成）。
+#: p01/p02 已 byte-identity；p04-p07 为"模块注册序对齐"regression：
+#: 单 defun + 顶层 setq 混合时 CAD 按源码逆序逐 form 交错注册（含把
+#: 源码尾部顶层 form 的符号排前），seg0 已逐字节一致，剩余仅在 seg1
+#: 的符号重复槽计数（our nsyms 6 vs CAD 5）。锁 seg0 防回归，待 seg1
+#: 归零后整体移入 CAD_T_SERIES_IDENTICAL。
+I18N_SPLIT_SEG0_IDENTICAL = {
+    'p01', 'p02', 'p04', 'p05', 'p06', 'p07',
+}
+I18N_SPLIT_FULL_IDENTICAL = {'p01', 'p02'}
+
+
+@pytest.mark.parametrize('name', sorted(I18N_SPLIT_SEG0_IDENTICAL))
+def test_i18n_split_seg0_identity(name):
+    """i18n 拆分件 seg0 与 CAD golden 逐字节一致（模块注册交错序回归）。
+
+    锁住 _register_module 的"源码逆序、defun+顶层 form 交错"规则：单一
+    defun 配合后来的顶层 `(setq ... vl-catch-all-apply ...)` 时，其符号
+    槽按 CAD 排在函数名前（p03/p04 实测）。seg1 仍含差异时仅验 seg0。
+    """
+    from compiler.cli import cmd_compile
+    from decompiler.fas4_decompiler import Fas4Parser
+
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cad', 'i18n_split')
+    src = os.path.join(base, f'{name}.lsp')
+    golden = os.path.join(base, 'golden', f'{name}_cad.fas')
+    if not (os.path.exists(src) and os.path.exists(golden)):
+        pytest.skip(f'missing i18n_split fixture: {name}')
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        ours = Fas4Parser().parse(out)
+        ref = Fas4Parser().parse(golden)
+    assert ours.bytecode == ref.bytecode, (
+        f'{name}: seg0 differs from CAD golden\n'
+        f'  ours: {ours.bytecode.hex()}\n'
+        f'  CAD : {ref.bytecode.hex()}'
+    )
+    if name in I18N_SPLIT_FULL_IDENTICAL:
+        assert ours.nsyms == ref.nsyms, (
+            f'{name}: nsyms {ours.nsyms} != {ref.nsyms}')
+        assert ours.resource_items == ref.resource_items, (
+            f'{name}: seg1 resource items differ from CAD golden')
