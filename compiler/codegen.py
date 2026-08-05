@@ -49,6 +49,7 @@ JMP16_IFNOT = NAME_TO_OPCODE["JMP16_IFNOT"]  # 0x0d
 JMP16_IF = NAME_TO_OPCODE["JMP16_IF"]  # 0x0e
 JMP32_IFNOT = NAME_TO_OPCODE["JMP32_IFNOT"]  # 0x67
 COND_OR = NAME_TO_OPCODE["COND_OR"]  # 0x68
+COND_AND = NAME_TO_OPCODE["COND_AND"]  # 0x6a
 JUMP = NAME_TO_OPCODE["JUMP"]  # 0x57
 CONS = NAME_TO_OPCODE["CONS"]
 BUILD_LIST = NAME_TO_OPCODE["BUILD_LIST"]  # 0x39
@@ -548,15 +549,40 @@ class CodeGenerator:
         buf.label(label_end)
 
     def _emit_short_circuit(self, buf: BytecodeBuffer, op_name: str, args: List[Node]):
-        label_end = f"_sc_end_{buf.pos()}"
-        op = JMP16_IFNOT if op_name == "and" else JMP16_IF
-        for i, arg in enumerate(args[:-1]):
-            self._emit_expr(buf, arg)
+        # CAD 对 and/or 用 COND_AND(0x6a)/COND_OR(0x68) 4 字节相对偏移指令
+        # （and2/or2/andval CAD 实测），并规范化结果为 T/nil：
+        #   (and e1 e2 ... en) →
+        #     e1; COND_AND 假跳 END; ...; en; COND_AND 假跳 END; PUSH_T; END:
+        #   (or  e1 e2 ... en) →
+        #     e1; COND_OR 真跳 TAIL; ...; en; COND_OR 真跳 TAIL;
+        #     PUSH_NIL; TAIL: COND_AND 假跳 END; PUSH_T; END:
+        # 短路时栈上保留子表达式值作为结果；全真/有真时 PUSH_T 规范化。
+        # 不可用 JMP16_IF/JMP16_IFNOT——CAD stub 运行时该指令序列会出错
+        # （i18n mark-locale 的 and/or 实测"函数错误"）。
+        if op_name == "and":
+            label_end = f"_and_end_{buf.pos()}"
+            for arg in args:
+                self._emit_expr(buf, arg)
+                jmp_pos = buf.pos()
+                buf.emit(encode_op_s32(COND_AND, 0))
+                buf.add_patch(jmp_pos + 1, label_end, 4)
+            buf.emit(encode_op_noarg(PUSH_T))
+            buf.label(label_end)
+        else:  # or
+            label_tail = f"_or_tail_{buf.pos()}"
+            label_end = f"_or_end_{buf.pos()}"
+            for arg in args:
+                self._emit_expr(buf, arg)
+                jmp_pos = buf.pos()
+                buf.emit(encode_op_s32(COND_OR, 0))
+                buf.add_patch(jmp_pos + 1, label_tail, 4)
+            buf.emit(encode_op_noarg(PUSH_NIL))
+            buf.label(label_tail)
             jmp_pos = buf.pos()
-            buf.emit(encode_op_u16(op, 0))
-            buf.add_patch(jmp_pos + 1, label_end, 2)
-        self._emit_expr(buf, args[-1])
-        buf.label(label_end)
+            buf.emit(encode_op_s32(COND_AND, 0))
+            buf.add_patch(jmp_pos + 1, label_end, 4)
+            buf.emit(encode_op_noarg(PUSH_T))
+            buf.label(label_end)
 
     def _emit_cond(self, buf: BytecodeBuffer, node: Cond):
         if self.stub_format:
