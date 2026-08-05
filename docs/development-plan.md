@@ -410,47 +410,66 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 > **CAD 验证**：独立实例 + 快照流程（遵守 §3.7 安全策略，不手动 patch 字节码）。
 > **产出**：本文件作为单一事实源，逐阶段更新。
 
-## 9.1 现状核实（2026-08-05 实测，`pytest` 239 passed + 4 xfailed）
+## 9.1 现状核实（2026-08-05 实测，`pytest` 243 passed + 1 skipped）
 
 | 项 | seg0 | seg1 | nsyms | 根因 | 优先级 |
 |---|---|---|---|---|---|
-| t11_localvars | ✗ | ✗ | 6vs8 | `_al-bind-alist` 局部变量绑定协议（最大单点缺口，-9 len） | P0 |
-| t10_init | ✗ | ✗ | 2vs4 | 顶层 init 混合模式符号序（与 i18n 同源） | P0 |
-| t12_quote | ✓ | ✗ | 5vs5 | **已转正 2026-08-05**（dotted 常量 `2a` 收尾） | P1 ✅ |
-| t14_command | ✓ | ✗ | 6vs6 | **已转正 2026-08-05**（`vl-ACAD-defun` 注册 + 命令模块代码） | P1 ✅ |
-| i18n 混合模式 | ✗ | ✗ | 92vs92 | defun+顶层交错持续块规则（最大整体，1133 seg0 diff） | P1 |
+| t11_localvars | ✓ | ✓ | 8vs8 | **已转正 2026-08-05**（`_al-bind-alist` 绑定协议） | P0 ✅ |
+| t10_init | ✓ | ✓ | 4vs4 | **已转正 2026-08-05**（混合模式顶层符号序 + 模块代码多函数尾） | P0 ✅ |
+| t12_quote | ✓ | ✓ | 5vs5 | **已转正 2026-08-05**（dotted 常量 `2a` 收尾） | P1 ✅ |
+| t14_command | ✓ | ✓ | 6vs6 | **已转正 2026-08-05**（`vl-ACAD-defun` 注册 + 命令模块代码） | P1 ✅ |
+| i18n 混合模式 | ✗ | ✗ | 92vs92 | defun+顶层交错持续块规则（roundtrip 通过，字节一致待续） | P1 |
 
-## 9.2 已转正（byte-identity，13/15）✅
+## 9.2 已转正（byte-identity，15/15）✅
 `t01_math` `t02_recursion` `t03_fib` `t04_while` `t05_cond` `t06_strcat`
-`t07_list` `t08_apply_mapcar` `t09_funcall` `t12_quote` `t13_nested_if`
-`t14_command` `t15_cad_funcs`
+`t07_list` `t08_apply_mapcar` `t09_funcall` `t10_init` `t11_localvars`
+`t12_quote` `t13_nested_if` `t14_command` `t15_cad_funcs`
+（`CAD_T_SERIES_DIFF` 已清空，`pytest` 243 passed + 1 skipped，0 xfail）
 
 > **t12_quote 转正记录（2026-08-05）**：根因是 dotted 引用 `'(1 . 2)` 的常量在
 > seg1 资源流中以 `39 <count>` 收尾，而 CAD 用单字节 `2a`（LIST_END）。修复：
 > `cad_symbols.to_const` 为 dotted ListExpr 返回 3 元组 `('LIST', items, True)`，
 > `resource_builder._emit_const` 对 dotted 列表输出 `2a` 而非 `39 <count>`。
-> seg0 本就一致（`pytest` 240 passed + 3 xfailed，t12 移入 IDENTICAL）。
 
 > **t14_command 转正记录（2026-08-05）**：c: 命令需在模块注册段插入
 > `vl-ACAD-defun` 符号（`0x56` 编码、保留大小写 `Vl-ACAD-defun`），并使模块注册
 > GVARINIT st_init +1（4→5）、函数注册基址 gv_var_pos +1（4→5）。vl 仅存在于
 > resource_gvars（模块注册），不进 symtab.entries，故 seg0 引用的 function_gvars
 > 槽位不变。模块代码改用 `build_command_module_code`（每命令
-> `PUSH_G<c>; FUNC_REF 2; PUSH_NIL; POP` 注册）。`commands` 计数 = 1（vl 符号数，
-> 非命令函数数）。t14 移入 IDENTICAL，`pytest` 241 passed + 2 xfailed。
+> `PUSH_G<c>; FUNC_REF 2; PUSH_NIL; POP` 注册）。
+
+> **t11_localvars 转正记录（2026-08-05）**：CAD 用 `_al-bind-alist` 绑定 `/ 局部变量`
+> （`(defun f (args / l1 l2) (_al-bind-alist '(l1 l2)) ...)`），而非直接 GET_LOCAL。
+> 修复：
+> - `cad_symbols.py`：含 `/ 局部变量` 的函数在函数体符号后、参数前注入
+>   `_al-bind-alist` 符号 + `(quote (locals...))` 常量 → nsyms 6→8、slot 对齐
+> - `codegen.py`：`generate_function` 在 INIT_ARGS 后发 `_al-bind-alist` 绑定序
+>   `PUSH_G <const>; FUNC 1, <_al-bind-alist>; NIL; PUSH_NIL; NIL; POP`；
+>   CLEAR_ARGS = argc + locals；while 体中间 setq 无 POP（t11 实测）
+> - `resource_builder.py`：`_al-bind-alist` 以 `0x56` 保留大小写独立注册
+
+> **t10_init 转正记录（2026-08-05）**：混合模式（顶层表达式 + defun）的模块注册
+> 符号序 + 多函数模块代码尾：
+> - `cad_symbols.py`：多函数路径顶层符号改用字节码引用序逆序（与单函数一致）
+> - `cli.py` `_build_cad_module_code`：多函数注册尾改为每函数一组
+>   `PUSH_G <b>; SETQ_G <c>`（b = 2n+1+top_count-i，c = n-i），组间 `PUSH_G<c>; POP; JUMP`
+> - `cli.py` `_patch_usubr_idx`：函数体字符串 PUSH_G 操作数 = nsyms-1（t15/t10 实测）
+> - **golden 重新生成**：原 golden 的 `hello` 函数名小写是 CAD 会话环境已存在
+>   `hello` 符号所致（环境 artifact）；改用 `t10-init-hello` 并经 CAD 重新
+>   `vlisp-compile` 生成干净 golden
 
 ## 9.3 执行阶段
 
-### 阶段 1：t11 `_al-bind-alist`（P0，最大 seg0 缺口）
+### 阶段 1：t11 `_al-bind-alist`（P0，最大 seg0 缺口）✅ 已完成 2026-08-05
 - 逆向 CAD 绑定序列（ref 用 `PUSH_G+FUNC`，我们直接 `GET_LOCAL`）
   - ref seg0：`... 51 01 05 00 01 00 0a 32 ...`（FUNC `_al-bind-alist` 绑定 alist）
-  - ours：`... 09 05 5c 00 ...`（DEFUN 头 nsyms 后直接 GET_LOCAL）
 - 改 `compiler/codegen.py` `_emit_init_args` 生成 `_al-bind-alist` 协议；对齐 `cad_symbols.py` 符号槽（局部变量进符号表）
-- 回归防护：t04_while/t05_cond（含局部变量）必须保持 byte-identity
+- 回归防护：t04_while/t05_cond（含局部变量）必须保持 byte-identity ✅
 
-### 阶段 2：t10_init（P0，小样本混合模式）
+### 阶段 2：t10_init（P0，小样本混合模式）✅ 已完成 2026-08-05
 - 对齐顶层 init 表达式符号收集序（nsyms 2→4）
 - 为阶段 4 i18n 预研持续块规则
+- golden 重新生成（`hello` 环境 artifact）
 
 ### 阶段 3：t12_quote + t14_command（P1，仅 seg1）✅ 已完成 2026-08-05
 - t12：dotted 常量 `2a` 收尾（`cad_symbols.to_const` + `resource_builder._emit_const`）

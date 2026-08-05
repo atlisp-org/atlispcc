@@ -154,12 +154,16 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             # 常量引用（quoted lambda 等 CONST 条目）：sym_of 只认 SYMBOL/STRING，
             # CONST 在 gvar 表里注册于 gvar 槽 = symtab 槽 - nfuncs + 2，
             # PUSH_G 操作数 = gvar 槽 - 1 = symtab 槽 - nfuncs + 1。
-            # 字符串（不在 GVARINIT 表）：gvar 槽 = symtab 槽 - (nfuncs-1)，
-            # PUSH_G 操作数 = gvar 槽（t15 实测字符串 entries idx 8 → 槽 6，nfuncs=3）。
+            # 字符串（不在 GVARINIT 表）：函数体字符串注册于符号槽末尾
+            # （gvar 槽 = nsyms），PUSH_G 操作数 = gvar 槽 - 1 = nsyms - 1
+            # （t15 实测 idx 8 → 槽 6、t10 混合模式 idx 8 → 槽 3，nsyms 分别为 7/4）。
             # 单函数（nfuncs=1）恰好使 codegen 原始槽 = gvar-1，无需此处处理。
             idx0 = inst.operands[0]
             if 0 <= idx0 < len(symtab.entries) and symtab.entries[idx0][0] in ("CONST", "STRING"):
-                new_idx = idx0 - len(func_args) + 1
+                if symtab.entries[idx0][0] == "STRING":
+                    new_idx = nsyms - 1
+                else:
+                    new_idx = idx0 - len(func_args) + 1
                 if 0 <= new_idx <= 0xFFFF:
                     opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
                     out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
@@ -230,10 +234,17 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
             out += b'\x0a'  # POP
 
     if n_funcs > 0:
-        # 有 defun：追加函数注册尾（CAD 实测）。
+        # 有 defun：追加函数注册尾（CAD 实测）。多函数时每函数一组
+        # `PUSH_G <b>; SETQ_G <c>`，组间 `PUSH_G <c>; POP; JUMP`；
+        # b = 2*n_funcs+1 + top_level_count - i（模块注册偏移），c = n_funcs - i。
         out += b'\x57\x00\x00\x00\x00'  # JUMP
-        out += bytes([0x09]) + struct.pack('<H', module_reg_count + 2)  # PUSH_G
-        out += bytes([0x06]) + struct.pack('<H', 1)  # SETQ_G 1
+        for i in range(n_funcs):
+            b = 2 * n_funcs + 1 + top_level_count - i
+            c = n_funcs - i
+            out += bytes([0x09]) + struct.pack('<H', b)  # PUSH_G b
+            out += bytes([0x06]) + struct.pack('<H', c)  # SETQ_G c
+            if i < n_funcs - 1:
+                out += bytes([0x09]) + struct.pack('<H', c) + b'\x0a\x57\x00\x00\x00\x00'
         out += bytes([0x09]) + struct.pack('<H', 1)  # PUSH_G 1
     out += b'\x16'  # END_DEFUN
     return bytes(out)

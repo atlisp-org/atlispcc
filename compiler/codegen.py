@@ -490,8 +490,15 @@ class CodeGenerator:
 
         for i, form in enumerate(node.body):
             self._emit_expr(buf, form)
-            # CAD stub：最后一个 form 后无 POP（结果被 while 丢弃）；中间 form 有。
-            if not self.stub_format or i < len(node.body) - 1:
+            # CAD stub：中间 setq 无 POP（SETQ_G 自身消费栈顶），仅非 setq 追加。
+            # 与 generate_function 顶层体规则一致（t11_localvars 实测）。
+            if self.stub_format:
+                if isinstance(form, (Setq, WhileNode)):
+                    continue
+                if i >= len(node.body) - 1:
+                    continue
+                buf.emit(encode_op_noarg(POP))
+            elif i < len(node.body) - 1:
                 buf.emit(encode_op_noarg(POP))
 
         jmp_back = buf.pos()
@@ -756,6 +763,29 @@ class CodeGenerator:
             buf.emit(struct.pack("<BB", GET_LOCAL_8, i))
         buf.emit(encode_op_u16(INIT_ARGS, len(args) * 2))
 
+    def _emit_al_bind_alist(self, buf: BytecodeBuffer, func: Defun):
+        """CAD `/ 局部变量` 绑定协议：`(_al-bind-alist '(loc1 loc2 ...))`。
+
+        t11_localvars 实测序列（INIT_ARGS 之后、函数体之前）：
+        ``PUSH_G <const>; FUNC 1, <_al-bind-alist>; NIL; PUSH_NIL; NIL; POP``
+        ——把局部变量引用常量 `(quote (loc1 ...))` 压栈，调用 `_al-bind-alist`
+        绑定为 nil，再丢弃返回值。`_al-bind-alist` 为保留大小写的 0x56 单符号。
+        """
+        const = ('LIST', tuple(('SYMBOL', l) for l in func.locals))
+        const_idx = self.symtab.add_constant(const)
+        al_idx = self.symtab.get_or_add('_al-bind-alist')
+        if self.stub_format:
+            buf.emit(encode_op_u16(PUSH_G, const_idx))
+            buf.emit(encode_func3(1, al_idx))
+            buf.emit(encode_op_noarg(0x00))       # NIL
+            buf.emit(encode_op_noarg(PUSH_NIL))   # PUSH_NIL
+            buf.emit(encode_op_noarg(0x00))       # NIL
+            buf.emit(encode_op_noarg(POP))        # POP
+        else:
+            buf.emit(encode_op_u16(PUSH_G, const_idx))
+            buf.emit(encode_func(1, al_idx))
+            buf.emit(encode_op_noarg(POP))
+
     def _emit_tail_call(self, buf: BytecodeBuffer, args: List[Node]):
         for i, arg in enumerate(args):
             if i < len(self.current_func_args):
@@ -798,6 +828,9 @@ class CodeGenerator:
 
         self._emit_init_args(buf, all_args)
 
+        if self.stub_format and func.locals:
+            self._emit_al_bind_alist(buf, func)
+
         buf.label(self._tail_entry_label)
 
         for i, loc in enumerate(func.locals):
@@ -825,8 +858,9 @@ class CodeGenerator:
 
         if self.stub_format:
             # CAD stub: 有参函数以 CLEAR_ARGS(0x19, <argc>) 结尾；无参函数直接结束。
+            # 含 `/ 局部变量` 时 CLEAR_ARGS = argc + locals（t11_localvars 实测 3）。
             if func.args:
-                buf.emit(encode_op_u16(CLEAR_ARGS, len(func.args)))
+                buf.emit(encode_op_u16(CLEAR_ARGS, len(func.args) + len(func.locals)))
         else:
             self._emit_clear_args(buf, func.args)
 

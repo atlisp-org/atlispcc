@@ -310,7 +310,15 @@ class ResourceBuilder:
                 if i < skip_first - 1:
                     continue
                 if entry_type == 'SYMBOL':
-                    symbol_bytes += self._enc_sym(entry_val) + b'\x00'
+                    if str(entry_val) == '_al-bind-alist':
+                        # CAD `/ 局部变量` 助手：保留大小写、独立 0x56 单符号
+                        # （t11_localvars 实测，非 5b 合并块）。
+                        if symbol_bytes:
+                            out += b'\x5b' + bytes(symbol_bytes) + b'\x00'
+                            symbol_bytes = bytearray()
+                        out += b'\x56' + self._enc(entry_val) + b'\x00\x00'
+                    else:
+                        symbol_bytes += self._enc_sym(entry_val) + b'\x00'
                 elif entry_type == 'CONST':
                     if symbol_bytes:
                         out += b'\x5b' + bytes(symbol_bytes) + b'\x00'

@@ -124,11 +124,12 @@ class CadSymbolCollector:
         for f in reversed(defuns):
             self.add(f.name)
 
-        # 2. 顶层代码（CAD：顶层表达式符号排在函数体内建/参数之前）
+        # 2. 顶层代码（CAD：顶层表达式符号排在函数体内建/参数之前，字节码
+        #    引用序逆序——与单函数路径一致，t10_init 实测 `PRINC Loading *VERSION* 1.0`）
         refs = []
         for form in others:
-            self._collect_forward(form, refs, set())
-        for name, force in refs:
+            self._collect_byteorder(form, refs, set())
+        for name, force in reversed(refs):
             self.add(name, force=force)
 
         # 3. 函数体符号：按字节码引用序收集，逆序注册；唯一参数紧跟所属函数，
@@ -171,9 +172,14 @@ class CadSymbolCollector:
                 if arg in self.shared and arg not in shared_first_user:
                     shared_first_user[arg] = i
 
+        # 混合模式（defun + 顶层表达式）下，模块注册已含顶层符号；函数体符号
+        # 若与模块注册符号同名，需作为重复槽**强制**再注册（t10_init 实测
+        # `*VERSION* PRINC` 在模块段与函数体段各出现一次）。纯函数文件不受影响
+        # （模块注册仅函数名，函数体符号本就独立）。
+        module_reg_names = set(self.names)
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             for name, force in reversed(kept):
-                self.add(name, force=force)
+                self.add(name, force=force or name in module_reg_names)
             for arg in reversed(f.args):
                 if arg in self.shared:
                     # 逆序迭代索引 i 对应源码索引 nfuncs-1-i。
@@ -224,6 +230,12 @@ class CadSymbolCollector:
                     seen_forced.add(name)
             for name, force in reversed(deduped):
                 self.add(name, force=force)
+            # CAD `/ 局部变量`：注入 `_al-bind-alist` 助手符号与局部变量引用
+            # 常量 `(quote (locals...))`，紧跟函数体符号之后、参数之前
+            # （t11_localvars 实测：`+ <= I RESULT _al-bind-alist (RESULT I) N`）。
+            if f.locals:
+                self.add('_al-bind-alist')
+                self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
             for arg in reversed(f.args):
                 if arg not in self.names:
                     self.add(arg)
