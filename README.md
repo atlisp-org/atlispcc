@@ -292,6 +292,13 @@ atlispcc validate output.lsp
 - `tools.fas-analyzer` — FAS4 文件分析（`--dump`/`--json`）
 - `tools.fas-split` — 函数分割（`--trim`/`--outdir`）
 - `tools.decrypt_fas4` / `tools.crack_key` — 解密/密钥破解
+- `tools.find_key` — 在 FAS 中定位 XOR 加密密钥
+- `tools.validate` — 生成的 `.lsp` 语法/危险函数/未使用局部变量检查
+- `tools.compare_lsp` — `.lsp` 对比分析
+- `tools.zelx_info` / `tools.zelx_diff` / `tools.zelx_build` / `tools.zelx_to_fas` — ZWCAD `.zelx` 解析/对比/构建/恢复（逆向 LispConverter）
+- `tools.lisp_converter_auto` — ZWCAD LispConverter.exe GUI 自动化（样本生产）
+- `tools.cad_probe` — MCP CAD 交互辅助（开发调试）
+- `tools.analyze_rosetta` — Rosetta 代码分析
 
 用法与输出说明见 `docs/development.md`。
 

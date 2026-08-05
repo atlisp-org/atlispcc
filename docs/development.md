@@ -317,7 +317,34 @@ python -m tools.fas-split tests/cad/i18n-cad.fas --outdir ./split_output
 ```sh
 python -m tools.decrypt_fas4 tests/cad/i18n-cad.fas
 python -m tools.crack_key encrypted.fas
+python -m tools.find_key encrypted.fas    # 在 FAS 中定位 XOR 加密密钥
 ```
+
+### 生成文件验证
+
+```sh
+python -m tools.validate output.lsp       # 语法 + 危险函数 + 未使用局部变量
+```
+
+### ZWCAD ZELX（逆向 LispConverter）
+
+```sh
+python -m tools.zelx_info file.zelx       # 解析/解密 .zelx 容器
+python -m tools.zelx_diff file.fas file.zelx  # .fas ↔ .zelx 结构 diff
+python -m tools.zelx_build input.fas out.zelx  # .fas → .zelx 写入器
+python -m tools.zelx_to_fas input.zelx out.fas # .zelx → .fas 恢复
+```
+
+### 其他
+
+```sh
+python -m tools.compare_lsp a.lsp b.lsp       # .lsp 对比
+python -m tools.analyze_rosetta ...           # Rosetta 代码分析
+python -m tools.cad_probe ...                 # MCP CAD 交互辅助（开发调试）
+```
+
+`tools.lisp_converter_auto`（ZWCAD LispConverter.exe GUI 自动化，样本生产）与
+`tools.cad_probe` 依赖桌面环境，通常不用于 CI。
 
 ## 代码规范
 

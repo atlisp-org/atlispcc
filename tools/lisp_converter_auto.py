@@ -14,12 +14,18 @@ import sys
 import time
 import argparse
 
-import uiautomation as auto
+try:
+    import uiautomation as auto
+except ImportError:  # 非 Windows / 未装 uiautomation：模块仍可导入，仅运行时需要
+    auto = None
 
-u32 = ctypes.windll.user32
-u32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
-u32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
-u32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+try:
+    u32 = ctypes.windll.user32
+    u32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+    u32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+    u32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+except AttributeError:  # 非 Windows 平台无 ctypes.windll
+    u32 = None
 BM_CLICK = 0x00F5
 WM_COMMAND = 0x0111
 
@@ -114,6 +120,10 @@ def main():
     ap.add_argument("--exe", default="E:/Users/vitalgg/atlisp/atlispcc/LispConverter.exe",
                     help="path to LispConverter.exe")
     a = ap.parse_args()
+    if auto is None or u32 is None:
+        print("error: 'uiautomation' or ctypes.windll not available "
+              "(requires Windows + pip install uiautomation)", file=sys.stderr)
+        return 1
     for f in a.inputs:
         if not os.path.exists(f):
             print(f"skip (missing): {f}")
