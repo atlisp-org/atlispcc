@@ -113,7 +113,10 @@ class FasWriter:
         output = bytearray()
         output.extend(file_header)
         output.extend(seg0_payload)
-        output.extend(SEG_TERMINATOR)
+        # 段终止符：seg0 非空时含 `16`（END_DEFUN 结束函数字节码），
+        # seg0 空（纯顶层，无 defun）时以空格占位（CAD set5/setcmp 实测 ` $`）。
+        seg_terminator = b' $\r\n' if not seg0 else SEG_TERMINATOR
+        output.extend(seg_terminator)
         output.extend(seg1_header)
         output.extend(seg1_data)
         output.extend(trailer)

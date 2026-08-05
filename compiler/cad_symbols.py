@@ -351,13 +351,21 @@ class CadSymbolCollector:
                 self._collect_byteorder(item, out, arg_names, in_quote)
         elif isinstance(node, QuotedExpr):
             if node.expr is not None:
-                const = to_const(node.expr)
-                if const is not None:
-                    out.append(((CONST_MARK, const), False))
+                # CAD 引用单符号 `'a`：编译为 PUSH_G 普通符号槽，不注册
+                # CONST（setcmp/setqa 实测 `(set 'a 5)` 的 A、`(setq x 'a)`
+                # 的 A 均为普通 SYMBOL 槽）。仅列表/lambda/dotted 等复合
+                # 结构才 const 化。
+                if isinstance(node.expr, Symbol) and node.expr.name not in ('T', 'nil'):
+                    if node.expr.name not in arg_names and not self._seen(out, node.expr.name):
+                        out.append((node.expr.name, False))
                 else:
-                    # 不可常量化的 quoted 表达式运行时拆开构建：其内部
-                    # `(if ...)` 等特殊形式的 `if` 作为数据符号收集。
-                    self._collect_byteorder(node.expr, out, arg_names, in_quote=True)
+                    const = to_const(node.expr)
+                    if const is not None:
+                        out.append(((CONST_MARK, const), False))
+                    else:
+                        # 不可常量化的 quoted 表达式运行时拆开构建：其内部
+                        # `(if ...)` 等特殊形式的 `if` 作为数据符号收集。
+                        self._collect_byteorder(node.expr, out, arg_names, in_quote=True)
         elif isinstance(node, LambdaNode):
             const = to_const(node)
             if const is not None:
@@ -438,11 +446,16 @@ class CadSymbolCollector:
                 self._collect_forward(item, out, locals_)
         elif isinstance(node, QuotedExpr):
             if node.expr is not None:
-                const = to_const(node.expr)
-                if const is not None:
-                    out.append(((CONST_MARK, const), False))
+                # CAD 引用单符号 `'a`：普通符号槽（PUSH_G），非 CONST。
+                if isinstance(node.expr, Symbol) and node.expr.name not in ('T', 'nil'):
+                    if node.expr.name not in locals_ and not self._seen(out, node.expr.name):
+                        out.append((node.expr.name, False))
                 else:
-                    self._collect_forward(node.expr, out, locals_)
+                    const = to_const(node.expr)
+                    if const is not None:
+                        out.append(((CONST_MARK, const), False))
+                    else:
+                        self._collect_forward(node.expr, out, locals_)
         elif isinstance(node, LambdaNode):
             const = to_const(node)
             if const is not None:

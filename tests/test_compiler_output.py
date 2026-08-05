@@ -388,3 +388,63 @@ def test_t_series_byte_identity_known_diff(name):
             f'{name}: known byte diff vs CAD golden '
             f'(nsyms {ours.nsyms}vs{ref.nsyms})'
         )
+
+
+#: 纯顶层（无 defun）文件：空 seg0 使 Fas4Parser 无法解析（"Bad FAS
+#: payload header"），故直接解密对比 seg1 资源流与文件头。
+PURE_TOP_LEVEL_CASES = [
+    ('set5.lsp', 'set5_cad.fas'),
+    ('setqa.lsp', 'setqa_cad.fas'),
+    ('setcmp.lsp', 'setcmp_cad.fas'),
+]
+
+
+def _decrypt_seg1(path):
+    """返回 (文件头到 res 头前的字节, 解密后的 seg1)。"""
+    import re
+    from core.fas_core import CRUNCH_MARKER
+    data = open(path, 'rb').read()
+    pos = data.find(CRUNCH_MARKER)
+    assert pos > 0, f'{path}: no crunch marker'
+    ms = list(re.finditer(rb'(\d+) (\d+) \$', data))
+    m = ms[-1]
+    rsz = int(m.group(1))
+    key = None
+    for k in range(pos - 80, pos):
+        klen = pos + len(CRUNCH_MARKER) - k
+        if k - 1 >= 0 and data[k - 1] == klen:
+            key = data[k:pos + len(CRUNCH_MARKER)]
+            enc = data[m.end():k - 1]
+            if len(enc) == rsz:
+                return data[:m.end()], fas_decrypt_stream(enc, key)
+    assert key is not None, f'{path}: cannot locate XOR key'
+    return data[:m.end()], fas_decrypt_stream(
+        data[m.end():m.end() + rsz], key)
+
+
+@pytest.mark.parametrize('src_name,golden_name', PURE_TOP_LEVEL_CASES)
+def test_pure_top_level_byte_identity(src_name, golden_name):
+    """纯顶层（无 defun）文件头 + seg1 与 CAD golden 完全一致。
+
+    覆盖引用单符号 `'a` 作为普通符号槽（非 CONST）、空 seg0 终止符、
+    setq 值 PUSH_VALUE/PUSH_G 区分、seg1 头 items 用 form 数等规则。
+    """
+    from compiler.cli import cmd_compile
+
+    src, golden = _golden_paths(
+        os.path.join('cad', src_name), os.path.join('cad', golden_name))
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        ours_head, ours_seg1 = _decrypt_seg1(out)
+        ref_head, ref_seg1 = _decrypt_seg1(golden)
+        assert ours_head == ref_head, (
+            f'{src_name}: file head differs from CAD golden\n'
+            f'  ours: {ours_head.hex()}\n'
+            f'  CAD : {ref_head.hex()}'
+        )
+        assert ours_seg1 == ref_seg1, (
+            f'{src_name}: seg1 differs from CAD golden\n'
+            f'  ours: {ours_seg1.hex()}\n'
+            f'  CAD : {ref_seg1.hex()}'
+        )

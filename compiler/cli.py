@@ -322,7 +322,13 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
                     v_idx = _slot_of(symtab, value)
                     if v_idx is None:
                         break  # 复杂值 → 退回通用路径
-                    pre += bytes([0x09]) + struct.pack('<H', v_idx + 1)  # PUSH_G
+                    if isinstance(value, Symbol):
+                        # 非引号符号值：CAD 用 PUSH_VALUE（setcmp
+                        # `(setq _ @::_)` 实测 `03 <槽+1>`）；字符串/引用
+                        # 符号（QuotedExpr）用 PUSH_G。
+                        pre += bytes([0x03]) + struct.pack('<H', v_idx + 1)
+                    else:
+                        pre += bytes([0x09]) + struct.pack('<H', v_idx + 1)  # PUSH_G
                     v_ok = True
                 if not v_ok:
                     break
@@ -568,6 +574,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     # 顶层表达式符号（defun 之外）：CAD 把它们的符号并入模块注册段。
     other_forms = [f for f in program.forms
                    if not isinstance(f, (Defun, Defpackage, InPackage))]
+    # 顶层 form 数（CAD seg1 头 items 公式用），区别于符号数 top_level_count。
+    top_form_count = len(other_forms)
     from compiler.ast_nodes import Symbol as _Sym
     from compiler.ast_nodes import String as _StrNode
     _top_syms = []
@@ -660,11 +668,17 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     seg1 = resource.build(func_offsets, module_code=module_code, total_size=len(seg0) + 1, stub_format=True,
                            top_level_count=top_level_count, commands=n_cmds)
     sec2_items = count_resource_records(seg1)
-    # 确保 items 与 CAD 编译器一致：CAD 的 items = 2 * 模块注册数 + 2
-    # （模块注册数 = defun 数 + 顶层表达式数）。实测：1 函数→4、2 函数→6、
-    # 3 函数→8、4 函数→10；mix(1 defun+1 顶层)→6、topsetq(2 顶层)→6。
-    # CAD 加载时按 items 处理 GVARINIT 记录，若偏小会遗漏函数注册。
-    min_items = 2 * (len(defun_forms) + top_level_count) + 2
+    # 确保 items 与 CAD 编译器一致。CAD 的 items 语义：
+    # - 含 defun：2 * 模块注册数 + 2（模块注册数 = defun 数 + 顶层 form 数）。
+    #   实测：1 函数→4、2 函数→6、3 函数→8、4 函数→10；mix(1 defun+1
+    #   顶层)→6、topsetq(2 顶层)→6、t10(2 defun+2 顶层)→10。
+    # - 纯顶层（无 defun）：items = 符号槽数 + 2（setcmp 4 form→5，
+    #   符号 SET/_/@::_ 3 个 + 2 = 5）。CAD 加载时按 items 处理
+    #   GVARINIT 记录，若偏小会遗漏函数注册。
+    if len(defun_forms):
+        min_items = 2 * (len(defun_forms) + top_form_count) + 2
+    else:
+        min_items = len(symtab.entries) + 2
     if sec2_items < min_items:
         sec2_items = min_items
 
