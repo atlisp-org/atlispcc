@@ -665,6 +665,11 @@ class CodeGenerator:
             from compiler.cad_symbols import to_const
             const = to_const(node)
             if const is not None:
+                if const == ('NIL',):
+                    # 空列表 `'()` = nil：CAD 用 PUSH_NIL，不注册常量槽
+                    # （i18n_v2 顶层 `'()` 实测）。
+                    buf.emit(encode_op_noarg(PUSH_NIL))
+                    return
                 idx = self.symtab.get_const_idx(const)
                 if idx is not None:
                     buf.emit(encode_op_u16(PUSH_G, idx))

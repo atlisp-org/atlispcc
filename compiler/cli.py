@@ -170,25 +170,50 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 if 0 <= new_idx <= 0xFFFF:
                     out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                     continue
-        # 其余符号引用（仅多函数）：统一用 gvar 槽 - 1
+        # 其余符号引用：统一用 gvar 槽 - 1。多函数的普通符号走 gvar_map；
+        # CONST/STRING 常量引用（PUSH_G 操作数 = gvar 槽 - 1）在单函数
+        # 也需修正（codegen 原始槽 = symtab idx，gvar 槽 = idx+1，
+        # 操作数 = idx——i18n_v2 实测 ANSI 表 symtab idx 4 → 操作数 3）。
         # 注意：CAD stub 中调用后的占位 PUSH_VALUE[0] 是单字节 `03`（size=1），
         # 并非符号引用，必须跳过，否则被扩展成 3 字节破坏字节一致性。
-        if multi and inst.op_name in ("PUSH_VALUE", "PUSH_G", "SETQ_G") and inst.operands and inst.size == 3:
-            sym = sym_of(inst.operands[0])
-            if sym and sym in gvar_map:
-                new_idx = gvar_map[sym] - 1
-                if 0 <= new_idx <= 0xFFFF:
-                    opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
-                    out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
-                    continue
+        if inst.op_name in ("PUSH_VALUE", "PUSH_G", "SETQ_G") and inst.operands and inst.size == 3:
+            # 参数绑定 PUSH_G（DEFUN 后 argc 个）：多函数由上方分支修正并
+            # continue（不到此处）；单函数 codegen 已输出正确槽（nsyms-1）。
+            # 此处跳过，避免被当作 CONST/STRING 误改。
+            is_arg_bind = (
+                inst.op_name == "PUSH_G"
+                and cur_args is not None
+                and arg_i < len(cur_args)
+            )
+            if is_arg_bind:
+                arg_i += 1
+                out += seg0[inst.offset:inst.offset + inst.size]
+                continue
+            if multi:
+                sym = sym_of(inst.operands[0])
+                if sym and sym in gvar_map:
+                    new_idx = gvar_map[sym] - 1
+                    if 0 <= new_idx <= 0xFFFF:
+                        opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
+                        out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                        continue
             # 常量引用（quoted lambda 等 CONST 条目）：sym_of 只认 SYMBOL/STRING，
             # CONST 在 fg 表里注册为嵌套结构（gvar 槽 = const_map 命中槽），
             # PUSH_G 操作数 = gvar 槽 - 1（i18n 实测 ANSI 表 fg[98] → 操作数 97）。
             # 字符串（不在 GVARINIT 表）：函数体字符串注册于符号槽末尾
             # （gvar 槽 = nsyms），PUSH_G 操作数 = gvar 槽 - 1 = nsyms - 1
             # （t15 实测 idx 8 → 槽 6、t10 混合模式 idx 8 → 槽 3，nsyms 分别为 7/4）。
-            # 单函数（nfuncs=1）恰好使 codegen 原始槽 = gvar-1，无需此处处理。
             idx0 = inst.operands[0]
+            # 参数读取 PUSH_VALUE 的槽（nsyms-argc .. nsyms-1）不是 entry 索引，
+            # 单函数 codegen 已输出正确槽，跳过（i18n_v2 实测 offset14 参数读取）。
+            if (
+                inst.op_name == "PUSH_VALUE"
+                and cur_args is not None
+                and len(cur_args)
+                and nsyms - len(cur_args) <= idx0 < nsyms
+            ):
+                out += seg0[inst.offset:inst.offset + inst.size]
+                continue
             if 0 <= idx0 < len(symtab.entries):
                 etype = symtab.entries[idx0][0]
                 if etype == "CONST":
@@ -212,7 +237,12 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                             # gvar 槽 = symtab 槽 - nfuncs + 2 → 操作数 = - nfuncs + 1。
                             new_idx = idx0 - len(func_args) + 1
                 elif etype == "STRING":
-                    new_idx = nsyms - 1
+                    # 字符串 PUSH_G：多函数注册于符号槽末尾（gvar 槽 = nsyms，
+                    # 操作数 = nsyms-1）；单函数 codegen 已输出正确槽，不修正。
+                    if multi:
+                        new_idx = nsyms - 1
+                    else:
+                        new_idx = None
                 else:
                     new_idx = None
                 if new_idx is not None and 0 <= new_idx <= 0xFFFF:
@@ -272,6 +302,15 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
                     stmt += bytes([0x06]) + struct.pack('<H', t_idx + 1)  # SETQ_G 变量
                     stmt_list.append(bytes(stmt))
                     handled = True
+                elif t_idx is not None and _is_empty_quote(value):
+                    # `(setq x '())`：CAD 用 `PUSH_NIL; DUP; SETQ_G`
+                    # （i18n_v2 顶层 `'()` 实测），值与槽均无需注册。
+                    stmt = bytearray()
+                    stmt += bytes([0x01])  # PUSH_NIL
+                    stmt += b'\x0b'        # DUP
+                    stmt += bytes([0x06]) + struct.pack('<H', t_idx + 1)  # SETQ_G
+                    stmt_list.append(bytes(stmt))
+                    handled = True
         if not handled:
             fb = BytecodeBuffer()
             cg._emit_expr(fb, form)
@@ -309,6 +348,12 @@ def _slot_of(symtab, node):
     if isinstance(node, _Str):
         return symtab.name_to_idx.get(f'__str_{node.value}__')
     return None
+
+
+def _is_empty_quote(node) -> bool:
+    """判断是否为空列表引用 `'()`（CAD 用 PUSH_NIL，无常量槽）。"""
+    from compiler.ast_nodes import QuotedExpr, ListExpr
+    return isinstance(node, QuotedExpr) and isinstance(node.expr, ListExpr) and not node.expr.items
 
 
 def _offset_slots(bc: bytes, n_sym: int) -> bytes:

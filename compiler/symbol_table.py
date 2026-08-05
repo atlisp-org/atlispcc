@@ -110,7 +110,10 @@ class SymbolTable:
 
         常量在资源段注册为结构值（加载期构建），字节码用一条 PUSH_G 引用。
         结构为 to_const() 产生的嵌套元组。
+        空列表常量 `('NIL',)`（`'()` = nil）不注册槽——CAD 用 PUSH_NIL。
         """
+        if structure == ('NIL',):
+            return 0
         key = '__const__' + repr(structure)
         if key not in self.name_to_idx:
             idx = len(self.entries)

@@ -79,6 +79,10 @@ def to_const(node):
             # dotted 引用 `'(a . b)`：CAD 以 `2a`(LIST_END) 收尾而非
             # `39 <count>`（t12_quote 实测），需标记以便 _emit_const 正确编码。
             return ('LIST', items, True)
+        if not items:
+            # 空列表 `'()` = nil：CAD 用 PUSH_NIL(01) 而非 BUILD_LIST 0
+            # （i18n_v2 顶层 `'()` 实测），避免多占一个 gvar 槽。
+            return ('NIL',)
         return ('LIST', items)
     if isinstance(node, Call):
         items = (to_const(Symbol(node.name)),) + tuple(to_const(a) for a in node.args)
