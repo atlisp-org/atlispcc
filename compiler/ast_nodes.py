@@ -41,6 +41,10 @@ class ListExpr(Node):
 @dataclass
 class QuotedExpr(Node):
     expr: Optional['Node'] = None
+    # `(function X)` 语法（AutoLISP 引用函数）：CAD 编译为内部嵌套 DEFUN +
+    # kwote/-lambda- 机制，区别于 `'X`（quote，注册为资源段常量）。
+    # kwote=True 表示来自 `(function ...)` 而非 `'...`。
+    kwote: bool = False
 
 
 @dataclass

@@ -49,7 +49,9 @@ class Parser:
             return QuotedExpr(expr=self.parse_form(quoted=True))
         elif kind == 'FUNCTION':
             self.advance()
-            return QuotedExpr(expr=self.parse_form(quoted=True))
+            # `(function X)`：CAD 编译为 kwote 机制（内部 DEFUN/符号引用），
+            # 区别于 `'X` 的资源段常量。kwote=True 标记。
+            return QuotedExpr(expr=self.parse_form(quoted=True), kwote=True)
         elif kind == 'SYMBOL':
             self.advance()
             return Symbol(name=val)

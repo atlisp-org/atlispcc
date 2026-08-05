@@ -21,7 +21,7 @@ tests/（fact/fun/sf_cond/mix 的 CAD 官方产物）。
 from compiler.ast_nodes import (
     Symbol, String, Integer, Real, ListExpr, QuotedExpr,
     Defun, Setq, IfNode, WhileNode, ForeachNode, RepeatNode, Call, Progn,
-    LambdaNode, Cond,
+    LambdaNode, Cond, Defpackage, InPackage,
 )
 
 CONST_MARK = '__const__'
@@ -132,27 +132,31 @@ class CadSymbolCollector:
         if len(defuns) <= 1:
             return self._collect_single(defuns, others)
 
-        # 1. 函数名逆序（模块注册域）
-        for f in reversed(defuns):
-            self.add(f.name)
-
-        # 2. 顶层代码（CAD：顶层表达式符号排在函数体内建/参数之前，字节码
-        #    引用序逆序——与单函数路径一致，t10_init 实测 `PRINC Loading *VERSION* 1.0`）
-        #    同一 form 内多次函数名调用共享同一重复槽（i18n 顶层 2 次调用
-        #    `@::codepage2lang` 仅 1 个重复槽，CAD 实测）。
-        refs = []
-        for form in others:
-            form_refs = []
-            self._collect_byteorder(form, form_refs, set())
-            seen_forced = set()
-            for name, force in form_refs:
-                if force and name in seen_forced:
-                    continue
-                refs.append((name, force))
-                if force:
-                    seen_forced.add(name)
-        for name, force in reversed(refs):
-            self.add(name, force=force)
+        # 1. 模块注册域（CAD：按源码逆序逐 form 交错收集）。
+        #    defun → 函数名；顶层 → 其字节码引用符号（逆序）。混合模式
+        #    （i18n）下顶层表达式与 defun 按源码逆序交错，最后出现的顶层
+        #    `(set '_ @::_)` 的 `_` 排在模块注册最前（i18n-cad 实测）。
+        #    纯函数文件（无顶层）退化为"函数名逆序"，与多函数实测一致。
+        forms_all = [f for f in program.forms if not isinstance(f, (Defpackage, InPackage))]
+        module_seen = set()
+        for form in reversed(forms_all):
+            if isinstance(form, Defun):
+                if form.name not in module_seen:
+                    module_seen.add(form.name)
+                    self.add(form.name)
+            else:
+                form_refs = []
+                self._collect_byteorder(form, form_refs, set())
+                seen_forced = set()
+                for name, force in reversed(form_refs):
+                    if force and name in seen_forced:
+                        continue
+                    n = name[1] if is_const_entry(name) else name
+                    if isinstance(n, str) and n not in module_seen:
+                        module_seen.add(n)
+                        self.add(name, force=force)
+                    if force:
+                        seen_forced.add(n)
 
         # 3. 函数体符号：按字节码引用序收集，逆序注册；唯一参数紧跟所属函数，
         #    共享参数注册在其源码序最先使用的函数之后。CAD 实测
