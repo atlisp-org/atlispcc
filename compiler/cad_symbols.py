@@ -138,9 +138,19 @@ class CadSymbolCollector:
 
         # 2. 顶层代码（CAD：顶层表达式符号排在函数体内建/参数之前，字节码
         #    引用序逆序——与单函数路径一致，t10_init 实测 `PRINC Loading *VERSION* 1.0`）
+        #    同一 form 内多次函数名调用共享同一重复槽（i18n 顶层 2 次调用
+        #    `@::codepage2lang` 仅 1 个重复槽，CAD 实测）。
         refs = []
         for form in others:
-            self._collect_byteorder(form, refs, set())
+            form_refs = []
+            self._collect_byteorder(form, form_refs, set())
+            seen_forced = set()
+            for name, force in form_refs:
+                if force and name in seen_forced:
+                    continue
+                refs.append((name, force))
+                if force:
+                    seen_forced.add(name)
         for name, force in reversed(refs):
             self.add(name, force=force)
 
@@ -269,7 +279,11 @@ class CadSymbolCollector:
         elif isinstance(node, Call):
             for a in node.args:
                 self._collect_byteorder(a, out, arg_names)
-            if node.name in self.func_names:
+            if node.name in ('and', 'or'):
+                # CAD 短路 and/or：编译为 JMP16 指令，不注册符号槽
+                # （i18n-cad 实测无 AND/OR 符号）。
+                pass
+            elif node.name in self.func_names:
                 out.append((node.name, True))
             elif node.name not in arg_names and not self._seen(out, node.name):
                 out.append((node.name, False))
