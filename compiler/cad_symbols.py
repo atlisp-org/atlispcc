@@ -188,15 +188,25 @@ class CadSymbolCollector:
         # `*VERSION* PRINC` 在模块段与函数体段各出现一次）。纯函数文件不受影响
         # （模块注册仅函数名，函数体符号本就独立）。
         module_reg_names = set(self.names)
+        # `_al-bind-alist` 共享槽注册在**源码序第一个**带 `/ 局部变量` 的函数
+        # （逆序迭代最后一个 local 函数 = `@::update-locale`），而非第一个遍历到
+        # 的 local 函数（i18n-cad 实测 slot 121 在 @::update-locale 区）。其余
+        # local 函数不重复注册 `_al-bind-alist`（共享，codegen 按符号名取回）。
+        source_first_local = next((f for f in defuns if f.locals), None)
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             for name, force in reversed(kept):
                 self.add(name, force=force or name in module_reg_names)
             # CAD `/ 局部变量`（多函数）：与单函数一致注入 `_al-bind-alist` +
             # `(quote (locals...))` 常量；`_al-bind-alist` 全文件共享一个符号槽
             # （i18n-cad 实测仅 1 个 `_al-bind-alist`），locals 常量每函数独立。
+            # i18n-cad 实测槽序：`_al-bind-alist` → locals 常量 → 局部变量 →
+            # 参数（@::update-locale: `_al-bind-alist (LOC-FILE) LOC-FILE PKG-NAME`）。
             if f.locals:
-                self.add('_al-bind-alist')
+                if f is source_first_local:
+                    self.add('_al-bind-alist')
                 self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
+            for loc in reversed(f.locals):
+                self.add(loc)
             for arg in reversed(f.args):
                 if arg in self.shared:
                     # 逆序迭代索引 i 对应源码索引 nfuncs-1-i。
@@ -204,8 +214,6 @@ class CadSymbolCollector:
                         self.add(arg)
                 elif arg not in self.names:
                     self.add(arg)
-            for loc in reversed(f.locals):
-                self.add(loc)
 
         return self.names
 
