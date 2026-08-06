@@ -122,13 +122,13 @@ make clean       # 清理构建产物与缓存
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 277 用例 + 1 skip 占位）：
+**测试文件在 `tests/` 目录下**（pytest 风格，共 292 用例 + 1 skip 占位）：
 - `test_parser.py` — AST 解析器（19 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
 - `test_cli.py` — CLI 路径（20 用例：compile/-O/--analyze/validate/link/vlx/dispatch + validate 补强规则 + 源码编码检测）
-- `test_compile_decompile.py` — 编译-反编译往返（46 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式）
+- `test_compile_decompile.py` — 编译-反编译往返（59 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归）
 - `test_compiler_output.py` — FAS 输出正确性（27 用例，含 7 对 CAD golden 逐字节比对 + 18 项 t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
@@ -137,7 +137,7 @@ make clean       # 清理构建产物与缓存
 - `test_resource_stream.py` — 资源码解析/资源段构建（24 用例：符号/字符串块、GVARINIT、DEFCODE、build_mvar_tables、资源码 vs 操作码区分）
 - `test_packages.py` — CL 风格包系统（4 用例）
 - `test_vlx_builder.py` — VLX 容器（3 用例）
-- `test_variadic_args.py` — &optional/&rest 编译（14 用例）
+- `test_variadic_args.py` — &optional/&rest 编译（17 用例，含多函数参数名恢复）
 - `test_zelx.py` — ZWCAD ZELX 构建/解析（5 用例）
 
   一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。

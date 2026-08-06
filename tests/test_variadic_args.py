@@ -110,3 +110,34 @@ def test_rest_recursive():
     out = _decompile("(defun f (n &rest r) (if r (f n (cdr r)) n))")
     assert "(defun f (n &rest r)" in out
     assert "arg_" not in out
+
+
+def test_multi_func_plain_args_name_recovered():
+    """§3.5c：多函数文件 + argc>1 时，末位参数符号槽落在 nsyms 截断的
+    gvar 表之外，参数名需从 symbol_slots[op+1] 解析（t01_math_cad 实测）。"""
+    out = _decompile(
+        "(defun a1 (x y) (list x y))\n(defun b1 (u) u)"
+    )
+    assert "(defun a1 (x y)" in out
+    assert "(defun b1 (u)" in out
+    assert "arg_" not in out
+
+
+def test_multi_func_variadic_name_recovered():
+    """§3.5c：多函数 + &optional（§3.5c 原复现）参数名恢复。"""
+    out = _decompile(
+        "(defun a1 (x &optional y) (list x y))\n(defun b1 (u) u)"
+    )
+    assert "(defun a1 (x &optional y)" in out
+    assert "(defun b1 (u)" in out
+    assert "arg_" not in out
+
+
+def test_multi_func_three_args_name_recovered():
+    """§3.5c：多函数 + argc=3，全部参数名恢复。"""
+    out = _decompile(
+        "(defun max3 (a b c) (max a b c))\n(defun other (z) z)"
+    )
+    assert "(defun max3 (a b c)" in out
+    assert "(defun other (z)" in out
+    assert "arg_" not in out

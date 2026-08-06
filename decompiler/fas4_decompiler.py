@@ -785,6 +785,52 @@ class LispGenerator:
                 self.gvar_table = []
         if self.is_stub_format:
             self._collect_stub_defcode_names()
+        self._stub_is_multi_func = self.is_stub_format and (
+            len(self.function_names_by_offset) > 1 or len(self.function_names_by_index) > 1
+        )
+
+    def _stub_extended_gvar(self) -> List[Any]:
+        """stub 参数解析用的扩展 gvar 表：基础 gvar_table + symbol_slots 尾部
+        未入表的参数/共享参数符号。
+
+        `build_mvar_tables` 只重建到 nsyms，而 CAD 把参数（含多函数共享参数）
+        注册在 symbol_slots 尾部（CadSymbolCollector：`参数放最后`），其 gvar
+        槽在 nsyms 之外。t07/t08 的共享参数 LST、t01/t09 的 A/B/X、t18 的 N
+        均在此（operand o → gvar_table[o+1]，t01 op4→A@5、t08 op5→LST@6、
+        t18 op6→N@7 实测）。已嵌套在常量结构里的符号（如 quoted lambda 的
+        参数 X 在 t08 的 LAMBDA 常量内）不算新增，避免错位。
+
+        仅供 `_extract_signature` 参数名解析使用——不能改全局 gvar_table，
+        否则 `_gvar_item` 对函数体引用的越界回退会被扩展槽打乱
+        （test_minimal_compile_decompile 的 princ→hello 实测）。
+        """
+        if not self.fas.symbol_slots:
+            return self.gvar_table
+        existing: set = set()
+
+        def _collect(v) -> None:
+            if isinstance(v, tuple):
+                if len(v) == 2 and v[0] == "SYMBOL":
+                    existing.add(v[1].upper())
+                else:
+                    for x in v:
+                        _collect(x)
+            elif isinstance(v, list):
+                for x in v:
+                    _collect(x)
+
+        for x in self.gvar_table:
+            _collect(x)
+        extra: List[Any] = []
+        for item in self.fas.symbol_slots[self.fas.nsyms:]:
+            if isinstance(item, tuple) and len(item) == 2 and item[0] == "SYMBOL":
+                name = item[1].upper()
+                if name not in existing:
+                    existing.add(name)
+                    extra.append(item)
+        if extra:
+            return self.gvar_table + extra
+        return self.gvar_table
 
     def _build_symbol_slots(self) -> List[Any]:
         """Build the interleaved symbol/string/constant table from the
@@ -840,7 +886,10 @@ class LispGenerator:
             if bc[i] == 0x14:
                 a, b_, c, d = bc[i + 1], bc[i + 2], bc[i + 3], bc[i + 4]
                 if d == 0:
-                    return a == c
+                    # 有限参数：b1(参数+无名变量) == b3(大参数)；含 foreach/repeat
+                    # 的函数 b1 = argc + 1（循环占一个局部槽，t16/t17 实测），
+                    # 与有目录分支保持一致。
+                    return a in (c, c + 1)
                 if d == 1:
                     return a == b_ == c
                 return False
@@ -1065,11 +1114,16 @@ class LispGenerator:
         return spec
 
     def _localize_assigned_globals(self, spec: Dict[str, Any], instructions: List[Instruction]) -> None:
+        # 仅当函数声明了 `/ 局部变量`（`func.locals` 非空，CAD stub 经
+        # `_al-bind-alist` 协议绑定）时，把 setq 目标加入局部变量表；否则 setq
+        # 目标是全局变量（t12 `(setq lst '(a b c))` 的 lst 为全局，不应输出
+        # `/ lst`）。bound 映射无论如何都要建立，保证函数体引用能解析到名字。
+        has_locals = bool(spec["func"].locals) or bool(spec.get("local_binding_names"))
         for inst in instructions:
             if inst.op_name not in ("SETQ_G",) or not inst.operands:
                 continue
             name = self._value_from_gvar(inst.operands[0], spec)
-            if name not in spec["args"] and name not in spec["locals"]:
+            if has_locals and name not in spec["args"] and name not in spec["locals"]:
                 spec["locals"].append(name)
                 spec["local_originals"].append(name)
                 spec["localized_globals"].add(name)
@@ -1617,7 +1671,18 @@ class LispGenerator:
                 if pending_logic:
                     cond = self._combine_short_circuit_terms(pending_logic, cond)
                     pending_logic.clear()
-                flush_stack()
+                # 表达式位 if：then 分支末尾无 POP（值流入 JUMP/else 供后续调用
+                # 消费，`(+ (if a 1 2) 3)`/`(list (if a a 0) (if b b 0))` stub
+                # 实测）。这类 if 是"值"而非语句，不能在此 flush_stack——
+                # 否则后续 if 的 flush 会把前一个 if 值当语句丢弃。
+                pre_if = self._detect_if(instructions, offset_to_idx, i, target_idx, end) if target_idx is not None else None
+                is_value_if = False
+                if pre_if is not None and self._looks_structured_condition(cond):
+                    te = pre_if["then_end"]
+                    if te > pre_if["then_start"] and instructions[te - 1].op_name != "POP":
+                        is_value_if = True
+                if not is_value_if:
+                    flush_stack()
                 if target_idx is not None and start <= target_idx:
                     if target_idx > end:
                         target_idx = end
@@ -1640,6 +1705,13 @@ class LispGenerator:
 
                     if_info = self._detect_if(instructions, offset_to_idx, i, target_idx, end)
                     if if_info and self._looks_structured_condition(cond):
+                        # 表达式位 if：then 分支末尾无 POP（值流入 JUMP/else 供
+                        # 后续调用消费，`(+ (if a 1 2) 3)`/`(list (if a a 0) ...)`
+                        # stub 实测）。此时把 `(if ...)` 压栈作值，而非作为语句。
+                        then_ends_pop = False
+                        te = if_info["then_end"]
+                        if te > if_info["then_start"] and instructions[te - 1].op_name == "POP":
+                            then_ends_pop = True
                         then_lines = self._render_block(
                             spec,
                             instructions,
@@ -1647,6 +1719,33 @@ class LispGenerator:
                             if_info["then_end"],
                             indent + 2,
                         )
+                        if not then_ends_pop:
+                            body = self._render_block(
+                                spec,
+                                instructions,
+                                if_info["then_start"],
+                                if_info["then_end"],
+                                indent + 1,
+                            )
+                            then_text = self._emit_progn(body, indent)
+                            if_text = f"(if {cond}"
+                            if then_text:
+                                if_text += "\n" + "\n".join(then_text)
+                            if if_info["else_start"] is not None and if_info["else_end"] is not None:
+                                else_lines = self._render_block(
+                                    spec,
+                                    instructions,
+                                    if_info["else_start"],
+                                    if_info["else_end"],
+                                    indent + 1,
+                                )
+                                else_text = self._emit_progn(else_lines, indent)
+                                if else_text:
+                                    if_text += "\n" + "\n".join(else_text)
+                            if_text += "\n" + "  " * indent + ")"
+                            stack.append(if_text)
+                            i = if_info["after"]
+                            continue
                         lines.append(f'{"  " * indent}(if {cond}')
                         lines.extend(self._emit_progn(then_lines, indent + 1))
                         if if_info["else_start"] is not None and if_info["else_end"] is not None:
@@ -1792,6 +1891,18 @@ class LispGenerator:
                         cond_state = {"info": cond_info, "tests": [cond], "next": 1}
                         i += 1
                         continue
+                elif name == "COND_AND" and pending_logic and i + 1 < end:
+                    # 短路链收尾：COND_AND 的跳转目标是紧随其后的 PUSH_T
+                    # （codegen `(and ...)/(or ...)` 全真/有真时的规范化标记，
+                    # `_emit_short_circuit` 的 END 标签）。此时把累积的链
+                    # 折叠为单个表达式，并吞掉该 PUSH_T，避免泄漏裸 `T`。
+                    nxt = instructions[i + 1]
+                    if nxt.op_name == "PUSH_T":
+                        chain = self._combine_short_circuit_terms(pending_logic, cond)
+                        pending_logic.clear()
+                        stack.append(chain)
+                        i += 2
+                        continue
                 target_offset = inst.offset + inst.size + inst.operands[0] if inst.operands else None
                 pending_logic.append(
                     {
@@ -1897,6 +2008,34 @@ class LispGenerator:
             idx += 1
         return idx
 
+    def _detect_repeat_setup(
+        self, spec: Dict[str, Any], instructions: List[Instruction], body_start: int, body_end: int
+    ) -> Optional[Dict[str, Any]]:
+        """repeat 协议（t17 实测）：loop 头 `GET_LOCAL; PUSH_INT8 0; FIX_LEQ;
+        JMP32_IFNOT`（计数<=0 退出），体前先 `GET_LOCAL <slot>; DEC; SET_LOCAL
+        <slot>` 递减。次数在循环前 `PUSH_VALUE <n>; SET_LOCAL <slot>` 存入槽，
+        `slot_expr_map` 记录了槽的初始表达式。"""
+        if body_start + 2 > body_end:
+            return None
+        g, d, s = instructions[body_start], instructions[body_start + 1], instructions[body_start + 2]
+        if g.op_name not in ("GET_LOCAL", "GET_LOCAL_WIDE"):
+            return None
+        if d.op_name != "DEC" or s.op_name != "SET_LOCAL":
+            return None
+        if not g.operands or not s.operands:
+            return None
+        slot = g.operands[0]
+        if s.operands[0] != slot:
+            return None
+        count_name = self._local_name(slot, spec)
+        count = spec.get("slot_expr_map", {}).get(count_name, count_name)
+        return {
+            "keyword": "repeat",
+            "head": count,
+            "body_start": body_start + 3,
+            "body_end": body_end,
+        }
+
     def _detect_foreach_setup(
         self, spec: Dict[str, Any], instructions: List[Instruction], body_start: int, body_end: int, source_expr: str
     ) -> Optional[Dict[str, Any]]:
@@ -1951,6 +2090,10 @@ class LispGenerator:
         if loop_info:
             loop_info["after"] = self._skip_pops(instructions, target_idx, end)
             return loop_info
+        repeat_info = self._detect_repeat_setup(spec, instructions, body_start, back_jump_idx)
+        if repeat_info:
+            repeat_info["after"] = self._skip_pops(instructions, target_idx, end)
+            return repeat_info
         return {
             "keyword": "while",
             "head": spec.get("slot_expr_map", {}).get(cond_expr, cond_expr),
@@ -2067,6 +2210,25 @@ class LispGenerator:
     def _looks_structured_condition(self, expr: str) -> bool:
         return expr not in {"T", "nil", "0", "0.0"}
 
+    def _stub_tail_arg_names(self, argc: int) -> List[str]:
+        """单函数 stub 参数名：symbol_slots 尾部 argc 个去重符号的逆序。
+
+        CadSymbolCollector._collect_single 把参数（含共享）放在符号槽末尾，
+        声明序逆序注册（最后声明的参数槽最小）。t02-t13/t16/t17/and2/andor/
+        andval/or2 全部 CAD golden 实测一致；含 quoted lambda 等引用字面量时
+        参数仍居尾部（t08：LST 在 MAPCAR/LAMBDA/X/*/APPLY/+ 之后）。
+        """
+        uniq: List[str] = []
+        seen: set = set()
+        for item in self.symbol_slots:
+            name = self._extract_symbol_text(item)
+            if name and name not in seen:
+                seen.add(name)
+                uniq.append(name)
+        if argc <= 0 or argc > len(uniq):
+            return []
+        return list(reversed(uniq[-argc:]))
+
     def _extract_signature(self, instructions: List[Instruction]) -> Dict[str, Any]:
         start = 1 if instructions and instructions[0].op_name == "DEFUN" else 0
         init_idx = None
@@ -2104,17 +2266,55 @@ class LispGenerator:
                     local_binding_names.extend(symbol_list)
                     continue
                 raw_name = self._gvar_symbol_gvar(left[1]) or f"arg_{len(args) + 1}"
-                if self.is_stub_format and (raw_name in seen_arg_names or not any(c.isalpha() for c in raw_name)):
-                    j = left[1] + 1
-                    if j < len(self.symbol_slots):
-                        alt = self._extract_symbol_text(self.symbol_slots[j])
-                        if alt and alt not in seen_arg_names:
-                            raw_name = alt
+                if self.is_stub_format:
+                    # 多函数紧凑 stub：末位参数符号槽落在 nsyms 截断的 gvar 表
+                    # 之外（t01/t09/t18 实测 A、N 不在基础 gvar 表内）。用扩展
+                    # gvar 表（基础表 + symbol_slots 尾部共享/参数符号）按
+                    # gvar 槽 - 1 寻址：操作数 o → extended[o+1]（t01 op4→A@5、
+                    # t08 op5→LST@6、t07 op7→LST@8、t18 op6→N@7 实测）。
+                    if self._stub_is_multi_func:
+                        _ext = self._stub_extended_gvar()
+                        _gi = left[1] + 1
+                        if 1 < _gi < len(_ext):
+                            _gname = self._extract_symbol_text(_ext[_gi])
+                            if _gname and _gname not in seen_arg_names:
+                                raw_name = _gname
                     if raw_name in seen_arg_names or not any(c.isalpha() for c in raw_name):
-                        raw_name = f"arg_{len(args) + 1}"
+                        j = left[1] + 1
+                        if j < len(self.symbol_slots):
+                            alt = self._extract_symbol_text(self.symbol_slots[j])
+                            if alt and alt not in seen_arg_names:
+                                raw_name = alt
+                        if raw_name in seen_arg_names or not any(c.isalpha() for c in raw_name):
+                            raw_name = f"arg_{len(args) + 1}"
                 seen_arg_names.add(raw_name)
                 args.append((right[1], raw_name))
                 arg_symbol_indices.append(left[1])
+
+        # 单函数紧凑 stub：参数符号在 symbol_slots 尾部按"字节码引用序逆序注册"
+        # （CadSymbolCollector._collect_single 参数放最后，t02-t13/t16/t17/and*
+        # 全部 CAD golden 实测）。当函数体含引用字面量（quoted lambda/列表等）
+        # 时，参数绑定 PUSH_G 操作数指向的符号与真实参数槽错位（t08/t8e：
+        # `(mapcar '(lambda (x) ...) lst)` 的 lst 在 slots 尾部，绑定操作数却
+        # 指向 lambda 参数 X）。此时用尾部 argc 个去重符号（逆序）覆写参数名。
+        if (
+            self.is_stub_format
+            and not self._stub_is_multi_func
+            and args
+            and self._defun_headers_are_argc()
+            and instructions
+            and instructions[0].op_name == "DEFUN"
+        ):
+            _ops = instructions[0].operands
+            if len(_ops) >= 2 and _ops[0] == len(args) and _ops[3] in (0, 1):
+                tail_args = self._stub_tail_arg_names(len(args))
+                if tail_args and len(tail_args) == len(args):
+                    # 仅当现有操作数解析的参数名与尾部符号不一致（错位）时覆写，
+                    # 避免破坏参数名已正确解析的简单单函数文件（t13 等）。
+                    existing = [n.upper() for _, n in args]
+                    tail_up = [n.upper() for n in tail_args]
+                    if existing != tail_up:
+                        args = [(slot, name) for (slot, _), name in zip(args, tail_args)]
 
         # DEFUN 头（0x14，仅真 stub）：b1=参数(总)/b2=最低参数/b3/b4=00有限|01无限
         _read = False

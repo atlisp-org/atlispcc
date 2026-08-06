@@ -159,7 +159,7 @@ f.optional`）打印警告（非阻断），提示建议 `(defun f (x &rest r))`
 > 已随 v0.1.16 发布，并锁入 `test_rest_param_name_recovered_single` /
 > `test_optional_param_name_recovered_single`。
 
-### 3.5c 多函数变参反编译参数名错位（遗留）
+### 3.5c ✅ 已解决：多函数变参反编译参数名错位
 
 **现象**：多函数文件含 `&optional`/`&rest` 时，首个函数的参数名反编译错位。
 例 `(defun a1 (x &optional y) ...)`（与 `b1` 同文件）反编译为
@@ -172,11 +172,25 @@ f.optional`）打印警告（非阻断），提示建议 `(defun f (x &rest r))`
 （`build_mvar_tables`）对紧凑 stub 不完整（末位符号槽缺失），参数槽无法
 正确解析回符号名。
 
+**修复**（`decompiler/fas4_decompiler.py` `_extract_signature`，解码器侧纯修复，
+不动字节码）：
+- 多函数紧凑 stub：参数绑定 `PUSH_G` 操作数 `o` 的 gvar 槽寻址（槽 - 1）在
+  nsyms 截断的 gvar 表之外时，真实符号 = `symbol_slots[o+1]`（t01/t09/t18
+  A、N 实测）。仅当 gvar 表本身越界时启用，避免破坏 t15/t09 等参数已在 gvar
+  表内的文件。
+- 单函数紧凑 stub：参数符号在 `symbol_slots` 尾部按"字节码引用序逆序注册"，
+  用尾部 argc 个去重符号（逆序）覆写参数名（`_stub_tail_arg_names`），修复
+  quoted lambda 等引用字面量导致的绑定操作数错位。
+- 回归测试：`test_multi_func_plain_args_name_recovered`、
+  `test_multi_func_variadic_name_recovered`、`test_multi_func_three_args_name_recovered`
+  （test_variadic_args.py）、`test_t01_golden_multi_func_arg_names`
+  （test_compile_decompile.py，直接解 t01_math_cad.fas CAD golden）。
+
 > **注意**：曾尝试在多函数路径同步纳入 optional/rest（改变符号槽序），但会
 > 改变 CAD 已验证可用的 t19 槽位布局（REST@4→@5），有回归风险，已回退。
-> 多函数变参**字节码保持原样**（CAD 可用），仅反编译名错待修。
+> 多函数变参**字节码保持原样**（CAD 可用），仅反编译名错已修。
 
-### 3.5d 反编译 `(list (or a 0))` / `(list (if a a 0))` 展开缺陷（遗留）
+### 3.5d ✅ 已解决：反编译 `(list (or a 0))` / `(list (if a a 0))` 展开缺陷
 
 **现象**：`(defun f (a b) (list (or a 0) (or b 0)))` 反编译为
 `(list T T)` + 独立的 `(or (or a 0) (or b 0))`；`(list (if a a 0) ...)`
@@ -185,12 +199,31 @@ f.optional`）打印警告（非阻断），提示建议 `(defun f (x &rest r))`
 **根因**：`or`/`if` 编译进参数位置时含 `PUSH_T`/`COND_OR` 等控制流指令，
 反编译器按顶层表达式渲染，未折叠回参数位置。
 
-### 3.5e 反编译 lambda 参数遮蔽外层参数（遗留）
+**修复**（`decompiler/fas4_decompiler.py` `_render_block`）：
+- `or`/`and` 短路链收尾：`COND_AND` 的跳转目标是紧随其后的 `PUSH_T`
+  （codegen `_emit_short_circuit` 的 END 标签）时，把累积链折叠为单个表达式
+  并吞掉该 `PUSH_T`，不再泄漏裸 `T`。
+- 表达式位 `if`：then 分支末尾无 `POP`（值流入 JUMP/else 供后续调用消费）时，
+  把 `(if ...)` 压栈作值而非作为语句；且该分支前不 `flush_stack()`，避免后续
+  分支的 flush 把前一个 if 值当语句丢弃。
+- 回归测试：`test_or_expr_folded_not_leaked`、`test_list_or_args_folded`、
+  `test_list_if_args_folded`、`test_if_expr_in_call_folded`
+  （test_compile_decompile.py）。
+
+### 3.5e ✅ 已解决：反编译 lambda 参数遮蔽外层参数
 
 **现象**：`(defun f (lst) (mapcar '(lambda (x) (* x 2)) lst))` 反编译为
 `(defun f (x) ...)`（`lst`→`x`，外层参数被 lambda 参数名遮蔽）。
 
-**根因**：反编译器对 lambda 内的符号槽命名复用/冲突处理不完整。
+**根因**：反编译器对 lambda 内的符号槽命名复用/冲突处理不完整。参数绑定
+`PUSH_G` 操作数指向 lambda 参数 X（其符号槽在 quoted lambda 常量内先注册），
+而真实参数 `lst` 在 `symbol_slots` 尾部。
+
+**修复**（`decompiler/fas4_decompiler.py` `_extract_signature` +
+`_stub_tail_arg_names`）：单函数 stub 从 `symbol_slots` 尾部 argc 个去重符号
+逆序取参数名，`lst` 与 lambda 参数 `x`/`y` 各自保留。回归测试：
+`test_lambda_param_no_shadow`、`test_lambda_distinct_param_names`
+（test_compile_decompile.py）。
 
 ### 3.6 链接器多函数 CAD 只注册首个函数（优先级：高）
 
@@ -218,11 +251,20 @@ link：square 因 `add_force` 在槽 2），导致 `build_module_code` 的
 `lk_comb` 与 `multi2`（cmd 跨调用，CAD 已验证全注册）sec2/USUBR **完全对齐**；
 167/167 测试通过。CAD 实测受 3.7 环境不稳定干扰，恢复后复核。
 
+**复核（2026-08-07）**：链接器 §3.6 注册修复已就位（10 项 linker 测试全绿）。
+复核发现一个**遗留 cosmetic 限制**：跨文件链接多参数函数时，合并输出的
+参数名可能不理想（如 `sum-squares (a b)` 链接后反编译为 `(x arg_2)`）。
+字节码**功能正确**（CAD 按位置绑定参数，函数体内引用一致可运行），仅参数
+名非源码名。尝试用 `_pre_gvar`（合并 gvar 槽 - 1）重映射参数绑定/读取操作数
+可修好该例，但破坏 `test_link_first_definition_wins`（碰撞场景的参数符号在
+nsyms 截断区，映射不可靠）。已回退，保持 HEAD 稳定行为。根治需按合并
+symbol_slots 布局重算参数槽（风险高，CAD 复核后方可推进）。
+
 **技术路线**：
 - 用 CAD 实测链接输出的模块代码/函数注册，对比单文件多函数（cmd）
-  的差异（cmd 多函数 CAD 全注册可用）
+   的差异（cmd 多函数 CAD 全注册可用）
 - 检查 `build_module_code` 多函数变体在链接场景的 PUSH_G/SETQ_G 槽
-  与合并符号表的对应
+   与合并符号表的对应
 - 验证 `_func_ranges_bytes`（多函数代码引用范围）在链接输出的正确性
 
 ### 3.7 CAD 运行环境稳定性（优先级：中/运维）⚠️ 严重
@@ -612,3 +654,88 @@ i18n 原文件 byte-identity 锁入 `test_i18n_original_byte_identity`）
   交错混合模式）编译 seg0+nsyms+seg1 与 `tests/cad/i18n-cad.fas` 逐字节一致，
   锁入 `test_i18n_original_byte_identity` 回归。拆分件 p01-p07 亦全对齐
 - `cad_verify.py` 真机 15/15（独立实例流程）
+
+# 10. 反编译正确性完善计划（2026-08-07 版，P0 三缺陷）
+
+## 10.1 目标
+
+修复 §3.5c/§3.5d/§3.5e 三个反编译正确性缺陷（均为**解码器侧纯修复**，
+不动字节码，CAD byte-identity 不受影响）。基线：`pytest` 276 passed + 1 skip。
+
+## 10.2 执行阶段
+
+### 阶段 1：§3.5c 多函数参数名错位 ✅ 已完成
+
+**现象**：`t01_math_cad.fas`（CAD golden，add/multiply 各 2 参）反编译为
+`(defun add (b arg_2))`；多函数 + argc>1 全部触发。
+
+**修复**（`_extract_signature`）：
+- 多函数 stub：gvar 表越界时操作数 `o` 真实符号 = `symbol_slots[o+1]`
+- 单函数 stub：`_stub_tail_arg_names` 从 `symbol_slots` 尾部取 argc 个去重符号逆序
+
+**测试**：`test_multi_func_*`（3 例）+ `test_t01_golden_multi_func_arg_names`
+（直接解 CAD golden）+ `test_lambda_*`（§3.5e 同路径）。t01/t09/t18/t13/t15
+golden 解译参数名全对齐。
+
+### 阶段 2：§3.5d or/if 参数位展开 ✅ 已完成
+
+**修复**（`_render_block`）：
+- `COND_AND` 目标为紧随 `PUSH_T`（短路链 END）时折叠链并吞掉 `PUSH_T`
+- 表达式位 `if`（then 分支无 POP）：压栈作值 + 分支前不 `flush_stack()`
+
+**测试**：`test_or_expr_folded_not_leaked`、`test_list_or_args_folded`、
+`test_list_if_args_folded`、`test_if_expr_in_call_folded`。
+
+### 阶段 3：§3.5e lambda 参数遮蔽 ✅ 已完成
+
+**修复**（`_extract_signature` + `_stub_tail_arg_names`）：单函数 stub 参数名
+取 `symbol_slots` 尾部，`lst` 与 lambda 参数 `x`/`y` 各自保留。
+
+**测试**：`test_lambda_param_no_shadow`、`test_lambda_distinct_param_names`。
+
+### 阶段 4：§10.4 遗留缺陷（共享参数 / `/` 误判 / 循环协议）✅ 已完成
+
+- **共享参数**（t07/t08，多函数共用 lst）：新增 `_stub_extended_gvar`
+  （基础 gvar 表 + symbol_slots 尾部未入表符号），参数按 gvar 槽 - 1 寻址
+  时 `operand → extended[o+1]`（t08 op5→LST@6、t07 op7→LST@8 实测）。
+  仅用于 `_extract_signature` 参数名解析，不改全局 gvar 表（避免打乱函数体
+  引用回退）。t07 `get-first/get-rest (lst)`、`pair (a b)`、t08 `sum-list/
+  double-all (lst)` 全部对齐。
+- **`/` 误判**（t12）：`_localize_assigned_globals` 仅当函数声明 `/ 局部变量`
+  （`func.locals` 非空或 `local_binding_names`）时把 setq 目标加入局部表；
+  否则 setq 目标是全局（t12 `(setq lst '(a b c))` 不再输出 `/ lst`）。t11
+  `_al-bind-alist` 局部变量不受影响。
+- **循环协议**（t16/t17）：`_defun_headers_are_argc` 无目录扫描允许
+  `b1 == b3+1`（foreach/repeat 的 DEFUN 头 b1=argc+1，t16 之前被误判为
+  自包含格式）；新增 `_detect_repeat_setup`（体前 `GET_LOCAL; DEC; SET_LOCAL`
+  递减协议），`(repeat n ...)` 正确渲染。t16 `sum-foreach (lst)` + foreach、
+  t17 `repeat-count (n)` + repeat 结构正确。
+
+**测试**：`test_t08_golden_shared_arg_names`、`test_t07_golden_shared_arg_names`、
+`test_t12_golden_global_setq_not_localized`、`test_t16_golden_foreach_arg_and_structure`、
+`test_t17_golden_repeat_arg_and_structure`（均直接解 CAD golden）。
+
+## 10.3 验收
+
+- ✅ `pytest` 291 passed + 1 skip（较基线 +15 回归用例，无 xfail）
+- ✅ 全部 t-series golden 参数名/结构比对：t01-t13/t15/t18 全对齐；t14
+  `c:add(/ a b)` 为**有意设计**（c: 命令函数参数本地化，`_emit_function`
+  行 1375-1380）；t16/t17 参数名与循环结构正确，仅 `total`/`acc` 等全局
+  setq 目标被本地化（cosmetic，功能等价）
+- ✅ 字节级：CAD byte-identity 测试（18/18）不回归
+
+## 10.4 遗留（cosmetic，功能等价）
+
+- t14 `c:add(/ a b)`：c: 命令函数参数被有意本地化（CAD 以无参调用 c: 命令）
+- t16 `sum-foreach(lst / total x)`、t17 `repeat-count(n / acc)`：循环函数的
+  全局 setq 目标（total/acc）被本地化；setq 初始化语句渲染在循环后（setq
+  重排 artifact，同 t11）。功能正确，仅与源码全局语义略有差异
+- t16/t17 `/ locals` 顺序（`/ total x` vs 源码无 `/`）：同上 cosmetic
+
+## 10.5 涉及文件
+
+- `decompiler/fas4_decompiler.py`：`_extract_signature`、`_render_block`、
+  `_stub_tail_arg_names`、`_stub_extended_gvar`、`_stub_is_multi_func`、
+  `_detect_repeat_setup`、`_detect_loop`、`_localize_assigned_globals`、
+  `_defun_headers_are_argc`
+- `tests/test_variadic_args.py`、`tests/test_compile_decompile.py`

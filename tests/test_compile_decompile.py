@@ -10,7 +10,14 @@ from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.resource_builder import ResourceBuilder
 from compiler.fas_writer import FasWriter
 from compiler.ast_nodes import Defun
-from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
+from decompiler.fas4_decompiler import (
+    Fas4Parser,
+    Disassembler,
+    ControlFlowAnalyzer,
+    LispGenerator,
+    Fas4Decompiler,
+    is_compact_stub,
+)
 from tools.validate import tokenize, parse_tokens, validate_ast
 
 
@@ -315,6 +322,22 @@ def test_args_preserved():
     assert ok, f'Validation failed: {errs}'
 
 
+def test_t01_golden_multi_func_arg_names():
+    """§3.5c：多函数 + argc>1 的 CAD golden 参数名恢复。
+
+    t01_math_cad.fas 是 CAD `vlisp-compile` 产物（add/multiply 各 2 参）。
+    末位参数符号槽落在 nsyms 截断的 gvar 表之外，需从 symbol_slots[op+1]
+    解析，否则反编译为 `(b arg_2)`。
+    """
+    golden = os.path.join(os.path.dirname(__file__), 'cad', 't01_math_cad.fas')
+    if not os.path.exists(golden):
+        pytest.skip('t01_math_cad.fas golden not present')
+    result = Fas4Decompiler().decompile(golden, None)
+    assert '(defun add (a b)' in result
+    assert '(defun multiply (a b)' in result
+    assert 'arg_' not in result
+
+
 def test_local_vars():
     src = '(defun sum-to-n (n / result i) (setq result 0) (setq i 1) (while (<= i n) (setq result (+ result i)) (setq i (+ i 1))) result)'
     result = compile_and_decompile(src)
@@ -450,6 +473,119 @@ def test_and_or():
     assert '(or a b)' in result or 'or' in result
     ok, errs = _validate(result)
     assert ok, f'Validation failed: {errs}'
+
+
+def test_or_expr_folded_not_leaked():
+    """§3.5d：`(or ...)` 作为表达式值应折叠为 `(or ...)`，不泄漏裸 `T`。"""
+    result = compile_and_decompile("(defun f (a) (or a 0))")
+    assert '(or a 0)' in result
+    assert 'arg_' not in result
+
+
+def test_list_or_args_folded():
+    """§3.5d：`(list (or a 0) (or b 0))` 折叠进 list 参数位。"""
+    result = compile_and_decompile("(defun f (a b) (list (or a 0) (or b 0)))")
+    assert '(list (or a 0) (or b 0))' in result.replace('\n', ' ')
+
+
+def test_list_if_args_folded():
+    """§3.5d：`(list (if a a 0) (if b b 0))` 折叠进 list 参数位。"""
+    result = compile_and_decompile("(defun f (a b) (list (if a a 0) (if b b 0)))")
+    flat = result.replace('\n', ' ')
+    assert '(list (if a' in flat and '(if b' in flat
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_if_expr_in_call_folded():
+    """§3.5d：`(+ (if a 1 2) 3)` 中 if 折叠进参数位。"""
+    result = compile_and_decompile("(defun f (a b) (+ (if a 1 2) 3))")
+    flat = result.replace('\n', ' ')
+    assert '(if a' in flat and '(+' in flat
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_lambda_param_no_shadow():
+    """§3.5e：单函数含 quoted lambda 时，外层参数不被 lambda 参数名遮蔽。
+
+    `(mapcar '(lambda (x) (* x 2)) lst)` 的 lst 位于符号槽尾部，若按
+    绑定操作数解析会得到 lambda 参数 X。单函数 stub 应从符号槽尾部取参数名。
+    """
+    result = compile_and_decompile("(defun f (lst) (mapcar '(lambda (x) (* x 2)) lst))")
+    assert '(defun f (lst)' in result
+    assert 'arg_' not in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_lambda_distinct_param_names():
+    """§3.5e：外层参数与 lambda 参数名不同，均正确保留。"""
+    result = compile_and_decompile("(defun f (lst) (mapcar '(lambda (y) (* y 2)) lst))")
+    assert '(defun f (lst)' in result
+    assert 'lambda (y)' in result or "lambda" in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
+def test_t08_golden_shared_arg_names():
+    """§10.4：多函数共享参数（t08 两个函数共用 lst）参数名恢复。
+
+    共享参数符号在 symbol_slots 尾部（`参数放最后`），需用扩展 gvar 表
+    （基础表 + 尾部未入表符号）按 gvar 槽 - 1 寻址。
+    """
+    golden = os.path.join(os.path.dirname(__file__), 'cad', 't08_apply_mapcar_cad.fas')
+    if not os.path.exists(golden):
+        pytest.skip('t08_apply_mapcar_cad.fas golden not present')
+    result = Fas4Decompiler().decompile(golden, None)
+    assert '(defun sum-list (lst)' in result
+    assert '(defun double-all (lst)' in result
+    assert 'arg_' not in result
+
+
+def test_t07_golden_shared_arg_names():
+    """§10.4：t07 get-first/get-rest 共享参数 lst 恢复。"""
+    golden = os.path.join(os.path.dirname(__file__), 'cad', 't07_list_cad.fas')
+    if not os.path.exists(golden):
+        pytest.skip('t07_list_cad.fas golden not present')
+    result = Fas4Decompiler().decompile(golden, None)
+    assert '(defun get-first (lst)' in result
+    assert '(defun get-rest (lst)' in result
+    assert '(defun pair (a b)' in result
+
+
+def test_t12_golden_global_setq_not_localized():
+    """§10.4：t12 全局 setq 目标不被误判为 `/ 局部变量`。
+
+    `(defun test-quote () (setq lst '(a b c)))` 的 lst 是全局变量，函数
+    无 `/` 局部变量，不应输出 `/ lst`。
+    """
+    golden = os.path.join(os.path.dirname(__file__), 'cad', 't12_quote_cad.fas')
+    if not os.path.exists(golden):
+        pytest.skip('t12_quote_cad.fas golden not present')
+    result = Fas4Decompiler().decompile(golden, None)
+    assert '(defun test-quote ()' in result
+    assert 'test-quote (/ lst' not in result
+
+
+def test_t16_golden_foreach_arg_and_structure():
+    """§10.4：t16 foreach 函数参数名 lst 恢复 + foreach 结构正确。"""
+    golden = os.path.join(os.path.dirname(__file__), 'cad', 't16_foreach_cad.fas')
+    if not os.path.exists(golden):
+        pytest.skip('t16_foreach_cad.fas golden not present')
+    result = Fas4Decompiler().decompile(golden, None)
+    assert '(defun sum-foreach (lst' in result
+    assert '(foreach x lst' in result
+
+
+def test_t17_golden_repeat_arg_and_structure():
+    """§10.4：t17 repeat 函数参数名 n 恢复 + repeat 结构正确。"""
+    golden = os.path.join(os.path.dirname(__file__), 'cad', 't17_repeat_cad.fas')
+    if not os.path.exists(golden):
+        pytest.skip('t17_repeat_cad.fas golden not present')
+    result = Fas4Decompiler().decompile(golden, None)
+    assert '(defun repeat-count (n' in result
+    assert '(repeat n' in result
 
 
 def test_defun_q():
