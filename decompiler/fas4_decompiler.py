@@ -92,6 +92,7 @@ def is_compact_stub(bytecode: bytes, function_catalog: list, sym_count: int = 0)
 class Fas4Parser:
     def decode_text(self, raw: bytes) -> str:
         from core.fas_core import decode_fas_text
+
         return decode_fas_text(raw)
 
     def parse_resource_stream(self, res_data: bytes) -> Tuple[List[Any], List[Tuple[int, Any]], List[str]]:
@@ -236,6 +237,7 @@ class Fas4Parser:
         with open(filepath, "rb") as f:
             data = f.read()
         from core.fas_core import find_fas4_magic
+
         hpos, hdr = find_fas4_magic(data)
         if hpos is None:
             raise ValueError("Not a valid FAS4 file")
@@ -341,9 +343,9 @@ class Disassembler:
         0x34: ("EVAL", "e"),
         0x37: ("BUILD_LIST_ALT", "2"),
         0x38: ("OP_38", ""),
-         0x39: ("BUILD_LIST", "2"),
-         0x3A: ("DEFCODE", ""),
-         0x3B: ("PUSH_REAL", "z"),
+        0x39: ("BUILD_LIST", "2"),
+        0x3A: ("DEFCODE", ""),
+        0x3B: ("PUSH_REAL", "z"),
         0x3C: ("JMP16_IFNOT_ALT", "2"),
         0x3D: ("JMP16_IF_ALT", "2"),
         0x3E: ("EXIT_IF_NOT_ZERO", ""),
@@ -387,6 +389,7 @@ class Disassembler:
         # stub 格式 PUSH_VALUE 单字节/3字节 启发式的有效符号上限：
         # 用符号槽总数（可能 > nsyms），默认退化为 nsyms。
         effective_syms = sym_count if sym_count is not None else nsyms
+        prev_op = None
         while i < len(bytecode):
             op = bytecode[i]
             entry = self.OPCODES.get(op)
@@ -412,9 +415,13 @@ class Disassembler:
                     elif op == 0x03 and self.short_subr:
                         # stub 中 PUSH_VALUE[0] 编码为单字节 `03`，
                         # PUSH_VALUE[idx>0] 为 `03 <u16>`。用有效符号上限启发式区分。
+                        # 补充：调用协议占位 `03` 前总跟 `00`（NIL，`... USUBR; 00; 03`），
+                        # 而真实 3 字节 PUSH_VALUE（符号/参数引用）前为参数/指令。
+                        # 故 `prev_op == 0x00` 时判为单字节占位（i18n `03 32 00`
+                        # = 占位 + PUSH_INT8 0 实测，否则被误读为 PUSH_VALUE[50]）。
                         if i + 2 < len(bytecode):
                             idx = struct.unpack("<H", bytecode[i + 1 : i + 3])[0]
-                            if idx < effective_syms:
+                            if idx < effective_syms and prev_op != 0x00:
                                 inst.operands = [idx]
                                 inst.size = 3
                             else:
@@ -493,13 +500,18 @@ class Disassembler:
                 inst = Instruction(offset=i, opcode=op, op_name=f"UNK_{op:02x}")
                 inst.size = 1
             instructions.append(inst)
+            prev_op = op
             i += inst.size
         return instructions
 
 
 class ControlFlowAnalyzer:
-    def __init__(self, instructions: List[Instruction], function_catalog: Optional[List[Tuple[str, int]]] = None,
-                 function_names: Optional[Dict[int, str]] = None):
+    def __init__(
+        self,
+        instructions: List[Instruction],
+        function_catalog: Optional[List[Tuple[str, int]]] = None,
+        function_names: Optional[Dict[int, str]] = None,
+    ):
         self.instructions = instructions
         self.function_catalog = function_catalog or []
         self.function_names = function_names or {}
@@ -768,6 +780,7 @@ class LispGenerator:
         if self.is_stub_format:
             try:
                 from core.fas_core import build_mvar_tables
+
                 _, self.gvar_table = build_mvar_tables(self.fas.sec2_data, self.fas.nsyms)
             except Exception:
                 self.gvar_table = []
@@ -833,6 +846,7 @@ class LispGenerator:
                     return a == b_ == c
                 return False
         return False
+
     def _has_stub_defcode_seq(self) -> bool:
         d = getattr(self.fas, "sec2_data", b"") or b""
         i = 0
@@ -844,7 +858,7 @@ class LispGenerator:
                     j += 4
                 else:
                     j += 1
-                if j < len(d) and d[j] == 0x5b:
+                if j < len(d) and d[j] == 0x5B:
                     k = d.find(b"\x00\x00\x3a", j)
                     if k >= 0:
                         return True
@@ -1564,11 +1578,7 @@ class LispGenerator:
                     b_start = info["body_starts"][j] + 1
                     b_end = info["body_ends"][j]
                     body_lines = self._render_block(spec, instructions, b_start, b_end, indent + 2)
-                    results = [
-                        ln.strip()
-                        for ln in body_lines
-                        if ln.strip() and not ln.strip().startswith(";;")
-                    ]
+                    results = [ln.strip() for ln in body_lines if ln.strip() and not ln.strip().startswith(";;")]
                     clauses.append(" ".join([test] + results))
                 cond_text = "(cond"
                 for c in clauses:
@@ -1593,7 +1603,8 @@ class LispGenerator:
                 if (
                     target_idx is not None
                     and start <= target_idx <= end
-                    and instructions[target_idx].op_name in ("JMP16_IF", "JMP16_IF_ALT", "JMP16_IFNOT", "JMP16_IFNOT_ALT")
+                    and instructions[target_idx].op_name
+                    in ("JMP16_IF", "JMP16_IF_ALT", "JMP16_IFNOT", "JMP16_IFNOT_ALT")
                 ):
                     pending_logic.append(
                         {
@@ -2094,8 +2105,7 @@ class LispGenerator:
                     local_binding_names.extend(symbol_list)
                     continue
                 raw_name = self._gvar_symbol_gvar(left[1]) or f"arg_{len(args) + 1}"
-                if self.is_stub_format and (raw_name in seen_arg_names or
-                                            not any(c.isalpha() for c in raw_name)):
+                if self.is_stub_format and (raw_name in seen_arg_names or not any(c.isalpha() for c in raw_name)):
                     j = left[1] + 1
                     if j < len(self.symbol_slots):
                         alt = self._extract_symbol_text(self.symbol_slots[j])
@@ -2648,10 +2658,16 @@ class Fas4Decompiler:
         parser = Fas4Parser()
         fas = parser.parse(filepath)
         disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots)))
-        instructions = disasm.disassemble(fas.bytecode, fas.nsyms,
-                                          sym_count=len(fas.symbol_slots) if is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots)) else None)
-        cf = ControlFlowAnalyzer(instructions, fas.function_catalog,
-                                 function_names=extract_stub_function_names(fas))
+        instructions = disasm.disassemble(
+            fas.bytecode,
+            fas.nsyms,
+            sym_count=(
+                len(fas.symbol_slots)
+                if is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots))
+                else None
+            ),
+        )
+        cf = ControlFlowAnalyzer(instructions, fas.function_catalog, function_names=extract_stub_function_names(fas))
         functions = cf.find_functions()
         gen = LispGenerator(fas)
         code = gen.generate(functions, filepath)

@@ -10,7 +10,13 @@ from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
 from compiler.ast_nodes import Defun, Defpackage, InPackage, Setq
 from compiler.opt import optimize
-from compiler.resource_builder import ResourceBuilder, build_module_code, build_command_module_code, count_resource_records, resolve_encoding
+from compiler.resource_builder import (
+    ResourceBuilder,
+    build_module_code,
+    build_command_module_code,
+    count_resource_records,
+    resolve_encoding,
+)
 from compiler.fas_writer import FasWriter
 from compiler.analyzer import analyze
 from compiler.linker import link_fas
@@ -18,21 +24,32 @@ from compiler.vlx_builder import build_vlx
 from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
 from tools.validate import validate_file
 
-
-ENCODE_POP = bytes([0x0a])
+ENCODE_POP = bytes([0x0A])
 
 
 def _collect_builtins_for_stub(symtab, node):
     """stub 模式下将调用到的内建函数注册为符号槽（CAD stub 用符号槽编址调用）。"""
     from compiler.ast_nodes import (
-        Call, Defun, Setq, IfNode, WhileNode, ForeachNode,
-        RepeatNode, Progn, ListExpr, QuotedExpr, LambdaNode, Cond, Symbol,
+        Call,
+        Defun,
+        Setq,
+        IfNode,
+        WhileNode,
+        ForeachNode,
+        RepeatNode,
+        Progn,
+        ListExpr,
+        QuotedExpr,
+        LambdaNode,
+        Cond,
+        Symbol,
     )
+
     if isinstance(node, Defun):
         for expr in node.body:
             _collect_builtins_for_stub(symtab, expr)
     elif isinstance(node, Call):
-        if symtab.is_builtin(node.name) and node.name not in ('T', 'nil'):
+        if symtab.is_builtin(node.name) and node.name not in ("T", "nil"):
             symtab.get_or_add(node.name)
         for a in node.args:
             _collect_builtins_for_stub(symtab, a)
@@ -78,16 +95,25 @@ def _collect_builtins_for_stub(symtab, node):
             _collect_builtins_for_stub(symtab, expr)
 
 
-def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None) -> bytes:
+def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: int = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
     CAD 实测逆向：
     - USUBR 调用符号的 gvar 槽 = idx + 1（idx = gvar 槽 - 1）
     - 参数绑定/读取槽 = 参数符号的 gvar 槽 - 1（越界符号 gvar 槽假定 = nsyms）
     codegen 用占位生成，此处用资源段 GVARINIT 重建的 gvar 表修正。
+
+    当 codegen 内嵌 `(function (lambda ...))`（kwote）时，codegen 会把 `-lambda-`
+    追加进 symtab.entries，使 fas_nsyms（len(entries)-module_reg_count+1）比
+    codegen 构造时的 nsyms 大 1；而 `-lambda-` 不参与资源段符号注册，导致
+    seg0 引用（gvar 槽 - 1）整体再偏移 1。此时应使用 gvar 槽 - 2（i18n 实测
+    PKG-NAME fg[88]→参数槽 86、ASSOC fg[90]→USUBR 88）。t01 等无 kwote 文件
+    fas_nsyms==codegen_nsyms，保持 gvar 槽 - 1。
     """
+    offset = (nsyms - codegen_nsyms) if codegen_nsyms is not None else 0
     try:
         from core.fas_core import build_mvar_tables
+
         rg, fg = build_mvar_tables(seg1, nsyms)
     except Exception:
         return seg0
@@ -104,15 +130,15 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         `('SYMBOL', name)`、`('INT', v)` 等标记。递归转换以便结构匹配。
         """
         if isinstance(v, tuple) and len(v) == 2:
-            if v[0] == 'LIST':
+            if v[0] == "LIST":
                 return tuple(_strip_list_markers(i) for i in v[1])
-            if v[0] == 'SYMBOL':
-                return ('SYMBOL', str(v[1]).upper())
-            if v[0] in ('INT', 'INT8', 'INT32'):
+            if v[0] == "SYMBOL":
+                return ("SYMBOL", str(v[1]).upper())
+            if v[0] in ("INT", "INT8", "INT32"):
                 return int(v[1])
-            if v[0] == 'REAL':
+            if v[0] == "REAL":
                 return float(v[1])
-            if v[0] in ('STRING', 'T', 'NIL'):
+            if v[0] in ("STRING", "T", "NIL"):
                 return v
         if isinstance(v, (list, tuple)):
             return tuple(_strip_list_markers(i) for i in v)
@@ -123,11 +149,12 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     # loc-file 单元素列表 fg[94]）。排除原子（SYMBOL/STRING/REAL/CONS/FUNC）。
     const_map: dict = {}
     for idx, v in enumerate(fg):
-        if isinstance(v, tuple) and not (len(v) == 2 and v[0] in ('SYMBOL', 'STRING', 'REAL', 'CONS', 'FUNC')):
+        if isinstance(v, tuple) and not (len(v) == 2 and v[0] in ("SYMBOL", "STRING", "REAL", "CONS", "FUNC")):
             const_map.setdefault(v, idx)
     if not gvar_map:
         return seg0
     from decompiler.fas4_decompiler import Disassembler
+
     try:
         insts = Disassembler(short_subr=True).disassemble(seg0, nsyms, sym_count=len(symtab.entries))
     except Exception:
@@ -154,7 +181,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
         if multi and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
             arg = cur_args[arg_i]
-            new_idx = gvar_slot(arg) - 1
+            new_idx = gvar_slot(arg) - 1 - offset
             if 0 <= new_idx <= 0xFFFF:
                 out += bytes([0x09, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                 arg_i += 1
@@ -163,10 +190,13 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         elif multi and inst.op_name == "PUSH_VALUE" and inst.size == 3 and cur_args is not None and inst.operands:
             idx = inst.operands[0]
             argc = len(cur_args)
-            i = idx - nsyms + argc
+            # codegen 参数读取槽 = codegen_nsyms - argc + i（多函数正序），
+            # 反解参数序号须用 codegen_nsyms 而非 fas_nsyms（后者含 -lambda- 槽）。
+            base = codegen_nsyms if codegen_nsyms is not None else nsyms
+            i = idx - base + argc
             if 0 <= i < len(cur_args):
                 arg = cur_args[i]
-                new_idx = gvar_slot(arg) - 1
+                new_idx = gvar_slot(arg) - 1 - offset
                 if 0 <= new_idx <= 0xFFFF:
                     out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                     continue
@@ -180,19 +210,24 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             # 参数绑定 PUSH_G（DEFUN 后 argc 个）：多函数由上方分支修正并
             # continue（不到此处）；单函数 codegen 已输出正确槽（nsyms-1）。
             # 此处跳过，避免被当作 CONST/STRING 误改。
-            is_arg_bind = (
-                inst.op_name == "PUSH_G"
-                and cur_args is not None
-                and arg_i < len(cur_args)
-            )
+            is_arg_bind = inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args)
             if is_arg_bind:
                 arg_i += 1
-                out += seg0[inst.offset:inst.offset + inst.size]
+                out += seg0[inst.offset : inst.offset + inst.size]
                 continue
             if multi:
                 sym = sym_of(inst.operands[0])
                 if sym and sym in gvar_map:
-                    new_idx = gvar_map[sym] - 1
+                    new_idx = gvar_map[sym] - 1 - offset
+                    if 0 <= new_idx <= 0xFFFF:
+                        opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
+                        out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                        continue
+                if sym == "-LAMBDA-":
+                    # kwote 内嵌 `-lambda-`：不参与资源段符号注册，引用槽固定为
+                    # 符号槽末尾（gvar 槽 = nsyms，操作数 = nsyms - 1，i18n-cad
+                    # 实测 `PUSH_G[91]`，nsyms=92）。
+                    new_idx = nsyms - 1
                     if 0 <= new_idx <= 0xFFFF:
                         opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
                         out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
@@ -212,7 +247,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 and len(cur_args)
                 and nsyms - len(cur_args) <= idx0 < nsyms
             ):
-                out += seg0[inst.offset:inst.offset + inst.size]
+                out += seg0[inst.offset : inst.offset + inst.size]
                 continue
             if 0 <= idx0 < len(symtab.entries):
                 etype = symtab.entries[idx0][0]
@@ -220,27 +255,37 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     const_structure = symtab.entries[idx0][1]
                     # quoted 单符号 `'sym`：作为符号引用，按 gvar 槽编址
                     # （i18n 实测 `'sym` → SYM 的 gvar 槽；CAD quoted symbol）。
-                    if (isinstance(const_structure, tuple) and len(const_structure) == 2
-                            and const_structure[0] == 'SYMBOL'):
+                    if (
+                        isinstance(const_structure, tuple)
+                        and len(const_structure) == 2
+                        and const_structure[0] == "SYMBOL"
+                    ):
                         gslot = gvar_map.get(str(const_structure[1]).upper())
                         if gslot is not None:
-                            new_idx = gslot - 1
+                            new_idx = gslot - 1 - offset
                         else:
                             new_idx = idx0 - len(func_args) + 1
                     else:
                         fgstruct = _strip_list_markers(const_structure)
                         gslot = const_map.get(fgstruct)
                         if gslot is not None:
-                            new_idx = gslot - 1
+                            new_idx = gslot - 1 - offset
                         else:
                             # 未命中 fg（如简单常量）：沿用原公式
                             # gvar 槽 = symtab 槽 - nfuncs + 2 → 操作数 = - nfuncs + 1。
                             new_idx = idx0 - len(func_args) + 1
                 elif etype == "STRING":
-                    # 字符串 PUSH_G：多函数注册于符号槽末尾（gvar 槽 = nsyms，
-                    # 操作数 = nsyms-1）；单函数 codegen 已输出正确槽，不修正。
+                    # 字符串 PUSH_G：多函数若字符串已在 GVARINIT 表（fg 含 STRING
+                    # 项，i18n 实测 `""` fg[44] → 操作数 42 = gvar-1-offset）则按
+                    # gvar 槽映射；否则（单函数/表外）注册于符号槽末尾
+                    # （gvar 槽 = nsyms，操作数 = nsyms-1，t15 实测）。
                     if multi:
-                        new_idx = nsyms - 1
+                        strval = symtab.entries[idx0][1]
+                        gkey = str(strval).upper()
+                        if gkey in gvar_map:
+                            new_idx = gvar_map[gkey] - 1 - offset
+                        else:
+                            new_idx = nsyms - 1
                     else:
                         new_idx = None
                 else:
@@ -253,18 +298,37 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             argc, idx = inst.operands[0], inst.operands[1]
             sym = sym_of(idx)
             if sym and sym in gvar_map:
-                new_idx = gvar_map[sym] - 1
+                new_idx = gvar_map[sym] - 1 - offset
                 out += bytes([0x35, argc & 0xFF, new_idx & 0xFF])
             else:
-                out += seg0[inst.offset:inst.offset + inst.size]
+                out += seg0[inst.offset : inst.offset + inst.size]
             continue
-        out += seg0[inst.offset:inst.offset + inst.size]
+        elif inst.op_name == "FUNC" and len(inst.operands) >= 2:
+            # FUNC 第二个操作数为符号引用（gvar 槽 - 1，同 USUBR）。i18n 实测
+            # `_al-bind-alist` 调用 FUNC[1,84]（gvar 槽 86 → 84，kwote offset=1）。
+            argc, idx = inst.operands[0], inst.operands[1]
+            sym = sym_of(idx)
+            if sym and sym in gvar_map:
+                new_idx = gvar_map[sym] - 1 - offset
+                out += bytes([0x51, argc & 0xFF, new_idx & 0xFF])
+            else:
+                out += seg0[inst.offset : inst.offset + inst.size]
+            continue
+        out += seg0[inst.offset : inst.offset + inst.size]
     return bytes(out)
 
 
-def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: int = 0,
-                           top_level_count: int = 0, top_after_defun: bool = False,
-                           func_names: object = (), n_post_forms: int = 0) -> bytes:
+def _build_cad_module_code(
+    top_level_bc: bytes,
+    symtab,
+    other_forms,
+    n_funcs: int = 0,
+    top_level_count: int = 0,
+    top_after_defun: bool = False,
+    func_names: object = (),
+    n_post_forms: int = 0,
+    n_globals: int = 0,
+) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
     CAD 模块代码规则（逆向，AutoCAD 24.1s 实测）：
@@ -283,8 +347,8 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
     from compiler.codegen import CodeGenerator, BytecodeBuffer
 
     module_reg_count = n_funcs + top_level_count
-    out = bytearray(b'\x14\x01\x00\x00\x00')  # DEFUN 模块头
-    out += bytes([0x09]) + struct.pack('<H', module_reg_count + 1) + b'\x0a'  # 占位
+    out = bytearray(b"\x14\x01\x00\x00\x00")  # DEFUN 模块头
+    out += bytes([0x09]) + struct.pack("<H", module_reg_count + 1) + b"\x0a"  # 占位
 
     # 顶层语句按源码位置分组：最后一个 defun 之后的顶层语句（mix2 的
     # `(setq x 10)`、p04 的 `(setq *codepage* ...)` 与 `(if ...)`）排到函数
@@ -311,7 +375,11 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
         （如 if-then 分支最后一句）需按尾上下文编译（补 DUP，p04 实测）。
         """
         from compiler.ast_nodes import Symbol, String as _Str
+
         cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
+        # 模块代码上下文：顶层 if-then 的 setq 需 DUP、无 else if 补 PUSH_NIL
+        # （CAD 模块代码实测 `0b 06` / `01 0a`，i18n-cad）。
+        cg._module_mode = True
         handled = False
         if isinstance(form, Setq):
             # 多对 setq：CAD 输出全部 pair。中间 pair 用
@@ -329,7 +397,7 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
                 if _is_empty_quote(value):
                     pre += bytes([0x01])  # PUSH_NIL
                     v_ok = True
-                elif isinstance(value, Symbol) and value.name == 'nil':
+                elif isinstance(value, Symbol) and value.name == "nil":
                     pre += bytes([0x01])  # PUSH_NIL（CAD 用 PUSH_NIL 值 nil）
                     v_ok = True
                 else:
@@ -340,15 +408,15 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
                         # 非引号符号值：CAD 用 PUSH_VALUE（setcmp
                         # `(setq _ @::_)` 实测 `03 <槽+1>`）；字符串/引用
                         # 符号（QuotedExpr）用 PUSH_G。
-                        pre += bytes([0x03]) + struct.pack('<H', v_idx + 1)
+                        pre += bytes([0x03]) + struct.pack("<H", v_idx + 1)
                     else:
-                        pre += bytes([0x09]) + struct.pack('<H', v_idx + 1)  # PUSH_G
+                        pre += bytes([0x09]) + struct.pack("<H", v_idx + 1)  # PUSH_G
                     v_ok = True
                 if not v_ok:
                     break
                 if i == n - 1:
-                    pre += b'\x0b'  # DUP（仅在最后一对）
-                pre += bytes([0x06]) + struct.pack('<H', t_idx + 1)  # SETQ_G
+                    pre += b"\x0b"  # DUP（仅在最后一对）
+                pre += bytes([0x06]) + struct.pack("<H", t_idx + 1)  # SETQ_G
                 pairs_bc += pre
             else:
                 return bytes(pairs_bc)
@@ -362,6 +430,7 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
             # 注意：不能简单正则找 `06 ..`——USUBR 的 idx 字节可能为 0x06，
             # 需定位真正的 SETQ_G 指令偏移。
             from decompiler.fas4_decompiler import Disassembler
+
             _dis = Disassembler(short_subr=True)
             try:
                 _insts = _dis.disassemble(bc, len(symtab.entries), sym_count=len(symtab.entries))
@@ -372,7 +441,7 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
                 if _i.op_name == "SETQ_G":
                     _setq_off = _i.offset
             if _setq_off is not None:
-                bc = bc[:_setq_off] + b'\x0b' + bc[_setq_off:]
+                bc = bc[:_setq_off] + b"\x0b" + bc[_setq_off:]
         return _offset_slots(bc, len(symtab.entries))
 
     def _emit_stmts(forms, last_no_pop: bool):
@@ -383,55 +452,78 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
             stmt = _stmt_bytes(form, tail=tail)
             out += stmt
             if i < len(forms) - 1 or not last_no_pop:
-                out += b'\x0a'  # POP
+                out += b"\x0a"  # POP
 
-    _emit_stmts(pre_forms, last_no_pop=(n_funcs == 0 and not post_forms))
+    # ── 顶层语句分组（CAD 实测）─────────────────────────────────────
+    # globals_forms：首个 defun 之前的顶层 setq 语句（模块全局初始化）。
+    # mid_forms：首个 defun 与最后一个 defun 之间的顶层语句。
+    # post_forms：最后一个 defun 之后的顶层语句。
+    # CAD 把**第一个**函数的 JUMP+注册放在 globals 之后（模块代码后续语句
+    # 可调用它），把其余函数注册放在所有 mid 语句之后、post 语句之前
+    # （i18n/p04 实测）。单函数文件 mid 为空、无尾部注册，等价于并列形式。
+    n_globals = max(0, min(n_globals, len(pre_forms)))
+    globals_forms = pre_forms[:n_globals]
+    mid_forms = pre_forms[n_globals:]
+    # 首个函数注册后是否还有后续内容（需 `PUSH_G c; POP` 清理）。
+    has_follow = bool(n_funcs > 1 or mid_forms or post_forms)
+
+    _emit_stmts(globals_forms, last_no_pop=(n_funcs == 0 and not post_forms))
 
     if n_funcs > 0:
-        # 有 defun：追加函数注册尾（CAD 实测）。多函数时每函数一组
-        # `PUSH_G <b>; SETQ_G <c>`，组间 `PUSH_G <c>; POP; JUMP`；
-        # b = 2*n_funcs+1 + top_level_count - i（模块注册偏移）。
-        # c 槽 = 源码注册序递减：顶层在 defun 后时（top_after_defun）
-        # 函数占 c = n_funcs+1-i、顶层占 1；否则函数占 c = n_funcs-i、
-        # 末尾补 `PUSH_G 1`。
-        out += b'\x57\x00\x00\x00\x00'  # JUMP
-        for i in range(n_funcs):
+
+        def _reg(i):
+            # 有 defun：追加函数注册尾（CAD 实测）。每函数一组
+            # `PUSH_G <b>; SETQ_G <c>`，组间 `PUSH_G <c>; POP; JUMP`；
+            # b = 2*n_funcs+1 + top_level_count - i（模块注册偏移）。
+            # c 槽 = 源码注册序：函数占 c = 符号槽 + 1（p03 实测
+            # @::codepage2lang 槽 4 → c=5）；未显式给定函数名时退化为
+            # 相对编号 n_funcs - i。
+            nonlocal out
             b = 2 * n_funcs + 1 + top_level_count - i
-            # SETQ_G 目标是第 i 个函数（注册序逆序）的 gvar 槽 = 符号槽 + 1
-            # （p03 实测 @::codepage2lang 槽 4 → c=5）。未显式给定函数名时
-            # 退化为相对编号 n_funcs-i，与单函数槽=0 情形一致。
             fn_slot = symtab.name_to_idx.get(func_names[i]) if i < len(func_names) and func_names else None
             c = (fn_slot + 1) if fn_slot is not None else (n_funcs - i)
-            out += bytes([0x09]) + struct.pack('<H', b)  # PUSH_G b
-            out += bytes([0x06]) + struct.pack('<H', c)  # SETQ_G c
-            if i < n_funcs - 1 or post_forms:
-                out += bytes([0x09]) + struct.pack('<H', c) + b'\x0a'
-            if i < n_funcs - 1:
-                out += b'\x57\x00\x00\x00\x00'
-        if post_forms:
-            _emit_stmts(post_forms, last_no_pop=True)
-        elif not top_after_defun:
-            out += bytes([0x09]) + struct.pack('<H', 1)  # PUSH_G 1
+            out += bytes([0x09]) + struct.pack("<H", b)  # PUSH_G b
+            out += bytes([0x06]) + struct.pack("<H", c)  # SETQ_G c
+            return c
+
+        out += b"\x57\x00\x00\x00\x00"  # JUMP
+        c0 = _reg(0)
+        if has_follow:
+            out += bytes([0x09]) + struct.pack("<H", c0) + b"\x0a"
+        # 首个 defun 与最后一个 defun 之间的顶层语句。
+        _emit_stmts(mid_forms, last_no_pop=False)
+        # 其余函数注册（最后一个 defun 之前、post 语句之前）。
+        if n_funcs > 1:
+            for i in range(1, n_funcs):
+                out += b"\x57\x00\x00\x00\x00"
+                c = _reg(i)
+                if i < n_funcs - 1 or post_forms:
+                    out += bytes([0x09]) + struct.pack("<H", c) + b"\x0a"
     else:
-        if post_forms:
-            _emit_stmts(post_forms, last_no_pop=True)
-    out += b'\x16'  # END_DEFUN
+        _emit_stmts(mid_forms, last_no_pop=(not post_forms))
+    if post_forms:
+        _emit_stmts(post_forms, last_no_pop=True)
+    elif not top_after_defun:
+        out += bytes([0x09]) + struct.pack("<H", 1)  # PUSH_G 1
+    out += b"\x16"  # END_DEFUN
     return bytes(out)
 
 
 def _slot_of(symtab, node):
     """返回 AST 节点的符号/字符串槽索引；非字面量返回 None。"""
     from compiler.ast_nodes import Symbol, String as _Str
+
     if isinstance(node, Symbol):
         return symtab.name_to_idx.get(node.name)
     if isinstance(node, _Str):
-        return symtab.name_to_idx.get(f'__str_{node.value}__')
+        return symtab.name_to_idx.get(f"__str_{node.value}__")
     return None
 
 
 def _is_empty_quote(node) -> bool:
     """判断是否为空列表引用 `'()`（CAD 用 PUSH_NIL，无常量槽）。"""
     from compiler.ast_nodes import QuotedExpr, ListExpr
+
     return isinstance(node, QuotedExpr) and isinstance(node.expr, ListExpr) and not node.expr.items
 
 
@@ -442,6 +534,7 @@ def _offset_slots(bc: bytes, n_sym: int) -> bytes:
     stub 的 PUSH_VALUE[0]（单字节 ``03``）与调用后清理序列 ``00 03`` 不偏移。
     """
     from decompiler.fas4_decompiler import Disassembler
+
     dis = Disassembler(short_subr=True)
     try:
         insts = dis.disassemble(bc, n_sym, sym_count=n_sym)
@@ -450,18 +543,18 @@ def _offset_slots(bc: bytes, n_sym: int) -> bytes:
     out = bytearray()
     for inst in insts:
         name = inst.op_name
-        raw = bc[inst.offset:inst.offset + inst.size]
+        raw = bc[inst.offset : inst.offset + inst.size]
         if name == "USUBR" and len(inst.operands) >= 2:
             out += bytes([0x35, inst.operands[0] & 0xFF, (inst.operands[1] + 1) & 0xFF])
         elif name in ("PUSH_G", "SETQ_G", "PUSH_G_ALT") and len(inst.operands) >= 1:
             idx = inst.operands[0] + 1
-            out += bytes([raw[0]]) + struct.pack('<H', idx)
+            out += bytes([raw[0]]) + struct.pack("<H", idx)
         elif name == "PUSH_VALUE":
             # stub：PUSH_VALUE[0] 单字节 03；idx>0 为 3 字节。
             if len(inst.operands) == 1 and inst.operands[0] == 0 and inst.size == 1:
                 out += raw  # 单字节 PUSH_VALUE[0]（调用后清理），不偏移
             elif len(inst.operands) == 1:
-                out += bytes([raw[0]]) + struct.pack('<H', inst.operands[0] + 1)
+                out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1)
             else:
                 out += raw
         else:
@@ -472,9 +565,21 @@ def _offset_slots(bc: bytes, n_sym: int) -> bytes:
 def _collect_symbol_nodes(node):
     """递归收集 AST 节点中的 Symbol/String 节点。"""
     from compiler.ast_nodes import (
-        Symbol, String, ListExpr, QuotedExpr, Setq, IfNode, WhileNode,
-        ForeachNode, RepeatNode, Call, Progn, LambdaNode, Cond,
+        Symbol,
+        String,
+        ListExpr,
+        QuotedExpr,
+        Setq,
+        IfNode,
+        WhileNode,
+        ForeachNode,
+        RepeatNode,
+        Call,
+        Progn,
+        LambdaNode,
+        Cond,
     )
+
     if isinstance(node, Symbol) or isinstance(node, String):
         yield node
     elif isinstance(node, Call):
@@ -532,25 +637,104 @@ def _collect_symbol_nodes(node):
             yield from _collect_symbol_nodes(e)
 
 
-def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis: bool = False,
-                encoding: str = 'ansi') -> str:
+def _collect_kwote_lambda_args(node):
+    """递归收集 `(function (lambda (args...) ...))` 的参数列表（源码顺序）。
+
+    CAD kwote 机制把内嵌 lambda 编译为独立 `-lambda-` DEFUN，其参数绑定/
+    读取槽需在 `_patch_usubr_idx` 中修正（i18n-cad `-lambda-` 参数 opt% gvar
+    45 → 槽 43）。返回值与 seg0 中 DEFUN 出现顺序一致（在所在函数之后）。
+    """
+    from compiler.ast_nodes import (
+        Symbol,
+        String,
+        ListExpr,
+        QuotedExpr,
+        Setq,
+        IfNode,
+        WhileNode,
+        ForeachNode,
+        RepeatNode,
+        Call,
+        Progn,
+        LambdaNode,
+        Cond,
+    )
+
+    if isinstance(node, QuotedExpr) and node.kwote and isinstance(node.expr, LambdaNode):
+        yield list(node.expr.args)
+        for e in node.expr.body:
+            yield from _collect_kwote_lambda_args(e)
+    elif isinstance(node, Defun):
+        for e in node.body:
+            yield from _collect_kwote_lambda_args(e)
+    elif isinstance(node, Call):
+        for a in node.args:
+            yield from _collect_kwote_lambda_args(a)
+    elif isinstance(node, Setq):
+        for t, v in node.pairs:
+            if t is not None:
+                yield from _collect_kwote_lambda_args(t)
+            if v is not None:
+                yield from _collect_kwote_lambda_args(v)
+    elif isinstance(node, IfNode):
+        for sub in (node.cond, node.then, node.else_expr):
+            if sub is not None:
+                yield from _collect_kwote_lambda_args(sub)
+    elif isinstance(node, WhileNode):
+        if node.cond:
+            yield from _collect_kwote_lambda_args(node.cond)
+        for e in node.body:
+            yield from _collect_kwote_lambda_args(e)
+    elif isinstance(node, Progn):
+        for e in node.forms:
+            yield from _collect_kwote_lambda_args(e)
+    elif isinstance(node, Cond):
+        for clause in node.clauses:
+            if isinstance(clause, (list, tuple)):
+                for c in clause:
+                    yield from _collect_kwote_lambda_args(c)
+            else:
+                yield from _collect_kwote_lambda_args(clause)
+    elif isinstance(node, ListExpr):
+        for item in node.items:
+            yield from _collect_kwote_lambda_args(item)
+        if node.dotted is not None:
+            yield from _collect_kwote_lambda_args(node.dotted)
+    elif isinstance(node, ForeachNode):
+        if node.var:
+            yield from _collect_kwote_lambda_args(node.var)
+        if node.list_expr:
+            yield from _collect_kwote_lambda_args(node.list_expr)
+        for e in node.body:
+            yield from _collect_kwote_lambda_args(e)
+    elif isinstance(node, RepeatNode):
+        if node.count:
+            yield from _collect_kwote_lambda_args(node.count)
+        for e in node.body:
+            yield from _collect_kwote_lambda_args(e)
+
+
+def cmd_compile(
+    source: str, output: str = "", opt_level: int = 0, show_analysis: bool = False, encoding: str = "ansi"
+) -> str:
     if os.path.exists(source):
-        with open(source, 'r', encoding='utf-8') as f:
-            source_code = f.read()
+        from core.fas_core import decode_source_text
+        with open(source, "rb") as f:
+            source_code = decode_source_text(f.read())
     else:
         source_code = source
     parser_obj = Parser(source_code)
     try:
         program = parser_obj.parse()
     except ParseError as e:
-        print(f'Parse error: {e}', file=sys.stderr)
+        print(f"Parse error: {e}", file=sys.stderr)
         sys.exit(1)
 
     package_table = parser_obj.packages
 
     if show_analysis:
         stats = analyze(program)
-        print('=== Compilation Analysis ===')
+        print("=== Compilation Analysis ===")
         print(f'  Functions:               {stats["functions"]}')
         print(f'  Top-level forms:         {stats["top_level_forms"]}')
         print(f'  Total instructions:      {stats["total_instructions"]}')
@@ -560,18 +744,20 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
         print(f'  Locals (total):          {stats["locals"]}')
         print(f'  Tail-recursive:          {stats["tail_recursive_functions"]}')
         print(f'  External/builtin calls:  {len(stats["builtin_calls"])}')
-        for fd in stats['functions_detail']:
-            tr = ' [tail-recursive]' if fd['tail_recursive'] else ''
-        print(f'    {fd["name"]}: {fd["instructions"]} instr, '
-              f'{fd["args"]} args, {fd["locals"]} locals, '
-              f'calls {fd["calls"]}{tr}')
+        for fd in stats["functions_detail"]:
+            tr = " [tail-recursive]" if fd["tail_recursive"] else ""
+        print(
+            f'    {fd["name"]}: {fd["instructions"]} instr, '
+            f'{fd["args"]} args, {fd["locals"]} locals, '
+            f'calls {fd["calls"]}{tr}'
+        )
         print()
 
     if opt_level:
         program = optimize(program, level=opt_level)
         if show_analysis:
             stats2 = analyze(program)
-            print(f'=== After O{opt_level} Optimization ===')
+            print(f"=== After O{opt_level} Optimization ===")
             print(f'  Functions:          {stats2["functions"]} (was {stats["functions"]})')
             print(f'  Instructions:       {stats2["total_instructions"]} (was {stats["total_instructions"]})')
             print(f'  Tail-recursive:     {stats2["tail_recursive_functions"]}')
@@ -589,6 +775,7 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
                 file=sys.stderr,
             )
     from compiler.cad_symbols import derive_symbol_names, is_const_entry
+
     for sym in derive_symbol_names(program):
         if is_const_entry(sym):
             symtab.add_constant(sym[1])
@@ -601,12 +788,12 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
             symtab.get_or_add(sym)
 
     # 顶层表达式符号（defun 之外）：CAD 把它们的符号并入模块注册段。
-    other_forms = [f for f in program.forms
-                   if not isinstance(f, (Defun, Defpackage, InPackage))]
+    other_forms = [f for f in program.forms if not isinstance(f, (Defun, Defpackage, InPackage))]
     # 顶层 form 数（CAD seg1 头 items 公式用），区别于符号数 top_level_count。
     top_form_count = len(other_forms)
     from compiler.ast_nodes import Symbol as _Sym
     from compiler.ast_nodes import String as _StrNode
+
     _top_syms = []
     for form in other_forms:
         for _n in _collect_symbol_nodes(form):
@@ -619,8 +806,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     for s in _top_syms:
         if s in symtab.name_to_idx:
             _top_slots.append(symtab.name_to_idx[s])
-        elif f'__str_{s}__' in symtab.name_to_idx:
-            _top_slots.append(symtab.name_to_idx[f'__str_{s}__'])
+        elif f"__str_{s}__" in symtab.name_to_idx:
+            _top_slots.append(symtab.name_to_idx[f"__str_{s}__"])
     # CAD 按"最高顶层符号槽号 + 1"计模块注册区宽，const/defun 名等内部槽
     # 一并覆盖（i18n ap03 实测 syscodepage const@idx2 使 @::*I18N* 槽到 idx9，
     # count 应为 max+1 而非顶层去重符号数）。
@@ -629,9 +816,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     else:
         top_level_count = 0
 
-    codegen = CodeGenerator(symtab, stub_format=True,
-                            defined_funcs=[f.name for f in defun_forms],
-                            nsyms=len(symtab.entries) - len(defun_forms) - top_level_count + 1)
+    codegen_nsyms = len(symtab.entries) - len(defun_forms) - top_level_count + 1
+    codegen = CodeGenerator(symtab, stub_format=True, defined_funcs=[f.name for f in defun_forms], nsyms=codegen_nsyms)
 
     func_offsets = {}
 
@@ -664,6 +850,20 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
             # generate_function 生成，仅需追加 END_DEFUN 分隔）。
             all_bytecode.emit(bytes([0x16]))
 
+    # 内嵌 `(function (lambda ...))` DEFUN（kwote 机制）：偏移相对所在函数
+    # 字节码缓冲，需转换为 seg0 绝对偏移。每个内嵌 DEFUN 独立登记为
+    # `-lambda-` 目录项，供函数目录（func-ranges）与 DEFCODE 注册使用。
+    nested_ends = {}
+    nested_list = []
+    for name, off in list(func_offsets.items()):
+        for rel_start, rel_end in codegen._func_nested_lambdas.get(name, []):
+            n_start = off + rel_start
+            n_end = off + rel_end
+            nested_list.append((n_start, n_end))
+    for n_start, n_end in nested_list:
+        func_offsets["-lambda-"] = n_start
+        nested_ends[n_start] = n_end
+
     for name, offset in func_offsets.items():
         symtab.add_func_ref(name, offset)
 
@@ -674,7 +874,7 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     # c: 命令函数：CAD 在模块注册段插入 vl-ACAD-defun 符号并生成命令模块代码。
     # vl-ACAD-defun 仅在模块注册段（resource_gvars）注册，不进符号表（不参与
     # 函数符号槽编址），故 seg0 的 PUSH_VALUE 索引保持不变。
-    n_cmds = 1 if any(getattr(f, 'is_command', False) or str(f.name).startswith('c:') for f in defun_forms) else 0
+    n_cmds = 1 if any(getattr(f, "is_command", False) or str(f.name).startswith("c:") for f in defun_forms) else 0
     resource = ResourceBuilder(symtab, encoding=encoding)
     module_reg_count = len(defun_forms) + top_level_count
     fas_nsyms = len(symtab.entries) - module_reg_count + 1
@@ -686,24 +886,48 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
         from compiler.ast_nodes import Defun as _Defun
         from compiler.ast_nodes import Defpackage as _Defpackage
         from compiler.ast_nodes import InPackage as _InPackage
+
         _last_overall = program.forms[-1] if program.forms else None
-        _top_after_defun = _last_overall is not None and not isinstance(_last_overall, (_Defun, _Defpackage, _InPackage))
+        _top_after_defun = _last_overall is not None and not isinstance(
+            _last_overall, (_Defun, _Defpackage, _InPackage)
+        )
         _last_defun_pos = -1
+        _first_defun_pos = -1
         for _i, _f in enumerate(program.forms):
             if isinstance(_f, _Defun):
+                if _first_defun_pos < 0:
+                    _first_defun_pos = _i
                 _last_defun_pos = _i
+        # 首个 defun 之前的顶层语句数（模块全局初始化，CAD 在其后立即注册
+        # 第一个函数，i18n/p04 实测）。
+        _n_globals = (
+            sum(1 for _f in program.forms[:_first_defun_pos] if not isinstance(_f, (_Defun, _Defpackage, _InPackage)))
+            if _first_defun_pos >= 0
+            else len(other_forms)
+        )
         # 统计最后一个 defun 之后、且非 defun/defpackage 的顶层 form 数。
         # other_forms 与 program.forms 同序（仅过滤 defun/defpackage），
         # 故末尾 n 个 other_forms 即为 post-form。
-        _n_post_forms = sum(
-            1 for _f in program.forms[_last_defun_pos + 1:]
-            if not isinstance(_f, (_Defun, _Defpackage, _InPackage))
-        ) if _last_defun_pos >= 0 else 0
-        module_code = _build_cad_module_code(top_level_code, symtab, other_forms,
-                                             n_funcs=len(defun_forms), top_level_count=top_level_count,
-                                             top_after_defun=_top_after_defun,
-                                             func_names=[f.name for f in defun_forms],
-                                             n_post_forms=_n_post_forms)
+        _n_post_forms = (
+            sum(
+                1
+                for _f in program.forms[_last_defun_pos + 1 :]
+                if not isinstance(_f, (_Defun, _Defpackage, _InPackage))
+            )
+            if _last_defun_pos >= 0
+            else 0
+        )
+        module_code = _build_cad_module_code(
+            top_level_code,
+            symtab,
+            other_forms,
+            n_funcs=len(defun_forms),
+            top_level_count=top_level_count,
+            top_after_defun=_top_after_defun,
+            func_names=[f.name for f in defun_forms],
+            n_post_forms=_n_post_forms,
+            n_globals=_n_globals,
+        )
     elif n_cmds:
         module_code = build_command_module_code(len(defun_forms))
     else:
@@ -713,13 +937,35 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     def _all_params(f):
         return f.args + f.optional + ([f.rest] if f.rest else [])
 
+    # func_args 顺序须与 seg0 DEFUN 顺序一致：顶层 defun 参数 + 各函数内嵌
+    # kwote `-lambda-` 参数（紧随所在函数之后，i18n-cad 实测）。
+    all_func_args = []
+    for f in defun_forms:
+        all_func_args.append(_all_params(f))
+        for la in _collect_kwote_lambda_args(f):
+            all_func_args.append(la)
+
     # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
-    seg1 = resource.build(func_offsets, module_code=module_code, total_size=len(seg0) + 1, stub_format=True,
-                          top_level_count=top_level_count, commands=n_cmds)
-    seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, [_all_params(f) for f in defun_forms])
+    seg1 = resource.build(
+        func_offsets,
+        module_code=module_code,
+        total_size=len(seg0) + 1,
+        stub_format=True,
+        top_level_count=top_level_count,
+        commands=n_cmds,
+        nested_ends=nested_ends,
+    )
+    seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args, codegen_nsyms=codegen_nsyms)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
-    seg1 = resource.build(func_offsets, module_code=module_code, total_size=len(seg0) + 1, stub_format=True,
-                           top_level_count=top_level_count, commands=n_cmds)
+    seg1 = resource.build(
+        func_offsets,
+        module_code=module_code,
+        total_size=len(seg0) + 1,
+        stub_format=True,
+        top_level_count=top_level_count,
+        commands=n_cmds,
+        nested_ends=nested_ends,
+    )
     sec2_items = count_resource_records(seg1)
     # 确保 items 与 CAD 编译器一致。CAD 的 items 语义：
     # - 含 defun：2 * 模块注册数 + 2（模块注册数 = defun 数 + 顶层 form 数）。
@@ -735,15 +981,14 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     if sec2_items < min_items:
         sec2_items = min_items
 
-    output = output or source.replace('.lsp', '.fas')
+    output = output or source.replace(".lsp", ".fas")
     writer = FasWriter(symtab)
-    writer.write(output, seg0, seg1, sec2_items=sec2_items, nsyms=fas_nsyms,
-                 compact=True)
-    print(f'Compiled to {output}')
+    writer.write(output, seg0, seg1, sec2_items=sec2_items, nsyms=fas_nsyms, compact=True)
+    print(f"Compiled to {output}")
     return output
 
 
-def cmd_decompile(source: str, output: str = '') -> str:
+def cmd_decompile(source: str, output: str = "") -> str:
     parser_obj = Fas4Parser()
     fas = parser_obj.parse(source)
     disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
@@ -753,25 +998,26 @@ def cmd_decompile(source: str, output: str = '') -> str:
     gen = LispGenerator(fas)
     result = gen.generate(functions, source)
 
-    output = output or source.replace('.fas', '_decomp.lsp')
-    with open(output, 'w', encoding='utf-8') as f:
+    output = output or source.replace(".fas", "_decomp.lsp")
+    with open(output, "w", encoding="utf-8") as f:
         f.write(result)
-    print(f'Decompiled to {output}')
+    print(f"Decompiled to {output}")
     return output
 
 
-def cmd_disassemble(source: str, output: str = '') -> str:
+def cmd_disassemble(source: str, output: str = "") -> str:
     """反汇编 .fas / .zelx → .lasm（字节码指令列表）。"""
     from asm.assembler import disassemble_fas
 
-    tmp_fas = ''
-    if source.lower().endswith('.zelx'):
+    tmp_fas = ""
+    if source.lower().endswith(".zelx"):
         # zelx → fas → lasm：先用逆向恢复出 fas 再反汇编
         import os
         import tempfile
         from tools.zelx_to_fas import zelx_to_fas
+
         base = os.path.splitext(os.path.basename(source))[0]
-        tmp_fas = os.path.join(tempfile.gettempdir(), f'{base}.fas')
+        tmp_fas = os.path.join(tempfile.gettempdir(), f"{base}.fas")
         try:
             zelx_to_fas(source, tmp_fas)
             text = disassemble_fas(tmp_fas)
@@ -781,101 +1027,112 @@ def cmd_disassemble(source: str, output: str = '') -> str:
     else:
         text = disassemble_fas(source)
 
-    output = output or source.rsplit('.', 1)[0] + '.lasm'
-    with open(output, 'w', encoding='utf-8') as f:
+    output = output or source.rsplit(".", 1)[0] + ".lasm"
+    with open(output, "w", encoding="utf-8") as f:
         f.write(text)
-    print(f'Disassembled to {output}')
+    print(f"Disassembled to {output}")
     return output
 
 
-def cmd_assemble(source: str, output: str = '') -> str:
+def cmd_assemble(source: str, output: str = "") -> str:
     """汇编 .lasm → .fas。"""
     from asm.assembler import assemble_lasm
-    with open(source, 'r', encoding='utf-8') as f:
-        text = f.read()
-    output = output or source.replace('.lasm', '.fas')
+
+    with open(source, "rb") as f:
+        from core.fas_core import decode_source_text
+        text = decode_source_text(f.read())
+    output = output or source.replace(".lasm", ".fas")
     assemble_lasm(text, output)
-    print(f'Assembled to {output}')
+    print(f"Assembled to {output}")
     return output
 
 
 def cmd_validate(source: str) -> int:
     import pathlib
+
     ok = validate_file(pathlib.Path(source))
     return 0 if ok else 1
 
 
-def cmd_link(inputs: list, output: str, verbose: bool = False, encoding: str = 'ansi') -> str:
+def cmd_link(inputs: list, output: str, verbose: bool = False, encoding: str = "ansi") -> str:
     return link_fas(inputs, output, verbose, encoding=encoding)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='atlispcc',
-        description='FAS4 bytecode compiler/decompiler toolchain for AutoLISP-compatible CAD platforms',
+        prog="atlispcc",
+        description="FAS4 bytecode compiler/decompiler toolchain for AutoLISP-compatible CAD platforms",
     )
-    sub = parser.add_subparsers(dest='command', metavar='<command>')
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     # compile
-    p_compile = sub.add_parser('compile', aliases=['c'], help='Compile .lsp → .fas')
-    p_compile.add_argument('source', help='input .lsp file')
-    p_compile.add_argument('output', nargs='?', default='', help='output .fas file (optional)')
-    p_compile.add_argument('-O', type=int, default=0, choices=[0, 1, 2, 3],
-                           help='optimization level (0=none, 1=basic, 2=aggressive, 3=extreme)')
-    p_compile.add_argument('--analyze', action='store_true',
-                           help='show compilation analysis report')
-    p_compile.add_argument('--encoding', default='ansi',
-                           help='string/symbol encoding for FAS output '
-                                '(ansi=system codepage on Windows, default; or utf-8, gbk, cp936, ...)')
+    p_compile = sub.add_parser("compile", aliases=["c"], help="Compile .lsp → .fas")
+    p_compile.add_argument("source", help="input .lsp file")
+    p_compile.add_argument("output", nargs="?", default="", help="output .fas file (optional)")
+    p_compile.add_argument(
+        "-O",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3],
+        help="optimization level (0=none, 1=basic, 2=aggressive, 3=extreme)",
+    )
+    p_compile.add_argument("--analyze", action="store_true", help="show compilation analysis report")
+    p_compile.add_argument(
+        "--encoding",
+        default="ansi",
+        help="string/symbol encoding for FAS output "
+        "(ansi=system codepage on Windows, default; or utf-8, gbk, cp936, ...)",
+    )
 
     # decompile
-    p_decompile = sub.add_parser('decompile', aliases=['d'], help='Decompile .fas → .lsp')
-    p_decompile.add_argument('source', help='input .fas file')
-    p_decompile.add_argument('output', nargs='?', default='', help='output .lsp file (optional)')
+    p_decompile = sub.add_parser("decompile", aliases=["d"], help="Decompile .fas → .lsp")
+    p_decompile.add_argument("source", help="input .fas file")
+    p_decompile.add_argument("output", nargs="?", default="", help="output .lsp file (optional)")
 
     # validate
-    p_validate = sub.add_parser('validate', aliases=['v'], help='Validate .lsp syntax')
-    p_validate.add_argument('source', help='input .lsp file')
+    p_validate = sub.add_parser("validate", aliases=["v"], help="Validate .lsp syntax")
+    p_validate.add_argument("source", help="input .lsp file")
 
     # build zelx: .lsp/.fas → .zelx (ZWCAD)
-    p_zelx = sub.add_parser('zelx', help='Build .zelx from .lsp/.fas (ZWCAD)')
-    p_zelx.add_argument('source', help='input .lsp or .fas file')
-    p_zelx.add_argument('output', nargs='?', default='', help='output .zelx file (optional)')
+    p_zelx = sub.add_parser("zelx", help="Build .zelx from .lsp/.fas (ZWCAD)")
+    p_zelx.add_argument("source", help="input .lsp or .fas file")
+    p_zelx.add_argument("output", nargs="?", default="", help="output .zelx file (optional)")
 
     # unzelx: .zelx → .fas
-    p_unzelx = sub.add_parser('unzelx', help='Recover .fas from .zelx (ZWCAD)')
-    p_unzelx.add_argument('source', help='input .zelx file')
-    p_unzelx.add_argument('output', nargs='?', default='', help='output .fas file (optional)')
+    p_unzelx = sub.add_parser("unzelx", help="Recover .fas from .zelx (ZWCAD)")
+    p_unzelx.add_argument("source", help="input .zelx file")
+    p_unzelx.add_argument("output", nargs="?", default="", help="output .fas file (optional)")
 
     # disassemble: .fas → .lasm
-    p_disasm = sub.add_parser('disasm', aliases=['disassemble'],
-                              help='Disassemble .fas/.zelx → .lasm (bytecode instructions)')
-    p_disasm.add_argument('source', help='input .fas or .zelx file')
-    p_disasm.add_argument('output', nargs='?', default='', help='output .lasm file (optional)')
+    p_disasm = sub.add_parser(
+        "disasm", aliases=["disassemble"], help="Disassemble .fas/.zelx → .lasm (bytecode instructions)"
+    )
+    p_disasm.add_argument("source", help="input .fas or .zelx file")
+    p_disasm.add_argument("output", nargs="?", default="", help="output .lasm file (optional)")
 
     # assemble: .lasm → .fas
-    p_asm = sub.add_parser('asm', aliases=['assemble'],
-                           help='Assemble .lasm → .fas (or .zelx with --zelx)')
-    p_asm.add_argument('source', help='input .lasm file')
-    p_asm.add_argument('output', nargs='?', default='', help='output file (optional)')
-    p_asm.add_argument('--zelx', action='store_true', help='assemble to ZWCAD .zelx')
+    p_asm = sub.add_parser("asm", aliases=["assemble"], help="Assemble .lasm → .fas (or .zelx with --zelx)")
+    p_asm.add_argument("source", help="input .lasm file")
+    p_asm.add_argument("output", nargs="?", default="", help="output file (optional)")
+    p_asm.add_argument("--zelx", action="store_true", help="assemble to ZWCAD .zelx")
 
     # link
-    p_link = sub.add_parser('link', help='Link multiple .fas files into one')
-    p_link.add_argument('inputs', nargs='+', help='input .fas files (2 or more)')
-    p_link.add_argument('-o', '--output', default='', help='output .fas file')
-    p_link.add_argument('--verbose', '-v', action='store_true', help='verbose output')
-    p_link.add_argument('--encoding', default='ansi',
-                        help='string/symbol encoding for linked FAS output (default: ansi=system codepage)')
+    p_link = sub.add_parser("link", help="Link multiple .fas files into one")
+    p_link.add_argument("inputs", nargs="+", help="input .fas files (2 or more)")
+    p_link.add_argument("-o", "--output", default="", help="output .fas file")
+    p_link.add_argument("--verbose", "-v", action="store_true", help="verbose output")
+    p_link.add_argument(
+        "--encoding",
+        default="ansi",
+        help="string/symbol encoding for linked FAS output (default: ansi=system codepage)",
+    )
 
     # build-vlx
-    p_vlx = sub.add_parser('build-vlx', help='Build VLX container from .fas files')
-    p_vlx.add_argument('inputs', nargs='+', help='input .fas files')
-    p_vlx.add_argument('-o', '--output', default='', help='output .vlx file')
-    p_vlx.add_argument('--export', nargs='*', default=[],
-                       help='exported function names for namespace isolation')
-    p_vlx.add_argument('--package', default='',
-                       help='VLX package/application name')
+    p_vlx = sub.add_parser("build-vlx", help="Build VLX container from .fas files")
+    p_vlx.add_argument("inputs", nargs="+", help="input .fas files")
+    p_vlx.add_argument("-o", "--output", default="", help="output .vlx file")
+    p_vlx.add_argument("--export", nargs="*", default=[], help="exported function names for namespace isolation")
+    p_vlx.add_argument("--package", default="", help="VLX package/application name")
 
     args = parser.parse_args()
 
@@ -883,73 +1140,74 @@ def main():
         parser.print_help()
         return 0
 
-    if args.command in ('compile', 'c'):
-        cmd_compile(args.source, args.output, opt_level=args.O,
-                    show_analysis=args.analyze, encoding=args.encoding)
+    if args.command in ("compile", "c"):
+        cmd_compile(args.source, args.output, opt_level=args.O, show_analysis=args.analyze, encoding=args.encoding)
         return 0
 
-    if args.command in ('decompile', 'd'):
+    if args.command in ("decompile", "d"):
         cmd_decompile(args.source, args.output)
         return 0
 
-    if args.command in ('disasm', 'disassemble'):
+    if args.command in ("disasm", "disassemble"):
         cmd_disassemble(args.source, args.output)
         return 0
 
-    if args.command in ('asm', 'assemble'):
+    if args.command in ("asm", "assemble"):
         if args.zelx:
             from asm.assembler import assemble_lasm_zelx
-            with open(args.source, 'r', encoding='utf-8') as f:
-                text = f.read()
-            output = args.output or args.source.replace('.lasm', '.zelx')
+
+            with open(args.source, "rb") as f:
+                from core.fas_core import decode_source_text
+                text = decode_source_text(f.read())
+            output = args.output or args.source.replace(".lasm", ".zelx")
             assemble_lasm_zelx(text, output)
-            print(f'Assembled to {output}')
+            print(f"Assembled to {output}")
         else:
             cmd_assemble(args.source, args.output)
         return 0
 
-    if args.command in ('validate', 'v'):
+    if args.command in ("validate", "v"):
         return cmd_validate(args.source)
 
-    if args.command == 'zelx':
+    if args.command == "zelx":
         from tools.zelx_build import build_zelx
-        output = args.output or args.source.rsplit('.', 1)[0] + '.zelx'
+
+        output = args.output or args.source.rsplit(".", 1)[0] + ".zelx"
         build_zelx(args.source, output)
-        print(f'Built {output}')
+        print(f"Built {output}")
         return 0
 
-    if args.command == 'unzelx':
+    if args.command == "unzelx":
         from tools.zelx_to_fas import zelx_to_fas
-        output = args.output or args.source.rsplit('.', 1)[0] + '.fas'
+
+        output = args.output or args.source.rsplit(".", 1)[0] + ".fas"
         zelx_to_fas(args.source, output)
-        print(f'Built {output}')
+        print(f"Built {output}")
         return 0
 
-    if args.command == 'link':
+    if args.command == "link":
         if len(args.inputs) < 2:
-            print('Error: need at least 2 input .fas files to link', file=sys.stderr)
+            print("Error: need at least 2 input .fas files to link", file=sys.stderr)
             return 1
         output = args.output
         if not output:
-            base = args.inputs[-1].rsplit('.', 1)[0]
-            output = f'{base}_linked.fas'
+            base = args.inputs[-1].rsplit(".", 1)[0]
+            output = f"{base}_linked.fas"
         cmd_link(args.inputs, output, args.verbose, args.encoding)
         return 0
 
-    if args.command == 'build-vlx':
+    if args.command == "build-vlx":
         output = args.output
         if not output:
-            base = args.inputs[-1].rsplit('.', 1)[0]
-            output = f'{base}.vlx'
-        result = build_vlx(args.inputs, output,
-                           exports=args.export,
-                           package_name=args.package)
-        print(f'Built {result}')
+            base = args.inputs[-1].rsplit(".", 1)[0]
+            output = f"{base}.vlx"
+        result = build_vlx(args.inputs, output, exports=args.export, package_name=args.package)
+        print(f"Built {result}")
         return 0
 
     parser.print_help()
     return 1
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main() or 0)

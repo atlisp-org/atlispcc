@@ -6,21 +6,21 @@ from compiler.symbol_table import SymbolTable
 
 def resolve_encoding(enc: Optional[str]) -> str:
     """将 'ansi'/'auto'/'system' 解析为实际编码。"""
-    if not enc or enc.lower() in ('ansi', 'auto', 'system'):
+    if not enc or enc.lower() in ("ansi", "auto", "system"):
         return get_ansi_encoding()
     return enc
 
 
 def res_u16(v: int) -> bytes:
-    return struct.pack('<H', v)
+    return struct.pack("<H", v)
 
 
 def res_s32(v: int) -> bytes:
-    return struct.pack('<i', v)
+    return struct.pack("<i", v)
 
 
 def res_int8(v: int) -> bytes:
-    return bytes([0x32]) + struct.pack('<b', v)
+    return bytes([0x32]) + struct.pack("<b", v)
 
 
 def res_int32(v: int) -> bytes:
@@ -28,7 +28,7 @@ def res_int32(v: int) -> bytes:
 
 
 def res_real_str(s: str) -> bytes:
-    return bytes([0x3B]) + s.encode('utf-8') + b'\x00'
+    return bytes([0x3B]) + s.encode("utf-8") + b"\x00"
 
 
 def res_gvar_init(var_pos: int, st_init: int) -> bytes:
@@ -39,7 +39,7 @@ def res_func_triple() -> bytes:
     return bytes([0x3A])
 
 
-def build_module_code(n_funcs: int = 1, top_level: bytes = b'', nsyms: int = 0) -> bytes:
+def build_module_code(n_funcs: int = 1, top_level: bytes = b"", nsyms: int = 0) -> bytes:
     """生成 CAD 风格模块代码（seg1 尾部的模块入口）。
 
     CAD 把源码中的**顶层表达式**（defun 之外的 setq/set 等）编译进模块代码，
@@ -53,22 +53,22 @@ def build_module_code(n_funcs: int = 1, top_level: bytes = b'', nsyms: int = 0) 
     多函数版本按每函数 ``PUSH_G <n+1-i> POP JUMP PUSH_G <b> SETQ_G <n-i>``
     生成。当 nsyms>0 时 b 上限为 nsyms-1，避免 PUSH_G 索引超出 gvar 表范围。
     """
-    out = bytearray(b'\x14\x01\x00\x00\x00')
+    out = bytearray(b"\x14\x01\x00\x00\x00")
     out += top_level
     if n_funcs == 0:
-        out += b'\x16'
+        out += b"\x16"
         return bytes(out)
     if n_funcs <= 1:
-        out += bytes.fromhex('0902000a570000000009030006010009010016')
+        out += bytes.fromhex("0902000a570000000009030006010009010016")
         return bytes(out)
     b_start = 2 * n_funcs + 1
     for i in range(n_funcs):
         a = n_funcs + 1 - i
         b = b_start - i
         c = n_funcs - i
-        out += b'\x09' + res_u16(a) + b'\x0a\x57\x00\x00\x00\x00'
-        out += b'\x09' + res_u16(b) + b'\x06' + res_u16(c)
-    out += b'\x09' + res_u16(1) + b'\x16'
+        out += b"\x09" + res_u16(a) + b"\x0a\x57\x00\x00\x00\x00"
+        out += b"\x09" + res_u16(b) + b"\x06" + res_u16(c)
+    out += b"\x09" + res_u16(1) + b"\x16"
     return bytes(out)
 
 
@@ -91,15 +91,15 @@ def build_command_module_code(n_funcs: int, vl_idx: int = 2) -> bytes:
     满足 a_i = c_{i-1}（i>=1）与末 c=1 的自我一致性。
     """
     var_pos = n_funcs + 3
-    out = bytearray(b'\x14\x01\x00\x00\x00')
+    out = bytearray(b"\x14\x01\x00\x00\x00")
     for i in range(n_funcs):
         a = var_pos - 1 - i
         b = var_pos + n_funcs - 1 - i
         c = n_funcs + 1 - i if i < n_funcs - 1 else 1
-        out += b'\x09' + res_u16(a) + b'\x0a\x57\x00\x00\x00\x00'
-        out += b'\x09' + res_u16(b) + b'\x06' + res_u16(c)
-        out += b'\x09' + res_u16(c) + b'\x35\x01' + res_u16(vl_idx) + b'\x01\x0a'
-    out += b'\x09' + res_u16(c) + b'\x16'
+        out += b"\x09" + res_u16(a) + b"\x0a\x57\x00\x00\x00\x00"
+        out += b"\x09" + res_u16(b) + b"\x06" + res_u16(c)
+        out += b"\x09" + res_u16(c) + b"\x35\x01" + res_u16(vl_idx) + b"\x01\x0a"
+    out += b"\x09" + res_u16(c) + b"\x16"
     return bytes(out)
 
 
@@ -118,23 +118,39 @@ def count_resource_records(res_stream: bytes) -> int:
         if op == 0x43 and pos + 5 <= len(res_stream):
             count += 1
             pos += 5
-        elif op == 0x1c:
+        elif op == 0x1C:
             count += 1
             pos += 1
-        elif op in (0x00, 0x01, 0x02, 0x0a, 0x0b, 0x16, 0x20, 0x23, 0x24,
-                    0x28, 0x29, 0x2a, 0x3a, 0x62, 0x63):
+        elif op in (0x00, 0x01, 0x02, 0x0A, 0x0B, 0x16, 0x20, 0x23, 0x24, 0x28, 0x29, 0x2A, 0x3A, 0x62, 0x63):
             pos += 1
-        elif op in (0x1e, 0x1f):
+        elif op in (0x1E, 0x1F):
             pos += 2
-        elif op in (0x03, 0x05, 0x06, 0x07, 0x09, 0x0c, 0x0d, 0x0e,
-                    0x1a, 0x1b, 0x34, 0x37, 0x39, 0x3c, 0x3d,
-                    0x5c, 0x5d, 0x5e):
+        elif op in (
+            0x03,
+            0x05,
+            0x06,
+            0x07,
+            0x09,
+            0x0C,
+            0x0D,
+            0x0E,
+            0x1A,
+            0x1B,
+            0x34,
+            0x37,
+            0x39,
+            0x3C,
+            0x3D,
+            0x5C,
+            0x5D,
+            0x5E,
+        ):
             pos += 3
-        elif op in (0x14, 0x15, 0x33, 0x35, 0x51, 0x57, 0x67, 0x68, 0x69, 0x6a, 0x6b):
+        elif op in (0x14, 0x15, 0x33, 0x35, 0x51, 0x57, 0x67, 0x68, 0x69, 0x6A, 0x6B):
             pos += 5
         elif op == 0x32:
             pos += 2
-        elif op in (0x56, 0x5b):
+        elif op in (0x56, 0x5B):
             pos += 1
             while pos < len(res_stream):
                 while pos < len(res_stream) and res_stream[pos] != 0x00:
@@ -148,14 +164,15 @@ def count_resource_records(res_stream: bytes) -> int:
             pos += 1
             if pos + 2 <= len(res_stream):
                 import struct
-                num = struct.unpack('<H', res_stream[pos:pos+2])[0]
+
+                num = struct.unpack("<H", res_stream[pos : pos + 2])[0]
                 pos += 2
                 for _ in range(num):
                     if pos + 2 <= len(res_stream):
-                        slen = struct.unpack('<H', res_stream[pos:pos+2])[0]
+                        slen = struct.unpack("<H", res_stream[pos : pos + 2])[0]
                         pos += 2 + slen
-        elif op == 0x3b:
-            end = res_stream.find(b'\x00', pos + 1)
+        elif op == 0x3B:
+            end = res_stream.find(b"\x00", pos + 1)
             pos = end + 1 if end >= 0 else pos + 1
         else:
             pos += 1
@@ -169,11 +186,11 @@ class ResourceBuilder:
         self.data = bytearray()
 
     def _enc(self, s: str) -> bytes:
-        return str(s).encode(self.encoding, errors='replace')
+        return str(s).encode(self.encoding, errors="replace")
 
     def _enc_sym(self, s: str) -> bytes:
         """编码符号名：CAD 符号统一大写（AutoLISP 大小写不敏感）。"""
-        return str(s).upper().encode(self.encoding, errors='replace')
+        return str(s).upper().encode(self.encoding, errors="replace")
 
     def _push_single_symbol(self, name: str):
         self.data.append(0x5B)
@@ -193,8 +210,16 @@ class ResourceBuilder:
     def _push_t(self):
         self.data.append(0x02)
 
-    def build(self, func_offsets: Dict[str, int], module_code: bytes = b'', total_size: int = 0,
-              stub_format: bool = False, top_level_count: int = 0, commands: int = 0) -> bytes:
+    def build(
+        self,
+        func_offsets: Dict[str, int],
+        module_code: bytes = b"",
+        total_size: int = 0,
+        stub_format: bool = False,
+        top_level_count: int = 0,
+        commands: int = 0,
+        nested_ends: Optional[Dict[int, int]] = None,
+    ) -> bytes:
         """构建与 AutoCAD 编译器一致的 seg1 资源流。
 
         结构：
@@ -217,45 +242,49 @@ class ResourceBuilder:
         # + NIL/LOCAL + GVARINIT(0,1) + POP + NIL + GVARINIT(n+2,0) + INIT_DONE
         # + 模块代码。不生成 DEFCODE。
         if stub_format and not func_offsets:
-            out += b'\x14\x01\x01\x01\x00'
+            out += b"\x14\x01\x01\x01\x00"
             mc_len = len(module_code)
             out += self._code_ref_bytes(mc_len)
             # 符号/字符串：按 symtab.entries 顺序（已由 cad_symbols 排为源码逆序）。
             # CAD 合并连续 SYMBOL 为单个 5b 块，遇 STRING 分块。
             sym_buf = bytearray()
             for entry_type, entry_val in entries:
-                if entry_type == 'SYMBOL':
-                    sym_buf += self._enc_sym(entry_val) + b'\x00'
-                elif entry_type == 'STRING':
+                if entry_type == "SYMBOL":
+                    sym_buf += self._enc_sym(entry_val) + b"\x00"
+                elif entry_type == "STRING":
                     if sym_buf:
-                        out += b'\x5b' + bytes(sym_buf) + b'\x00'
+                        out += b"\x5b" + bytes(sym_buf) + b"\x00"
                         sym_buf = bytearray()
                     encoded = self._enc(entry_val)
-                    out += b'\x55\x01\x00' + res_u16(len(encoded)) + encoded
+                    out += b"\x55\x01\x00" + res_u16(len(encoded)) + encoded
                 else:
                     if sym_buf:
-                        out += b'\x5b' + bytes(sym_buf) + b'\x00'
+                        out += b"\x5b" + bytes(sym_buf) + b"\x00"
                         sym_buf = bytearray()
                     self._push_entry(out, (entry_type, entry_val))
             if sym_buf:
-                out += b'\x5b' + bytes(sym_buf) + b'\x00'
-            out += b'\x01' * 2
-            out += res_gvar_init(0, entry_count + 2) + b'\x0a'
-            out += b'\x01\x5c\x00\x00'
-            out += res_gvar_init(0, 1) + b'\x0a'
-            out += b'\x01' + res_gvar_init(entry_count + 2, 0)
-            out += b'\x1c'
+                out += b"\x5b" + bytes(sym_buf) + b"\x00"
+            out += b"\x01" * 2
+            out += res_gvar_init(0, entry_count + 2) + b"\x0a"
+            out += b"\x01\x5c\x00\x00"
+            out += res_gvar_init(0, 1) + b"\x0a"
+            out += b"\x01" + res_gvar_init(entry_count + 2, 0)
+            out += b"\x1c"
             out += module_code
             return bytes(out)
 
         # ── 模块注册 ────────────────────────────────────────────────────
-        out += b'\x14\x01\x01\x01\x00'
+        out += b"\x14\x01\x01\x01\x00"
         out += self._code_ref_bytes(len(module_code))
+        nested_offs = set(nested_ends) if nested_ends else set()
         func_names_all = list(func_offsets.keys()) if func_offsets else [self._entry_name(entries[0])]
         if stub_format:
+            # kwote 内嵌 `-lambda-`：不作为模块注册函数名，仅参与函数目录。
+            module_func_names = [k for k in func_names_all if func_offsets.get(k) not in nested_offs]
+            func_names_all = module_func_names
             # CAD 模块注册：函数名（源码逆序）+ 顶层表达式符号，连续 SYMBOL 合并，
             # 遇 STRING 分块；PUSH_NIL + GVARINIT。
-            module_entries = entries[:len(func_names_all) + top_level_count]
+            module_entries = entries[: len(func_names_all) + top_level_count]
             fn_bytes = bytearray()
             # 函数名（逆序）在前，其后是顶层符号（entries 顺序）。
             # 注意：cad_symbols 已把 entries 排为"源码逆序逐 form"（顶层与
@@ -267,86 +296,122 @@ class ResourceBuilder:
                 # 原始大小写（`Vl-ACAD-defun`），不同于普通符号的大写编码。
                 names = list(reversed(func_names_all))
                 for i, fname in enumerate(names):
-                    out += b'\x5b' + self._enc_sym(fname) + b'\x00\x00'
+                    out += b"\x5b" + self._enc_sym(fname) + b"\x00\x00"
                     if i == 0:
-                        out += b'\x56' + self._enc('vl-ACAD-defun') + b'\x00\x00'
+                        out += b"\x56" + self._enc("vl-ACAD-defun") + b"\x00\x00"
             for entry_type, entry_val in module_entries if not (commands and func_names_all) else ():
-                if entry_type == 'SYMBOL':
-                    fn_bytes += self._enc_sym(entry_val) + b'\x00'
-                elif entry_type == 'STRING':
+                if entry_type == "SYMBOL":
+                    fn_bytes += self._enc_sym(entry_val) + b"\x00"
+                elif entry_type == "STRING":
                     if fn_bytes:
-                        out += b'\x5b' + bytes(fn_bytes) + b'\x00'
+                        out += b"\x5b" + bytes(fn_bytes) + b"\x00"
                         fn_bytes = bytearray()
                     encoded = self._enc(entry_val)
-                    out += b'\x55\x01\x00' + res_u16(len(encoded)) + encoded
+                    out += b"\x55\x01\x00" + res_u16(len(encoded)) + encoded
                 else:
                     if fn_bytes:
-                        out += b'\x5b' + bytes(fn_bytes) + b'\x00'
+                        out += b"\x5b" + bytes(fn_bytes) + b"\x00"
                         fn_bytes = bytearray()
                     self._push_entry(out, (entry_type, entry_val))
             if fn_bytes:
-                out += b'\x5b' + bytes(fn_bytes) + b'\x00'
-            out += b'\x01' * 2
-            out += res_gvar_init(0, len(module_entries) + 2 + commands) + b'\x0a'
+                out += b"\x5b" + bytes(fn_bytes) + b"\x00"
+            out += b"\x01" * 2
+            out += res_gvar_init(0, len(module_entries) + 2 + commands) + b"\x0a"
         else:
             self._push_entry(out, entries[0])
-            out += b'\x01' * (entry_count - 1)
-            out += res_gvar_init(0, entry_count) + b'\x0a'
+            out += b"\x01" * (entry_count - 1)
+            out += res_gvar_init(0, entry_count) + b"\x0a"
 
         # ── 函数注册 ────────────────────────────────────────────────────
         if stub_format and func_offsets and len(func_offsets) > 1:
             # 最后一个函数 end 用 total_size = len(seg0 字节码) + 1（CAD f4*/f5 实测）。
-            out += self._func_ranges_bytes(func_offsets, total_size)
+            out += self._func_ranges_bytes(func_offsets, total_size, nested_ends=nested_ends)
         else:
             # CAD 代码引用长度 = total_size = len(seg0 字节码) + 1。
             ref_len = total_size if total_size else self._first_function_len(module_code)
             out += self._code_ref_bytes(ref_len)
         if stub_format:
-            # CAD 符号格式: 连续 SYMBOL 合并为单个 5b 块，遇 STRING 分块。
+            # CAD 符号格式: 连续 SYMBOL 合并为单个 5b 块，遇 STRING 分块；
+            # 连续 STRING 合并为单个 55 块（i18n-cad 实测 `55 02 00
+            # <len> <str> <len> <str>`，`.en.lang`/`.zh.lang`）。
             # 跳过模块已注册的符号（函数名 + 顶层表达式符号，含字符串）。
             skip_first = len(func_names_all) + top_level_count
             symbol_bytes = bytearray()
-            for i, (entry_type, entry_val) in enumerate(entries[1:]):
+            sub = entries[1:]
+            i = 0
+            while i < len(sub):
+                entry_type, entry_val = sub[i]
                 if i < skip_first - 1:
+                    i += 1
                     continue
-                if entry_type == 'SYMBOL':
-                    if str(entry_val) == '_al-bind-alist':
-                        # CAD `/ 局部变量` 助手：保留大小写、独立 0x56 单符号
-                        # （t11_localvars 实测，非 5b 合并块）。
+                if entry_type == "SYMBOL":
+                    if nested_offs and func_offsets.get(str(entry_val)) in nested_offs:
+                        # kwote 内嵌 `-lambda-`：仅经资源流前置 DEFCODE 注册
+                        # （ref i18n-cad 实测），不进符号块。
+                        i += 1
+                        continue
+                    if str(entry_val) in ("_al-bind-alist", "kwote"):
+                        # CAD `/ 局部变量` 助手与 kwote 机制符号：保留大小写、
+                        # 独立 0x56 单符号块（t11_localvars / i18n-cad 实测）。
                         if symbol_bytes:
-                            out += b'\x5b' + bytes(symbol_bytes) + b'\x00'
+                            out += b"\x5b" + bytes(symbol_bytes) + b"\x00"
                             symbol_bytes = bytearray()
-                        out += b'\x56' + self._enc(entry_val) + b'\x00\x00'
+                        out += b"\x56" + self._enc(entry_val) + b"\x00\x00"
                     else:
-                        symbol_bytes += self._enc_sym(entry_val) + b'\x00'
-                elif entry_type == 'CONST':
+                        symbol_bytes += self._enc_sym(entry_val) + b"\x00"
+                    i += 1
+                elif entry_type == "CONST":
                     if symbol_bytes:
-                        out += b'\x5b' + bytes(symbol_bytes) + b'\x00'
+                        out += b"\x5b" + bytes(symbol_bytes) + b"\x00"
                         symbol_bytes = bytearray()
                     out += self._const_bytes(entry_val)
-                elif entry_type == 'STRING':
+                    i += 1
+                elif entry_type == "STRING":
                     if symbol_bytes:
-                        out += b'\x5b' + bytes(symbol_bytes) + b'\x00'
+                        out += b"\x5b" + bytes(symbol_bytes) + b"\x00"
                         symbol_bytes = bytearray()
-                    self._push_entry(out, (entry_type, entry_val))
+                    # 合并连续 STRING 为单个 55 块
+                    strs = [entry_val]
+                    j = i + 1
+                    while j < len(sub) and j >= skip_first - 1 and sub[j][0] == "STRING":
+                        strs.append(sub[j][1])
+                        j += 1
+                    out += b"\x55" + res_u16(len(strs))
+                    for sv in strs:
+                        enc = self._enc(sv)
+                        out += res_u16(len(enc)) + enc
+                    i = j
                 else:
                     if symbol_bytes:
-                        out += b'\x5b' + bytes(symbol_bytes) + b'\x00'
+                        out += b"\x5b" + bytes(symbol_bytes) + b"\x00"
                         symbol_bytes = bytearray()
                     self._push_entry(out, (entry_type, entry_val))
+                    i += 1
             if symbol_bytes:
-                out += b'\x5b' + bytes(symbol_bytes) + b'\x00'
+                out += b"\x5b" + bytes(symbol_bytes) + b"\x00"
         else:
             for entry_type, entry_val in entries[1:]:
                 self._push_entry(out, (entry_type, entry_val))
-        out += b'\x5c\x00\x00'
+        if stub_format and "-lambda-" in func_offsets:
+            # kwote 内嵌 `-lambda-`：在 GVARINIT(0, nsyms) 前置 DEFCODE，
+            # 使大 GVARINIT 的 module_id 解出 FUNC 而非裸符号
+            # （ref i18n-cad 实测）：GET_LOCAL 0 + INT32 offset +
+            # SYMBOL -lambda- + DEFCODE。
+            off = func_offsets["-lambda-"]
+            if -128 <= off <= 127:
+                out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
+            else:
+                out += b"\x5c\x00\x00" + res_int32(off)
+            out += b"\x5b" + self._enc("-lambda-") + b"\x00\x00"
+            out += b"\x3a"
+        out += b"\x5c\x00\x00"
         if stub_format:
             # CAD: 函数注册 GVARINIT st_init = 注册符号数 + 1 = len(entries) - skip_first + 1。
             # 该 st_init 亦等于 nsyms。
             reg_count = len(entries) - skip_first + 1
-            out += res_gvar_init(0, reg_count) + b'\x0a'
+            out += res_gvar_init(0, reg_count) + b"\x0a"
         else:
-            out += res_gvar_init(0, entry_count) + b'\x0a'
+            out += res_gvar_init(0, entry_count) + b"\x0a"
 
         # ── 函数定义（每个函数一个 DEFCODE）──────────────────────────────
         # CAD 为每个函数生成: GET_LOCAL 0, PUSH_INT8 <seg0-offset>,
@@ -355,31 +420,37 @@ class ResourceBuilder:
         if not func_names:
             name0 = self._entry_name(entries[0])
             func_names = [name0]
+        # kwote 内嵌 `-lambda-` 已前置 DEFCODE 注册，此处剔除避免重复。
+        if nested_offs:
+            func_names = [k for k in func_names if func_offsets.get(k) not in nested_offs]
         if stub_format:
             func_names = list(reversed(func_names))
         for fi, fname in enumerate(func_names):
             off = func_offsets.get(fname, 0)
             if stub_format:
                 if -128 <= off <= 127:
-                    out += b'\x5c\x00\x00\x32' + bytes([off & 0xFF])
+                    out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
                 else:
-                    out += b'\x5c\x00\x00' + res_int32(off)
-                out += b'\x5b' + self._enc_sym(fname) + b'\x00\x00'
+                    out += b"\x5c\x00\x00" + res_int32(off)
+                # CAD `-lambda-`（内嵌函数）保留小写（`-LAMBDA-` 是错的）；
+                # 其余函数名统一大写。
+                name_enc = self._enc(fname) if str(fname) == "-lambda-" else self._enc_sym(fname)
+                out += b"\x5b" + name_enc + b"\x00\x00"
                 # CAD 只有最后一个 DEFCODE 追加 01（stub 格式）。
-                out += b'\x3a\x01' if fi == len(func_names) - 1 else b'\x3a'
+                out += b"\x3a\x01" if fi == len(func_names) - 1 else b"\x3a"
             else:
                 if -128 <= off <= 127:
-                    out += b'\x5c\x00\x00\x32' + bytes([off & 0xFF])
+                    out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
                 else:
-                    out += b'\x5c\x00\x00' + res_int32(off)
-                out += b'\x5b' + self._enc_sym(fname) + b'\x00\x00'
-                out += b'\x3a\x01'
+                    out += b"\x5c\x00\x00" + res_int32(off)
+                out += b"\x5b" + self._enc_sym(fname) + b"\x00\x00"
+                out += b"\x3a\x01"
         # DEFCODE 后 GVARINIT：var_pos = 模块注册符号数 + 2（函数名 + 顶层符号 + 2）。
         _nsyms = entry_count - len(func_names) - top_level_count + 1
         gv_var_pos = len(func_names) + top_level_count + 2 + commands if stub_format else max(0, entry_count - 1)
         gv_st_init = len(func_names) if stub_format else len(func_names)
         out += res_gvar_init(gv_var_pos, gv_st_init)
-        out += b'\x1c'
+        out += b"\x1c"
 
         # ── 模块代码 ────────────────────────────────────────────────────
         out += module_code
@@ -388,18 +459,18 @@ class ResourceBuilder:
 
     def _push_entry(self, out: bytearray, entry: Tuple[str, Any]):
         entry_type, entry_val = entry
-        if entry_type == 'SYMBOL':
-            out += b'\x5b' + self._enc_sym(entry_val) + b'\x00\x00'
-        elif entry_type == 'CONST':
+        if entry_type == "SYMBOL":
+            out += b"\x5b" + self._enc_sym(entry_val) + b"\x00\x00"
+        elif entry_type == "CONST":
             out += self._const_bytes(entry_val)
-        elif entry_type == 'STRING':
+        elif entry_type == "STRING":
             encoded = self._enc(entry_val)
-            out += b'\x55\x01\x00' + res_u16(len(encoded)) + encoded
-        elif entry_type == 'INT':
+            out += b"\x55\x01\x00" + res_u16(len(encoded)) + encoded
+        elif entry_type == "INT":
             val = int(entry_val)
             out += res_int8(val) if -128 <= val <= 127 else res_int32(val)
-        elif entry_type == 'REAL':
-            out += res_real_str(f'{entry_val:g}')
+        elif entry_type == "REAL":
+            out += res_real_str(f"{entry_val:g}")
 
     def _const_bytes(self, structure) -> bytes:
         """把 CAD 常量结构序列化为资源流记录（CAD '(lambda ...) 实测）。
@@ -413,29 +484,29 @@ class ResourceBuilder:
 
     def _emit_const(self, out: bytearray, structure):
         kind = structure[0]
-        if kind == 'NIL':
+        if kind == "NIL":
             out.append(0x01)
-        elif kind == 'T':
+        elif kind == "T":
             out.append(0x02)
-        elif kind == 'SYMBOL':
-            out += b'\x5b' + self._enc_sym(structure[1]) + b'\x00\x00'
-        elif kind == 'INT':
+        elif kind == "SYMBOL":
+            out += b"\x5b" + self._enc_sym(structure[1]) + b"\x00\x00"
+        elif kind == "INT":
             val = int(structure[1])
             out += res_int8(val) if -128 <= val <= 127 else res_int32(val)
-        elif kind == 'REAL':
-            out += res_real_str(f'{structure[1]:g}')
-        elif kind == 'STRING':
+        elif kind == "REAL":
+            out += res_real_str(f"{structure[1]:g}")
+        elif kind == "STRING":
             encoded = self._enc(structure[1])
-            out += b'\x55\x01\x00' + res_u16(len(encoded)) + encoded
-        elif kind == 'LIST':
+            out += b"\x55\x01\x00" + res_u16(len(encoded)) + encoded
+        elif kind == "LIST":
             dotted = len(structure) > 2 and structure[2]
             for item in structure[1]:
                 self._emit_const(out, item)
             # dotted 引用 `'(1 . 2)`：CAD 用单字节 `2a`(LIST_END) 收尾
             # （t12_quote 实测）；普通列表用 `39 <count>`。
-            out += b'\x2a' if dotted else (b'\x39' + res_u16(len(structure[1])))
+            out += b"\x2a" if dotted else (b"\x39" + res_u16(len(structure[1])))
         else:
-            raise ValueError(f'Unknown constant kind: {kind}')
+            raise ValueError(f"Unknown constant kind: {kind}")
 
     @staticmethod
     def _entry_name(entry: Tuple[str, Any]) -> str:
@@ -449,21 +520,35 @@ class ResourceBuilder:
         return bytes([0x32, 0x00]) + res_int32(length) + bytes([0x2A, 0x39, 0x01, 0x00])
 
     @staticmethod
-    def _func_ranges_bytes(func_offsets: Dict[str, int], total_len: int) -> bytes:
+    def _func_ranges_bytes(
+        func_offsets: Dict[str, int], total_len: int, nested_ends: Optional[Dict[int, int]] = None
+    ) -> bytes:
         """多函数代码引用：每个函数的 (start, end) 范围，从末尾逆序。
 
         ``32 <start> 32 <end> 2a ... 39 <count> 00``。
+
+        kwote 内嵌 `-lambda-` 目录项（i18n-cad 实测）：内嵌函数范围 end 用
+        其自身结束偏移（nested_ends），宿主函数 end 用下一个**非内嵌**函数的
+        起始（跳过内嵌项）。ref：`@::LOAD-MT (944, 1081)`、`-lambda- (984, 1044)`。
         """
+        nested_offsets = set(nested_ends) if nested_ends else set()
         offsets = sorted((v, k) for k, v in func_offsets.items())
         out = bytearray()
         ranges = []
         for i, (off, name) in enumerate(offsets):
-            end = offsets[i + 1][0] if i + 1 < len(offsets) else total_len
+            if off in nested_offsets:
+                end = nested_ends[off]
+            else:
+                end = total_len
+                for j in range(i + 1, len(offsets)):
+                    if offsets[j][0] not in nested_offsets:
+                        end = offsets[j][0]
+                        break
             ranges.append((off, end))
         for start, end in reversed(ranges):
             out += bytes([0x32, start & 0xFF]) if -128 <= start <= 127 else bytes([0x33]) + res_s32(start)
             out += bytes([0x32, end & 0xFF]) if end <= 127 else bytes([0x33]) + res_s32(end)
-            out += b'\x2a'
+            out += b"\x2a"
         out += bytes([0x39]) + res_u16(len(ranges))
         return bytes(out)
 

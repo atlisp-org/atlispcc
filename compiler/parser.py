@@ -133,7 +133,7 @@ class Parser:
             elif name in ('quote', 'function'):
                 expr = self.parse_form(quoted=True)
                 self.expect('RPAREN')
-                return QuotedExpr(expr=expr)
+                return QuotedExpr(expr=expr, kwote=(name == 'function'))
             else:
                 items, dotted = self._parse_items_until_rparen(quoted)
                 if dotted is not None:

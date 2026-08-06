@@ -59,6 +59,30 @@ def to_const(node):
         return ('REAL', node.value)
     if isinstance(node, String):
         return ('STRING', node.value)
+    if isinstance(node, QuotedExpr):
+        # 嵌套在更大引用结构内的 `'X`（如 save-mt error-handler 的
+        # `'(if (eq 'file (type fp)) ...)` 里的 `'file`）：CAD 展开为
+        # `(QUOTE FILE)` 列表（i18n-cad fg[15] 实测），而非原样失败回落
+        # 到运行时构建。kwote=True（`(function ...)`）走函数机制不 const。
+        if node.kwote:
+            return None
+        inner = to_const(node.expr)
+        if inner is None:
+            return None
+        return ('LIST', (('SYMBOL', 'QUOTE'), inner))
+    if isinstance(node, IfNode):
+        # 引用数据里的 `(if ...)`：`if` 是数据符号（CAD 收集 IF 作常量结构，
+        # save-mt error-handler `'(if (eq 'file (type fp)) (close fp))` 实测
+        # fg[15] = `((IF)((EQ)((QUOTE FILE)((TYPE FP)))((CLOSE FP)))`）。
+        items = [('SYMBOL', 'if')]
+        for sub in (node.cond, node.then, node.else_expr):
+            if sub is None:
+                break
+            c = to_const(sub)
+            if c is None:
+                return None
+            items.append(c)
+        return ('LIST', tuple(items))
     if isinstance(node, LambdaNode):
         params = ('LIST', tuple(('SYMBOL', a) for a in node.args))
         body = tuple(to_const(b) for b in node.body)
@@ -193,6 +217,14 @@ class CadSymbolCollector:
         # 的 local 函数（i18n-cad 实测 slot 121 在 @::update-locale 区）。其余
         # local 函数不重复注册 `_al-bind-alist`（共享，codegen 按符号名取回）。
         source_first_local = next((f for f in defuns if f.locals), None)
+        # 全局"已被函数体引用"的符号集合。局部变量若已被任一函数体字节码引用
+        # （即出现在某 kept_refs 中，如 save-mt 的 fp/opt%/*error% 分别由
+        # load-locale/load-mt 引用），则不在此单独注册槽（i18n-cad 实测：
+        # save-mt 无独立局部变量槽，均由引用它的函数体组注册）。
+        claimed_in_body = set()
+        for kept in kept_refs:
+            for n, _ in kept:
+                claimed_in_body.add(n)
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             for name, force in reversed(kept):
                 self.add(name, force=force or name in module_reg_names)
@@ -206,7 +238,8 @@ class CadSymbolCollector:
                     self.add('_al-bind-alist')
                 self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
             for loc in reversed(f.locals):
-                self.add(loc)
+                if loc not in claimed_in_body:
+                    self.add(loc)
             for arg in reversed(f.args):
                 if arg in self.shared:
                     # 逆序迭代索引 i 对应源码索引 nfuncs-1-i。
@@ -457,12 +490,16 @@ class CadSymbolCollector:
             for form in node.forms:
                 self._collect_byteorder(form, out, arg_names, in_quote)
         elif isinstance(node, ForeachNode):
-            for expr in node.body:
-                self._collect_byteorder(expr, out, arg_names, in_quote)
+            # CAD foreach 字节码：列表求值存局部槽 → loop 头 GET_LOCAL/JMP →
+            # 体 SETQ_G <var>（循环变量先于体求值）→ 体各式。故符号引用序 =
+            # list_expr → var → body（i18n-cad 实测 update-locale-all 组
+            # [PKG, @::*PKG-IN-USE*, ...]：list 在 var 之前）。
             if node.list_expr:
                 self._collect_byteorder(node.list_expr, out, arg_names, in_quote)
             if node.var is not None:
                 self._collect_byteorder(node.var, out, arg_names, in_quote)
+            for expr in node.body:
+                self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, RepeatNode):
             for expr in node.body:
                 self._collect_byteorder(expr, out, arg_names, in_quote)
@@ -483,7 +520,20 @@ class CadSymbolCollector:
             for item in node.items:
                 self._collect_byteorder(item, out, arg_names, in_quote)
         elif isinstance(node, QuotedExpr):
-            if node.expr is not None:
+            if node.kwote:
+                # `(function (lambda ...))`：CAD kwote 机制（i18n-cad 实测）。
+                # 只注册 `kwote` 符号（0x56 独立块）；lambda 体照常收集符号
+                # （builtin 调用如 CONS/READ 会注册），但不注册字面 `lambda`
+                # 符号、不按 quote 语义收集 `if` 等数据符号、参数（局部槽）
+                # 由 arg_names 排除。
+                out.append(("kwote", False))
+                if isinstance(node.expr, LambdaNode):
+                    lambda_args = set(node.expr.args)
+                    for expr in node.expr.body:
+                        self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
+                else:
+                    self._collect_byteorder(node.expr, out, arg_names, in_quote)
+            elif node.expr is not None:
                 # CAD 引用单符号 `'a`：编译为 PUSH_G 普通符号槽，不注册
                 # CONST（setcmp/setqa 实测 `(set 'a 5)` 的 A、`(setq x 'a)`
                 # 的 A 均为普通 SYMBOL 槽）。仅列表/lambda/dotted 等复合
