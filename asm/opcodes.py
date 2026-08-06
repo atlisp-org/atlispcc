@@ -24,7 +24,7 @@ OPCODES = {
     0x51: ('FUNC', 'f'), 0x57: ('JUMP', 's4'), 0x5c: ('GET_LOCAL_WIDE', '2'),
      0x5d: ('SET_LOCAL', '2'), 0x5e: ('CLEAR_LOCAL', '2'), 0x62: ('NOP_ALT', ''), 0x63: ('NOP_ALT2', ''),
      0x67: ('JMP32_IFNOT', 's4'), 0x68: ('COND_OR', 's4'), 0x69: ('JUMP_ALT', 's4'),
-     0x6a: ('COND_AND', 's4'), 0x6b: ('COND_AND2', 's4'),
+     0x6a: ('COND_AND', 's4'),
 }
 
 OPCODE_TO_NAME = {op: name for op, (name, _) in OPCODES.items()}

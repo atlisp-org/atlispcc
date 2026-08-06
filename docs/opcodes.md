@@ -56,7 +56,7 @@ FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操
 | `02` | PUSH_T | `''` | 压入 `T`（布尔真） | `_emit_expr`（`T` 字面量）、`_emit_call_expr`（`(exit)`/`(quit)`/`(abort)`、空 `(and)`） |
 | `03` | PUSH_VALUE | `2` | 由符号槽索引取值压栈。全局变量、参数、函数名引用均通过此指令 | `_emit_expr`（符号引用）、`_emit_arith` / `_emit_unary`（stub 结果取回） |
 | `09` | PUSH_G | `2` | 压入全局符号字面量。"G" = Global。字符串字面量、quoted 符号用此指令 | `_emit_expr`（字符串）、`_emit_quoted`、`_emit_init_args`（参数名注册） |
-| `0c` | PUSH_G_ALT | `2` | 同 PUSH_G（备用编码，项目中未使用） | — |
+| `0c` | PUSH_G_ALT | `2` | 紧 PUSH_G 的备用编码；代码生成不发射，但 CAD 产物中观测到，反编译需支持 | `decompiler`（符号引用读回） |
 | `32` | PUSH_INT8 | `1` | 压入单字节有符号整数（−128~127） | `_emit_expr`（小整数）、`_emit_quoted` |
 | `33` | PUSH_INT32 | `4` | 压入四字节有符号整数（超出 `int8` 范围时） | `_emit_expr`（大整数）、`_emit_quoted` |
 | `3b` | PUSH_REAL | `z` | 压入实数（ASCII 字符串后跟 NUL） | `_emit_expr`（实数）、`_emit_quoted` |
@@ -84,7 +84,7 @@ FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操
 | `05` | GET_LOCAL | `1` | 压入局部变量值（短编码，slot<256） | `_emit_expr`、`_emit_init_args`（自包含格式） |
 | `5c` | GET_LOCAL_WIDE | `2` | 压入局部变量值（长编码，slot≥256 或 stub 格式） | `_emit_expr`、`_emit_foreach`、`_emit_repeat`、`_emit_init_args`（stub 格式） |
 | `5d` | SET_LOCAL | `2` | 设置局部变量（栈顶→slot）。不用于 stub 格式 | `_emit_setq_expr`（局部 setq）、`_emit_foreach`（循环变量）、`_emit_repeat`（计数器更新）、`_emit_tail_call`（参数重绑定） |
-| `5e` | CLEAR_LOCAL | `2` | 清空局部变量为 nil（项目中未使用） | — |
+| `5e` | CLEAR_LOCAL | `2` | 清空局部变量为 nil；代码生成不发射（清局部用 SET_LOCAL/_al-bind-alist），CAD 产物中观测，反编译需支持 | `decompiler`（局部变量清理读回） |
 
 > **stub 格式**不使用 `SET_LOCAL`——所有 setq 统一用 `SETQ_G`（`06`），
 > 前加 `DUP`（`0b`，尾 setq）/不加 `DUP`（中间 setq）。
@@ -138,12 +138,12 @@ FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操
 | 十六进制 | 名称 | 格式 | 描述 | 发射位置 |
 |----------|------|------|------|----------|
 | `14` | DEFUN | `h` | 函数定义开始。自包含: `14 <gvar:2> <offset:2>`；stub: `14 <argc>x3 00` | `_emit_defun_header`、`generate_function` |
-| `15` | DEFUN_ALT | `h` | DEFUN 变体（项目中未使用） | — |
+| `15` | DEFUN_ALT | `h` | DEFUN 备用编码；代码生成不发射，CAD/ZWCAD 产物中观测，反编译需支持 | `decompiler` |
 | `16` | END_DEFUN | `''` | 函数体结束标记。自包含格式末尾用此；stub 格式不生成，多函数时分隔符追加 `16` | `FasWriter`（写入时追加） |
 | `18` | INIT_ARGS | `2` | 初始化函数参数绑定。自包含: `2*argc`；stub: `2*argc+1` | `_emit_init_args`、`generate_function` |
 | `19` | CLEAR_ARGS | `2` | 清除函数参数绑定（返回前） | `_emit_clear_args` |
 | `1c` | INIT_DONE | `''` | 模块初始化完成标记（资源段中使用） | `ResourceBuilder`（seg1 尾部） |
-| `21` | END_DEFUN_CLEANUP | `2` | 函数结束清理（项目中未使用） | — |
+| `21` | END_DEFUN_CLEANUP | `2` | 函数结束清理；代码生成不发射，CAD 产物中观测，反编译需支持 | `decompiler`（`END_DEFUN_CLEANUP` 处理） |
 
 #### 示例：DEFUN 头对比
 
@@ -219,17 +219,17 @@ USUBR 操作数（紧凑 stub 格式）：
 | 十六进制 | 名称 | 格式 | 描述 | 发射位置 |
 |----------|------|------|------|----------|
 | `57` | JUMP | `s4` | 无条件跳转，4 字节有符号相对偏移 | `_emit_if`（跳过 else/到 end）、`_emit_while`/`_emit_foreach`/`_emit_repeat`（循环回跳）、`_emit_cond`（跳过剩余子句）、`_emit_tail_call`（尾递归跳转） |
-| `69` | JUMP_ALT | `s4` | 无条件跳转（备用编码，项目中未使用） | — |
+| `69` | JUMP_ALT | `s4` | 无条件跳转（JUMP 备用编码）；代码生成不发射，CAD 产物中观测，反编译需支持 | `decompiler`（`JUMP`/`JUMP_ALT` 处理） |
 | `67` | JMP32_IFNOT | `s4` | 条件跳转。**CAD stub 格式中语义为"栈顶为假则跳转"(IFNOT)**，4 字节有符号偏移 | `_emit_if`（stub if 分支）、`_emit_while`（stub 循环退出） |
 | `0d` | JMP16_IFNOT | `2` | 条件假跳转（短），2 字节有符号偏移 | `_emit_if`（自包含 if 分支）、`_emit_while`（自包含循环退出）、`_emit_short_circuit`（`and`）、`_emit_foreach`（空列表检测）、`_emit_repeat`（零计数检测）、`_emit_cond`（子句条件为假） |
-| `0e` | JMP16_IF | `2` | 条件真跳转（短），2 字节有符号偏移 | `_emit_short_circuit`（`or`） |
-| `3c` | JMP16_IFNOT_ALT | `2` | 同 JMP16_IFNOT（备用编码，项目中未使用） | — |
-| `3d` | JMP16_IF_ALT | `2` | 同 JMP16_IF（备用编码，项目中未使用） | — |
+| `0e` | JMP16_IF | `2` | 条件真跳转（短），2 字节有符号偏移。代码生成不发射——`or` 短路在紧凑 stub 下用 `COND_OR`（`JMP16_IF` 序列在 stub 运行时出错）；CAD 产物中观测，反编译需支持 | `decompiler`（短路跳出） |
+| `3c` | JMP16_IFNOT_ALT | `2` | 同 JMP16_IFNOT（备用编码）；代码生成不发射，CAD 产物中观测，反编译需支持 | `decompiler`（短路分析） |
+| `3d` | JMP16_IF_ALT | `2` | 同 JMP16_IF（备用编码）；代码生成不发射，CAD 产物中观测，反编译需支持 | `decompiler`（短路分析） |
 | `3e` | EXIT_IF_NOT_ZERO | `''` | 栈顶非零则退出执行 | `_emit_call_expr`（`(exit)`/`(quit)`/`(abort)`） |
-| `3f` | EXIT_IF_ZERO | `''` | 栈顶为零则退出（项目中未使用） | — |
-| `68` | COND_OR | `s4` | 短路 OR（项目中未使用） | — |
-| `6a` | COND_AND | `s4` | 短路 AND（项目中未使用） | — |
-| `6b` | COND_AND2 | `s4` | COND_AND 变体（项目中未使用） | — |
+| `3f` | EXIT_IF_ZERO | `''` | 栈顶为零则退出。代码生成不发射（本编译器用 `EXIT_IF_NOT_ZERO`），CAD 产物中观测，反编译需支持 | `decompiler`（`EXIT_IF_ZERO` 处理） |
+| `68` | COND_OR | `s4` | 短路 OR，4 字节有符号相对偏移 | `_emit_short_circuit`（`or`） |
+| `6a` | COND_AND | `s4` | 短路 AND，4 字节有符号相对偏移 | `_emit_short_circuit`（`and`）、`_emit_short_circuit`（`or` 尾部规范化） |
+
 
 #### 控制流结构
 
@@ -392,10 +392,10 @@ loop: → cond → JMP32_IFNOT exit → body → JUMP loop → exit
 | `29` | CDR | `''` | 弹出列表，取其剩余部分压栈 | `(cdr list)` |
 | `2a` | CONS | `''` | 弹出两个值，构造点对 | `(cons a b)` / 点对字面量 `'(a . b)` |
 | `39` | BUILD_LIST | `2` | 弹出 n 个值，构造列表，结果压栈 | `(list a b c ...)` |
-| `37` | BUILD_LIST_ALT | `2` | 同 BUILD_LIST（备用编码，项目中未使用） | — |
+| `37` | BUILD_LIST_ALT | `2` | 同 BUILD_LIST（备用编码）；代码生成不发射，CAD 产物中观测，反编译需支持 | `decompiler`（`BUILD_LIST`/`BUILD_LIST_ALT` 处理） |
 | `23` | NOT | `''` | 弹出栈顶，逻辑取反后压栈 | `(not x)` |
 | `24` | ATOM | `''` | 弹出栈顶，判断是否为原子 | `(atom x)` |
-| `07` | COPY_ELEM | `bb` | 编译器内部元素复制（项目中未使用） | — |
+| `07` | COPY_ELEM | `bb` | 复制列表元素；代码生成不发射，CAD/ZWCAD 产物中普遍观测，反编译需支持 | `decompiler`（COPY_ELEM 处理） |
 
 #### 示例
 

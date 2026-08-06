@@ -78,7 +78,6 @@ def main() -> None:
         0x67: ('JMPIF', 4),       # jump if true
         0x68: ('JMPIF2', 4),
         0x6a: ('JMPIFNOT', 4),    # jump if nil
-        0x6b: ('JMPIFNOT2', 4),
     }
 
     while i < len(bc):

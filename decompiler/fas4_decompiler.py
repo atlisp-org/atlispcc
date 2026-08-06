@@ -374,7 +374,6 @@ class Disassembler:
         0x68: ("COND_OR", "s4"),
         0x69: ("JUMP_ALT", "s4"),
         0x6A: ("COND_AND", "s4"),
-        0x6B: ("COND_AND2", "s4"),
     }
 
     def __init__(self, short_subr: bool = False):
@@ -1780,7 +1779,7 @@ class LispGenerator:
             elif name == "END_DEFUN_CLEANUP" and inst.operands:
                 dropped = pop_many(inst.operands[0] + 2)
                 flush_stack()
-            elif name in ("COND_OR", "COND_AND", "COND_AND2"):
+            elif name in ("COND_OR", "COND_AND"):
                 cond = pop_expr("nil") or "nil"
                 if name == "COND_OR":
                     if cond_state is not None and i == cond_state["info"]["condors"][cond_state["next"]]:
