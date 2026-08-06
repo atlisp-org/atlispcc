@@ -455,16 +455,19 @@ class CodeGenerator:
             # CAD stub: cond + JMP32_IFNOT <else> + then + JUMP <end> + else。
             # 注意：CAD 的 JMP32_IFNOT(0x67) 语义为"栈顶为假则跳转"(IFNOT)。
             # 无 else 分支时 CAD 不生成 else 代码，label_else 与 label_end 重合于 JUMP 之后。
+            # then/else 分支末表达式是 if 的"值"：stub 下分支末尾 setq 无论
+            # if 自身是否尾上下文都要 DUP 保留该值（p05 then 分支尾多对 setq
+            # 的最后一对 `DUP SETQ_G` 实测）。
             jmp_pos = buf.pos()
             buf.emit(encode_op_s32(JMP32_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_else, 4)
-            self._emit_expr(buf, node.then or Symbol("nil"), _tail=self._in_tail_context)
+            self._emit_expr(buf, node.then or Symbol("nil"), _tail=True)
             jmp2_pos = buf.pos()
             buf.emit(encode_op_s32(JUMP, 0))
             buf.add_patch(jmp2_pos + 1, label_end, 4)
             buf.patch_label(label_else, buf.pos())
             if node.else_expr:
-                self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
+                self._emit_expr(buf, node.else_expr, _tail=True)
             else:
                 # CAD stub：无 else 分支时在 else 标签处补隐式 PUSH_NIL
                 # （cond 为假时返回 nil），then 分支的 JUMP 跳过它（t9 实测）。

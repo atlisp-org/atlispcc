@@ -53,7 +53,7 @@
 | lambda/quote | ✅ | `(map-inc '(1 2 3))` → (2 3 4)；lambda 参数局部化正确（全局 x 不受污染） |
 | 4函数+交叉引用 | ✅ | `(f1 10)`→11 … `(f5 10)`→29 全部正确（p1_multi4 实测） |
 | while/cond/局部变量/apply/funcall/quote | ✅ | t04-t13 全套 CAD 实测通过；t04_while/t05_cond 与 CAD golden 逐字节一致 |
-| i18n.lsp 混合模式 | ❌ | seg1 模块代码结构差异 |
+| i18n.lsp 混合模式 | 🔶 | 拆件 p01-p07 全 byte-identity；原文件（未拆分交错 defun+顶层）seg1 模块代码结构差异 |
 
 > 单函数文件（`fun.lsp`、`fact.lsp`）解密后与 CAD 编译器输出逐字节一致。
 
@@ -272,7 +272,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | ~~P1~~ | ~~lambda 参数绑定~~ | ✅ 已修复（λ 常量 PUSH_G 操作数 = gvar 槽-1 = symtab 槽-nfuncs+1） |
 | ~~P1~~ | ~~while/cond/局部变量符号槽~~ | ✅ 已修复（while 无 WHILE 槽/末体无 POP；cond 测试正序+结果倒序） |
 | P0 | t-series 剩余符号槽差异（t03/t09-t15） | 字节级兼容补齐（见 8.C1） |
-| P0 | i18n.lsp 混合模式 | defun+顶层交错持续块规则（见 8.C2） |
+| P0 | i18n.lsp 混合模式 | defun+顶层交错注册规则（见 8.C2；拆件 p01-p07 已全对齐，原文件仍待续） |
 | P1 | 工具链健壮性 | `compiler/cli.py` ast 遮蔽、README/打包矛盾、validate 补强（见 8.A） |
 | P1 | 测试与 CI 完善 | t-series byte-identity 回归（已落地 18 份 golden，16 项 identical，2 项 xfail）、i18n roundtrip、mypy、twine check（见 8.B） |
 | P2 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见 8.D） |
@@ -364,7 +364,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 > 另有 `tests/cad/t*.fas`/`t*_atlispcc.fas` 成对对比样本。t01-t15/t18 **全部**
 > byte-identity 回归（`test_t_series_byte_identity`，18/18，t16/t17 于 2026-08-06 转正）。
 
-**C2 i18n 混合模式（最大缺口，1139 字节差 / -69 len）**
+**C2 i18n 混合模式（原为最大缺口 1139 字节差 / -69 len）**
 
 - 根因：`i18n.lsp` = defun + 顶层表达式**交错**（非先 defun 后顶层），
   `cad_symbols.py` 与 `_build_cad_module_code` 只支持"函数块在前、顶层在后"
@@ -373,6 +373,10 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
      （顶层表达式符号在函数体内建之前，按源码序跨块收集）
   2. `ResourceBuilder.build` 的 `module_entries` 切分逻辑改为按交错序
   3. 用 `tests/cad/i18n.lsp` + `tests/cad/i18n-cad.fas` 迭代至字节一致
+- 进度：**拆件 p01-p07 全部 byte-identity**（2026-08-06，`tests/cad/i18n_split/`，
+  锁入 `I18N_SPLIT_FULL_IDENTICAL`；seg0+seg1+nsyms 对齐）。
+  拆件修复了：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）、
+  stub 下 if-then 分支尾 setq 补 DUP、"setq 目标归属优先于读取"
 - 验收：`i18n.lsp` 编译 seg0/seg1 与 CAD 逐字节一致
 
 **C3 补充 CAD 验证样本**
@@ -382,7 +386,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
   - **新增 t16_foreach、t17_repeat、t18_multi_recursive**（互递归多函数），
     源码与 CAD golden（`vlisp-compile 'st` 真机生成）自包含于 `tests/cad/`
   - CAD 实测产出命令：`(vlisp-compile 'st "src.lsp" "out.fas")`
-- 现状：**18/18 全部 byte-identity 转正**（t16/t17 于 2026-08-06 转正，见 §9.2 记录；i18n 混合模式仍待续）
+- 现状：**18/18 全部 byte-identity 转正**（t16/t17 于 2026-08-06 转正，见 §9.2 记录；i18n 混合模式拆件 p01-p07 于 08-06 转正）
 
 ### 8.D ZELX 复杂文件压缩（P2）
 

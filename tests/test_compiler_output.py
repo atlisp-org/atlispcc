@@ -461,15 +461,15 @@ def test_pure_top_level_byte_identity(src_name, golden_name):
 
 #: i18n 拆分件（tests/cad/i18n_split/pXX.lsp）与其 CAD 真机 golden
 #: （golden/pXX_cad.fas，2026-08-06 AutoCAD 24.1s vlisp-compile 生成）。
-#: p01/p02 已 byte-identity；p04-p07 为"模块注册序对齐"regression：
-#: 单 defun + 顶层 setq 混合时 CAD 按源码逆序逐 form 交错注册（含把
-#: 源码尾部顶层 form 的符号排前），seg0 已逐字节一致，剩余仅在 seg1
-#: 的符号重复槽计数（our nsyms 6 vs CAD 5）。锁 seg0 防回归，待 seg1
-#: 归零后整体移入 CAD_T_SERIES_IDENTICAL。
+#: p01-p07 已 byte-identity（seg0+seg1+nsyms 全对齐）。其中 p04-p07 为
+#: "模块注册序对齐"regression：单 defun + 顶层 setq 混合时 CAD 按源码逆序
+#: 逐 form 交错注册（含把源码尾部顶层 form 的符号排前）；p04-p07 于
+#: 2026-08-06 修复——DUP 插入改为按真实 SETQ_G 指令定位（不碰 USUBR 的
+#: 0x06 索引字节）、if-then 分支尾 setq 补 DUP、setq 目标归属优先于读取。
 I18N_SPLIT_SEG0_IDENTICAL = {
-    'p01', 'p02', 'p04', 'p05', 'p06', 'p07',
+    'p01', 'p02', 'p03', 'p04', 'p05', 'p06', 'p07',
 }
-I18N_SPLIT_FULL_IDENTICAL = {'p01', 'p02'}
+I18N_SPLIT_FULL_IDENTICAL = {'p01', 'p02', 'p03', 'p04', 'p05', 'p06', 'p07'}
 
 
 @pytest.mark.parametrize('name', sorted(I18N_SPLIT_SEG0_IDENTICAL))

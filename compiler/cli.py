@@ -264,7 +264,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
 
 def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: int = 0,
                            top_level_count: int = 0, top_after_defun: bool = False,
-                           func_names: object = ()) -> bytes:
+                           func_names: object = (), n_post_forms: int = 0) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
     CAD 模块代码规则（逆向，AutoCAD 24.1s 实测）：
@@ -286,17 +286,30 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
     out = bytearray(b'\x14\x01\x00\x00\x00')  # DEFUN 模块头
     out += bytes([0x09]) + struct.pack('<H', module_reg_count + 1) + b'\x0a'  # 占位
 
-    # 顶层语句按源码位置分组：defun 之后的顶层语句（mix2 的 `(setq x 10)`）
-    # 排到函数注册尾之后；defun 之前的排在 JUMP 之前。
+    # 顶层语句按源码位置分组：最后一个 defun 之后的顶层语句（mix2 的
+    # `(setq x 10)`、p04 的 `(setq *codepage* ...)` 与 `(if ...)`）排到函数
+    # 注册尾之后；defun 之前的排在 JUMP 之前。n_post_forms 由调用方按最后
+    # 一个 defun 在 program.forms 中的位置计算，支持多个 post-form（CAD
+    # p04-p07 实测）。
     if top_after_defun and other_forms:
-        pre_forms = other_forms[:-1]
-        post_forms = [other_forms[-1]]
+        n_post = n_post_forms
+        if n_post:
+            pre_forms = other_forms[:-n_post]
+            post_forms = other_forms[-n_post:]
+        else:
+            pre_forms = other_forms[:-1]
+            post_forms = [other_forms[-1]]
     else:
         pre_forms = other_forms
         post_forms = []
 
-    def _stmt_bytes(form):
-        """把单个顶层 form 编译为模块代码语句（setq 用 CAD 的 DUP 模式）。"""
+    def _stmt_bytes(form, tail: bool = False):
+        """把单个顶层 form 编译为模块代码语句（setq 用 CAD 的 DUP 模式）。
+
+        tail=True 表示该 form 是模块最终保留值（如最后一个 post-form），
+        CAD 以其求值结果作为模块代码的返回值——此时 form 内部的尾 setq
+        （如 if-then 分支最后一句）需按尾上下文编译（补 DUP，p04 实测）。
+        """
         from compiler.ast_nodes import Symbol, String as _Str
         cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
         handled = False
@@ -340,23 +353,34 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
             else:
                 return bytes(pairs_bc)
         fb = BytecodeBuffer()
-        cg._emit_expr(fb, form)
+        cg._emit_expr(fb, form, _tail=tail)
         fb.resolve()
         bc = bytes(fb.data)
-        if isinstance(form, Setq):
+        if isinstance(form, Setq) and not tail:
             # setq 值非常量（INT/REAL/列表等）：CAD 在 SETQ_G 前插入 DUP
             # 保留返回值（mix2 `(setq x 10)` 实测 `32 0a 0b 06 03 00`）。
-            import re
-            m = re.compile(b'\x06..', re.S).search(bc)
-            if m:
-                bc = bc[:m.start()] + b'\x0b' + bc[m.start():]
+            # 注意：不能简单正则找 `06 ..`——USUBR 的 idx 字节可能为 0x06，
+            # 需定位真正的 SETQ_G 指令偏移。
+            from decompiler.fas4_decompiler import Disassembler
+            _dis = Disassembler(short_subr=True)
+            try:
+                _insts = _dis.disassemble(bc, len(symtab.entries), sym_count=len(symtab.entries))
+            except Exception:
+                _insts = []
+            _setq_off = None
+            for _i in _insts:
+                if _i.op_name == "SETQ_G":
+                    _setq_off = _i.offset
+            if _setq_off is not None:
+                bc = bc[:_setq_off] + b'\x0b' + bc[_setq_off:]
         return _offset_slots(bc, len(symtab.entries))
 
     def _emit_stmts(forms, last_no_pop: bool):
         """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。"""
         nonlocal out
         for i, form in enumerate(forms):
-            stmt = _stmt_bytes(form)
+            tail = last_no_pop and i == len(forms) - 1
+            stmt = _stmt_bytes(form, tail=tail)
             out += stmt
             if i < len(forms) - 1 or not last_no_pop:
                 out += b'\x0a'  # POP
@@ -656,15 +680,30 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     fas_nsyms = len(symtab.entries) - module_reg_count + 1
     _pre_nsyms = fas_nsyms
     if other_forms:
-        # 顶层语句在源码中位于最后一个 defun 之后（如 `(set '_ @::_)`）时，
-        # 排到函数注册尾之后（mix2 实测：`(setq x 10)` 在 defun b 后）。
-        _last_overall = program.forms[-1] if program.forms else None
+        # 顶层语句在源码中位于最后一个 defun 之后（如 `(set '_ @::_)`、
+        # p04 的 `(setq *codepage* ...)` 与 `(if ...)`）时，排到函数注册尾
+        # 之后（mix2 实测：`(setq x 10)` 在 defun b 后）。可能多个 post-form。
         from compiler.ast_nodes import Defun as _Defun
-        _top_after_defun = _last_overall is not None and not isinstance(_last_overall, (_Defun, Defpackage, InPackage))
+        from compiler.ast_nodes import Defpackage as _Defpackage
+        from compiler.ast_nodes import InPackage as _InPackage
+        _last_overall = program.forms[-1] if program.forms else None
+        _top_after_defun = _last_overall is not None and not isinstance(_last_overall, (_Defun, _Defpackage, _InPackage))
+        _last_defun_pos = -1
+        for _i, _f in enumerate(program.forms):
+            if isinstance(_f, _Defun):
+                _last_defun_pos = _i
+        # 统计最后一个 defun 之后、且非 defun/defpackage 的顶层 form 数。
+        # other_forms 与 program.forms 同序（仅过滤 defun/defpackage），
+        # 故末尾 n 个 other_forms 即为 post-form。
+        _n_post_forms = sum(
+            1 for _f in program.forms[_last_defun_pos + 1:]
+            if not isinstance(_f, (_Defun, _Defpackage, _InPackage))
+        ) if _last_defun_pos >= 0 else 0
         module_code = _build_cad_module_code(top_level_code, symtab, other_forms,
                                              n_funcs=len(defun_forms), top_level_count=top_level_count,
                                              top_after_defun=_top_after_defun,
-                                             func_names=[f.name for f in defun_forms])
+                                             func_names=[f.name for f in defun_forms],
+                                             n_post_forms=_n_post_forms)
     elif n_cmds:
         module_code = build_command_module_code(len(defun_forms))
     else:

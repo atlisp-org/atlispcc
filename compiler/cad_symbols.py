@@ -286,25 +286,27 @@ class CadSymbolCollector:
                 self._form_read_target(form, r, t, set())
             reads.append(r)
             targets.append(t)
-        # 符号归属：读取(value)优先 → 最早读取的 form；否则 → 最早赋值的 form。
+        # 符号归属：setq 目标优先 → 最早赋值的 form；否则 → 最早读取的 form。
+        # CAD p05/p06/p07 实测：`@::*LANG*` 既是 form0 `(setq @::*lang* ...)`
+        # 的目标，又被末尾 `(null @::*lang*)` 读取——槽归属到目标 form0
+        # （排在 pre-form 组尾部），而非读取它的 post-form。
         owner_read = {}
+        owner_target = {}
         for i in range(n):
+            for s in targets[i]:
+                if s not in owner_target:
+                    owner_target[s] = i
             for s in reads[i]:
                 if s not in owner_read:
                     owner_read[s] = i
         ancestor = {}
 
         def _owner_of(sym):
+            if sym in owner_target:
+                return owner_target[sym]
             if sym in owner_read:
                 return owner_read[sym]
-            if sym not in ancestor:
-                pos = None
-                for i in range(n):
-                    if sym in targets[i]:
-                        pos = i
-                        break
-                ancestor[sym] = pos if pos is not None else -1
-            return ancestor[sym]
+            return -1
 
         module_seen = set()
         for i in reversed(range(n)):

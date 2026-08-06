@@ -213,9 +213,13 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - 尾递归、&optional/&rest ✅
 - 顶层 setq/set（defun 前后混合）✅
 - `fun.lsp`/`fact.lsp` 解密后与 CAD 逐字节一致 ✅
-- t-series 全部 15 项真机功能验证通过（`scripts/cad_verify.py`）✅
+- t-series 真机功能验证通过 t01-t15、t18（16 项，`scripts/cad_verify.py`；2026-08-06 复核）✅
+- i18n 混合模式拆件 p01-p07 全部 byte-identity（`tests/cad/i18n_split/`，seg0+seg1+nsyms
+  对齐 CAD golden，2026-08-06）✅
+  - p04-p07 关键修复：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）；
+    stub 下 if-then 分支尾 setq 补 DUP 保留返回值；`_register_module` 符号归属 setq 目标优先
 
 ### 已知限制
 
-- `i18n.lsp` 混合模式：defun+顶层表达式混杂，`cad_symbols.py` 需支持持续块规则
+- `i18n.lsp` 原文件混合模式（未拆分）仍需 `cad_symbols.py` 持续块规则支持；拆件 p01-p07 已全对齐
 - MCP CAD 连接不稳定，建议手动测试
