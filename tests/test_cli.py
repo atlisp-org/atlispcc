@@ -55,6 +55,45 @@ def test_compile_default_output():
                 os.unlink(p)
 
 
+@pytest.mark.parametrize('enc', ['utf-8', 'utf-8-sig', 'gbk'])
+def test_compile_source_encoding_detection(enc):
+    """UTF-8 / UTF-8 BOM / ANSI(GBK) 编码的中文源码均能正确编译读取。"""
+    src = '(defun hello () (strcat "你好，" "世界"))'
+    src_path = _tmp('enc.lsp')
+    out = _tmp('enc.fas')
+    try:
+        with open(src_path, 'w', encoding=enc) as f:
+            f.write(src)
+        result = cmd_compile(src_path, out)
+        fas = Fas4Parser().parse(result)
+        strs = [it[1] for it in fas.resource_items
+                if isinstance(it, tuple) and len(it) == 2 and it[0] == 'STRING']
+        assert '你好，' in strs
+        assert '世界' in strs
+    finally:
+        for p in (src_path, out):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def test_compile_source_gbk_file_roundtrip():
+    """GBK(ANSI) 源码 + cp936 输出：FAS 字符串为 GBK 字节，反编译正确。"""
+    src_path = _tmp('gbk.lsp')
+    out = _tmp('gbk.fas')
+    try:
+        with open(src_path, 'w', encoding='gbk') as f:
+            f.write('(defun a () "中文测试")')
+        cmd_compile(src_path, out, encoding='cp936')
+        fas = Fas4Parser().parse(out)
+        sec2 = bytes(fas.sec2_data)
+        assert b'\xd6\xd0\xce\xc4\xb2\xe2\xca\xd4' in sec2  # GBK 字节 "中文测试"
+    finally:
+        for p in (src_path, out):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+
 def test_cmd_validate_ok():
     p = _tmp('ok.lsp')
     with open(p, 'w') as f:

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, List, Tuple
 
 
-SYMBOL_RE = re.compile(r'^[\w\-?!*/=<>+:.]+$')
+SYMBOL_RE = re.compile(r'^[\w\-?!*/=<>+:.&@%]+$')
 NUMBER_RE = re.compile(r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$')
 
 
@@ -279,7 +279,8 @@ def validate_unused(forms: List[Node]) -> List[str]:
 
 
 def validate_file(path: Path) -> bool:
-    text = path.read_text(encoding='utf-8')
+    from core.fas_core import decode_source_text
+    text = decode_source_text(path.read_bytes())
     tokens, token_errors = tokenize(text)
     forms, parse_errors = parse_tokens(tokens)
     errors = token_errors + validate_balance(tokens) + parse_errors + validate_ast(forms)

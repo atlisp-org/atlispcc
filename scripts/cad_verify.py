@@ -4,8 +4,12 @@
 每个用例独立执行（编译 → 复制到 CAD → 加载 → 断言返回值），避免单个大脚本
 在 CAD 会话不稳定时整体中断（§3.7 安全策略）。
 
+覆盖 21 项：t01-t15 + t16_foreach/t17_repeat + t18 相互递归 +
+t19_variadic（&optional/&rest）+ t20_kwote（`(function (lambda ...))` 内嵌
+函数）+ i18n（混合 defun+顶层+kwote，调 @::codepage2lang）。
+
 用法:
-    python scripts/cad_verify.py           # 全量验证 15 项
+    python scripts/cad_verify.py           # 全量验证 21 项
     python scripts/cad_verify.py t01 t05   # 只验证指定项
 """
 import json
@@ -45,7 +49,22 @@ CASES = [
     ("t14_command", '(list (c:add 3 4) (c:add 10 -2))', [7, 8]),
     ("t15_cad_funcs", '(list (get-dist \'(0 0) \'(3 4)) (get-ang \'(0 0) \'(1 0)))',
      [5.0, 0.0]),
+    ("t16_foreach", '(sum-foreach \'(1 2 3 4 5))', 15),
+    ("t17_repeat", '(repeat-count 5)', 5),
     ("t18_multi_recursive", '(list (is-even 4) (is-odd 3))', [True, True]),
+    # &optional/&rest 可变参数（t19_variadic，CAD 需至少一个必填参数才收集 rest）
+    ("t19_variadic",
+     '(list (t19-greet "CAD") (t19-greet "CAD" "Hi") (t19-sum 1 2 3 4))',
+     ["Hello, CAD!", "Hi, CAD!", 10]),
+    # kwote `(function (lambda ...))` / `-lambda-` 内嵌函数完整运行链路
+    # （t20_kwote：apply-fn 接收 kwote lambda 并调用，应得 2*21=42）
+    ("t20_kwote", '(t20-kwote)', 42),
+    # i18n 混合模式（defun+顶层+kwote `-lambda-`）：加载后调用纯函数
+    # `@::codepage2lang`（assoc 字符串 key），验证 kwote/嵌套 lambda 运行正确
+    ("i18n",
+     '(list (@::codepage2lang "ANSI_936") (@::codepage2lang "ANSI_949")'
+     ' (@::codepage2lang "ANSI_1258"))',
+     [["zh", "zh_CN"], ["kor", "kr"], ["vie", "vi"]]),
 ]
 
 # 已知功能缺陷（混合模式，§8.C2 待修）：t10 的 get-version/hello 符号错位

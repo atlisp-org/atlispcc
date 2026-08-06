@@ -127,7 +127,7 @@ make clean       # 清理构建产物与缓存
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
-- `test_cli.py` — CLI 路径（16 用例：compile/-O/--analyze/validate/link/vlx/dispatch + validate 补强规则）
+- `test_cli.py` — CLI 路径（20 用例：compile/-O/--analyze/validate/link/vlx/dispatch + validate 补强规则 + 源码编码检测）
 - `test_compile_decompile.py` — 编译-反编译往返（46 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式）
 - `test_compiler_output.py` — FAS 输出正确性（26 用例，含 7 对 CAD golden 逐字节比对 + 15 项 t-series byte-identity/xfail 回归）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
@@ -142,7 +142,7 @@ make clean       # 清理构建产物与缓存
 
   一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。
 
- 手动测试文件 `tests/test_*.lsp` 也在该目录；CAD 兼容矩阵源文件 `tests/cad/t01_math.lsp`…`t15_cad_funcs.lsp` 是 `test_t_series_roundtrip` 的 fixture（编译→反编译→validate），源码与 CAD golden `.fas` 自包含存放在 `tests/cad/`。
+ 手动测试文件 `tests/test_*.lsp` 也在该目录；CAD 兼容矩阵源文件 `tests/cad/t01_math.lsp`…`t15_cad_funcs.lsp` 是 `test_t_series_roundtrip` 的 fixture（编译→反编译→validate），源码与 CAD golden `.fas` 自包含存放在 `tests/cad/`。真机用例源文件另含 `tests/cad/t16_foreach.lsp`、`t17_repeat.lsp`、`t19_variadic.lsp`（`&optional`/`&rest`）、`t20_kwote.lsp`（`(function (lambda ...))` kwote 机制），由 `scripts/cad_verify.py` 编译加载验证。`tools/validate.py` 的 `SYMBOL_RE` 允许 `&`/`@`/`%`（`&optional`/`&rest`、`@::pkg`、`opt%` 等合法 AutoLISP 符号）。
 
 ## 兼容性
 
@@ -214,12 +214,22 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - 顶层 setq/set（defun 前后混合）✅
 - `fun.lsp`/`fact.lsp` 解密后与 CAD 逐字节一致 ✅
 - t-series 真机功能验证通过 t01-t15、t18（16 项，`scripts/cad_verify.py`；2026-08-06 复核）✅
+- **真机验证清单扩展至 21 项**（`scripts/cad_verify.py`，2026-08-06）：新增
+  t16_foreach/t17_repeat（循环 stub）、t19_variadic（`&optional`/`&rest`，
+  `tests/cad/t19_variadic.lsp`）、t20_kwote（`(function (lambda ...))` 内嵌
+  `-lambda-` 运行链路，`tests/cad/t20_kwote.lsp`）、i18n（混合模式加载 +
+  `@::codepage2lang` 纯函数断言）——待 CAD 复核确认
 - i18n 混合模式拆件 p01-p07 全部 byte-identity（`tests/cad/i18n_split/`，seg0+seg1+nsyms
   对齐 CAD golden，2026-08-06）✅
   - p04-p07 关键修复：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）；
     stub 下 if-then 分支尾 setq 补 DUP 保留返回值；`_register_module` 符号归属 setq 目标优先
+- **`i18n.lsp` 原文件（混合 defun+顶层+kwote）seg0+sec2 逐字节一致**（2026-08-06）✅
+  - 关键修复：kwote 使 `fas_nsyms` 比 codegen_nsyms 大 1，seg0 引用需 `gvar 槽 - 1 - (fas_nsyms-codegen_nsyms)`；
+    `-lambda-` 参数/引用槽修正（kwote 参数进 `func_args`、`-LAMBDA-` 引用槽 = nsyms-1）；
+    Disassembler `03` 单字节占位前总跟 `00`（NIL）判定；连续 STRING 合并 `55` 块；
+    中间 if 的 then 值 POP 位于 JUMP 前、模块代码顶层 if-then-setq 补 DUP/无 else 补 PUSH_NIL
 
 ### 已知限制
 
-- `i18n.lsp` 原文件混合模式（未拆分）仍需 `cad_symbols.py` 持续块规则支持；拆件 p01-p07 已全对齐
+- 文件头注释/版本戳（`;A<日期>`）随日期变化，非字节一致性目标；seg0+sec2 已全对齐
 - MCP CAD 连接不稳定，建议手动测试

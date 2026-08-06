@@ -201,6 +201,21 @@ def decode_fas_text(raw: bytes) -> str:
     return raw.decode("latin-1", errors="replace")
 
 
+def decode_source_text(raw: bytes) -> str:
+    """读取 Lisp/LASM 源码文件文本：BOM 处理 + 自动检测编码。
+
+    同时支持 UTF-8、UTF-8 BOM、UTF-16 与 ANSI（系统代码页，中文=GBK）
+    保存的源码。UTF-8 优先（严格解码），失败回退系统 ANSI / gbk /
+    cp1252 / latin-1（与 decode_fas_text 同链）。
+    """
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw[3:].decode("utf-8")
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        enc = "utf-16-le" if raw[:2] == b"\xff\xfe" else "utf-16-be"
+        return raw[2:].decode(enc)
+    return decode_fas_text(raw)
+
+
 def parse_resource_stream(res_data: bytes) -> tuple:
     """解析解密后的 seg1 资源流，返回 (items, symbols, strings)。
 
