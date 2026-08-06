@@ -201,7 +201,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录
 ./scripts/run_tests.sh         # 一键全量检查（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）
 ./scripts/run_tests.sh --cad   # 附加 CAD 真机验证（需 CAD 连接）
 python scripts/cad_verify.py   # CAD 真机验证（逐个编译 t01-t15 加载断言）
-python -m pytest               # 运行所有测试（239 用例）
+python -m pytest               # 运行所有测试（277 用例 + 1 skip 占位）
 python -m pytest tests/ -v     # 详细输出
 python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 ```

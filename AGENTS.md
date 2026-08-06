@@ -122,14 +122,14 @@ make clean       # 清理构建产物与缓存
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 239 用例）：
+**测试文件在 `tests/` 目录下**（pytest 风格，共 277 用例 + 1 skip 占位）：
 - `test_parser.py` — AST 解析器（19 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
 - `test_cli.py` — CLI 路径（20 用例：compile/-O/--analyze/validate/link/vlx/dispatch + validate 补强规则 + 源码编码检测）
 - `test_compile_decompile.py` — 编译-反编译往返（46 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式）
-- `test_compiler_output.py` — FAS 输出正确性（26 用例，含 7 对 CAD golden 逐字节比对 + 15 项 t-series byte-identity/xfail 回归）
+- `test_compiler_output.py` — FAS 输出正确性（27 用例，含 7 对 CAD golden 逐字节比对 + 18 项 t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
 - `test_assembler.py` — 反汇编/汇编往返（8 用例）
@@ -137,7 +137,7 @@ make clean       # 清理构建产物与缓存
 - `test_resource_stream.py` — 资源码解析/资源段构建（24 用例：符号/字符串块、GVARINIT、DEFCODE、build_mvar_tables、资源码 vs 操作码区分）
 - `test_packages.py` — CL 风格包系统（4 用例）
 - `test_vlx_builder.py` — VLX 容器（3 用例）
-- `test_variadic_args.py` — &optional/&rest 编译（5 用例）
+- `test_variadic_args.py` — &optional/&rest 编译（14 用例）
 - `test_zelx.py` — ZWCAD ZELX 构建/解析（5 用例）
 
   一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。
@@ -219,11 +219,15 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   `tests/cad/t19_variadic.lsp`）、t20_kwote（`(function (lambda ...))` 内嵌
   `-lambda-` 运行链路，`tests/cad/t20_kwote.lsp`）、i18n（混合模式加载 +
   `@::codepage2lang` 纯函数断言）——待 CAD 复核确认
+- **真机验证清单扩展至 22 项**（2026-08-07）：新增 t21_variadic_extra
+  （`tests/cad/t21_variadic_extra.lsp`：单函数 `&optional` 缺省、`&rest` 收集、
+  optional+rest 组合、纯 `&optional`），与 t19 同属真机功能验证（无 CAD golden）。
 - i18n 混合模式拆件 p01-p07 全部 byte-identity（`tests/cad/i18n_split/`，seg0+seg1+nsyms
   对齐 CAD golden，2026-08-06）✅
   - p04-p07 关键修复：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）；
     stub 下 if-then 分支尾 setq 补 DUP 保留返回值；`_register_module` 符号归属 setq 目标优先
 - **`i18n.lsp` 原文件（混合 defun+顶层+kwote）seg0+sec2 逐字节一致**（2026-08-06）✅
+  （锁入 `test_i18n_original_byte_identity`：compile → Fas4Parser 比对 seg0+nsyms+seg1）
   - 关键修复：kwote 使 `fas_nsyms` 比 codegen_nsyms 大 1，seg0 引用需 `gvar 槽 - 1 - (fas_nsyms-codegen_nsyms)`；
     `-lambda-` 参数/引用槽修正（kwote 参数进 `func_args`、`-LAMBDA-` 引用槽 = nsyms-1）；
     Disassembler `03` 单字节占位前总跟 `00`（NIL）判定；连续 STRING 合并 `55` 块；

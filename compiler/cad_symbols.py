@@ -276,7 +276,8 @@ class CadSymbolCollector:
         #    递归函数名：多次自身调用共享同一个重复槽（t03 递归两次仅 1 个重复
         #    FIB 槽；fact 递归一次 1 个重复槽）。
         for f in reversed(defuns):
-            arg_names = set(f.args)
+            all_args = f.args + f.optional + ([f.rest] if f.rest else [])
+            arg_names = set(all_args)
             refs = []
             for expr in strip_docstring(f.body):
                 self._collect_byteorder(expr, refs, arg_names)
@@ -296,7 +297,7 @@ class CadSymbolCollector:
             if f.locals:
                 self.add('_al-bind-alist')
                 self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
-            for arg in reversed(f.args):
+            for arg in reversed(all_args):
                 if arg not in self.names:
                     self.add(arg)
             for loc in reversed(f.locals):

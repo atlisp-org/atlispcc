@@ -503,3 +503,36 @@ def test_i18n_split_seg0_identity(name):
             f'{name}: nsyms {ours.nsyms} != {ref.nsyms}')
         assert ours.resource_items == ref.resource_items, (
             f'{name}: seg1 resource items differ from CAD golden')
+
+
+def test_i18n_original_byte_identity():
+    """i18n.lsp 原文件（defun+顶层+kwote -lambda- 交错混合模式）与 CAD golden
+    逐字节一致（seg0 + nsyms + seg1 资源段）。
+
+    锁住 §9.2 记录的全部关键修复：kwote 的 fas_nsyms 与 codegen_nsyms 差、
+    -lambda- 参数/引用槽、03 单字节占位、连续 STRING 合并 55 块、中间 if
+    then 值 POP、模块代码顶层 if-then-setq 补 DUP / 无 else 补 PUSH_NIL。
+    2026-08-06：原文件已与 `tests/cad/i18n-cad.fas` 逐字节一致。
+    """
+    from compiler.cli import cmd_compile
+    from decompiler.fas4_decompiler import Fas4Parser
+
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cad')
+    src = os.path.join(base, 'i18n.lsp')
+    golden = os.path.join(base, 'i18n-cad.fas')
+    if not (os.path.exists(src) and os.path.exists(golden)):
+        pytest.skip('missing i18n.lsp/i18n-cad.fas mixed-mode fixture')
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        ours = Fas4Parser().parse(out)
+        ref = Fas4Parser().parse(golden)
+    assert ours.bytecode == ref.bytecode, (
+        'i18n.lsp: seg0 differs from CAD golden\n'
+        f'  ours: {ours.bytecode.hex()}\n'
+        f'  CAD : {ref.bytecode.hex()}'
+    )
+    assert ours.nsyms == ref.nsyms, (
+        f'i18n.lsp: nsyms {ours.nsyms} != {ref.nsyms}')
+    assert ours.resource_items == ref.resource_items, (
+        'i18n.lsp: seg1 resource items differ from CAD golden')

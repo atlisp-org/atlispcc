@@ -53,7 +53,7 @@
 | lambda/quote | ✅ | `(map-inc '(1 2 3))` → (2 3 4)；lambda 参数局部化正确（全局 x 不受污染） |
 | 4函数+交叉引用 | ✅ | `(f1 10)`→11 … `(f5 10)`→29 全部正确（p1_multi4 实测） |
 | while/cond/局部变量/apply/funcall/quote | ✅ | t04-t13 全套 CAD 实测通过；t04_while/t05_cond 与 CAD golden 逐字节一致 |
-| i18n.lsp 混合模式 | 🔶 | 拆件 p01-p07 全 byte-identity；原文件（未拆分交错 defun+顶层）seg1 模块代码结构差异 |
+| i18n.lsp 混合模式 | ✅ | 拆件 p01-p07 全 byte-identity；原文件（交错 defun+顶层+kwote）seg0+seg1+nsyms 与 CAD golden 逐字节一致（`test_i18n_original_byte_identity`） |
 
 > 单函数文件（`fun.lsp`、`fact.lsp`）解密后与 CAD 编译器输出逐字节一致。
 
@@ -75,6 +75,14 @@
 全部通过（含 `tests/test_variadic_args.py` 5 用例与 `test_t_series_roundtrip` 15 用例、
 `tests/test_resource_stream.py` 24 用例资源码专项）。
 新增：`tests/conftest.py` 已撤销（CLI 管线与裸管线顶层表达式差异，见 `AGENTS.md`「测试中的关键陷阱」）。
+
+**v0.1.16（2026-08-06）**:267 用例（266 passed + 1 skip，skip 为空的 `CAD_T_SERIES_DIFF`
+占位），含新增 `test_i18n_original_byte_identity`（i18n 原文件 mixed 模式 byte-identity 回归）。
+
+**v0.1.16（2026-08-07 补充）**:277 用例（276 passed + 1 skip）。新增 7 个 `&optional`/`&rest`
+往返测试（`test_variadic_args.py`：参数名恢复、多 optional、optional+rest 组合、rest 递归/转发等）
+与真机样本 `tests/cad/t21_variadic_extra.lsp`（`scripts/cad_verify.py` 注册 t21 真机断言）。
+单函数变参参数名槽位修复见 §3.4 补充。
 
 ---
 
@@ -106,7 +114,7 @@ CAD 逐字节一致。
 **技术路线**：结合调试器（如之前 fas-format.org 的 OD 方法）逆向
 acad.exe 的 FAS 加载器，完善 gvar 表模型。
 
-### 3.4 ✅ 已解决：反编译 stub 参数名错位
+### 3.4 ✅ 已解决：反编译 stub 参数名错位（定参）
 
 > **修复**（2026-08）：
 > - `decompiler/fas4_decompiler.py` `_extract_signature`：参数名重复或非字母时，尝试
@@ -116,6 +124,8 @@ acad.exe 的 FAS 加载器，完善 gvar 表模型。
 > - `codegen.py` `_emit_expr`：参数读取公式同步修正
 > - `cli.py` `_patch_usubr_idx`：PUSH_VALUE 逆公式更新
 > - CAD 已验证：`(defun hypot (a b) ...)` → `(defun hypot (a b) ...)` ✓
+> - **范围**：定参函数；`&optional`/`&rest` 变参的单函数见 §3.5b（已修复）、
+>   多函数见 §3.5c（遗留）。
 
 ### 3.5 纯 `&rest`（min=0）CAD 不收集 rest（优先级：中）✅ 已逆向/已处理
 
@@ -132,6 +142,55 @@ PUSH_G 绑定槽均无效；且 `b1 ≥ 1` 时 CAD 按 min 解析参数绑定数
 **处理**（已实施）：编译器对纯 `&rest`（`f.rest and not f.args and not
 f.optional`）打印警告（非阻断），提示建议 `(defun f (x &rest r))`
 至少一个必填参数。文档与 `cad-stub-format.md` 同步注明。
+
+### 3.5b ✅ 已解决：单函数变参参数名槽位错位（&rest/&optional）
+
+> **发现**（2026-08-07，`test_variadic_args.py` 扩充时）：`(defun foobar (a &rest n) ...)`
+> 编译后在 CAD 调用报 `函数错误: (2 3)`（rest 值被压到函数位）。根因：
+> `cad_symbols._collect_single` 的 `arg_names = set(f.args)` 与尾部参数注册
+> `for arg in reversed(f.args)` 都**只含 f.args**，`&rest`/`&optional` 参数被当作
+> 函数体符号收集（槽位错位），而 codegen 单函数 init 公式
+> `idx = nsyms - argc + src_i` 期望全部参数占据顶部 argc 个槽位。
+>
+> **修复**：`_collect_single` 改用 `all_args = f.args + f.optional + [f.rest]`
+> 作为 `arg_names` 与尾部参数注册顺序（与 codegen 的 `all_args` 一致）。
+> 验证：`(defun foobar (a &rest n) (apply '+ (cons a n)))` 在 CAD 真机
+> `(foobar 1 2 3)` → 6 可运行 ✅；`&optional` 单函数同样恢复参数名。
+> 已随 v0.1.16 发布，并锁入 `test_rest_param_name_recovered_single` /
+> `test_optional_param_name_recovered_single`。
+
+### 3.5c 多函数变参反编译参数名错位（遗留）
+
+**现象**：多函数文件含 `&optional`/`&rest` 时，首个函数的参数名反编译错位。
+例 `(defun a1 (x &optional y) ...)`（与 `b1` 同文件）反编译为
+`(defun a1 (y &optional arg_2))`；t19 的 `t19-greet (name &optional greeting)`
+→ `(defun t19-greet (greeting &optional arg_2))`。编译字节码在 CAD 真机**可用**
+（t19_sum 等已通过），仅反编译参数名映射错误。
+
+**根因**：多函数符号收集路径（`_collect`）的 `arg_names`/参数注册仍只含
+`f.args`（未含 optional/rest），且 `_patch_usubr_idx` 依赖的 `function_gvars`
+（`build_mvar_tables`）对紧凑 stub 不完整（末位符号槽缺失），参数槽无法
+正确解析回符号名。
+
+> **注意**：曾尝试在多函数路径同步纳入 optional/rest（改变符号槽序），但会
+> 改变 CAD 已验证可用的 t19 槽位布局（REST@4→@5），有回归风险，已回退。
+> 多函数变参**字节码保持原样**（CAD 可用），仅反编译名错待修。
+
+### 3.5d 反编译 `(list (or a 0))` / `(list (if a a 0))` 展开缺陷（遗留）
+
+**现象**：`(defun f (a b) (list (or a 0) (or b 0)))` 反编译为
+`(list T T)` + 独立的 `(or (or a 0) (or b 0))`；`(list (if a a 0) ...)`
+反编译为多个独立 `if` + 空 `(list)`。非变参同样触发（与变参无关）。
+
+**根因**：`or`/`if` 编译进参数位置时含 `PUSH_T`/`COND_OR` 等控制流指令，
+反编译器按顶层表达式渲染，未折叠回参数位置。
+
+### 3.5e 反编译 lambda 参数遮蔽外层参数（遗留）
+
+**现象**：`(defun f (lst) (mapcar '(lambda (x) (* x 2)) lst))` 反编译为
+`(defun f (x) ...)`（`lst`→`x`，外层参数被 lambda 参数名遮蔽）。
+
+**根因**：反编译器对 lambda 内的符号槽命名复用/冲突处理不完整。
 
 ### 3.6 链接器多函数 CAD 只注册首个函数（优先级：高）
 
@@ -240,24 +299,24 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 | 任务 | 说明 |
 |------|------|
-| t-series 剩余符号槽差异（t03/t09-t15） | 已实测定位，见第 8 节 C1 |
-| i18n.lsp 混合模式 | defun+顶层交错持续块规则，见第 8 节 C2 |
-| 命令函数 `c:` 特殊处理 | `vl-ACAD-defun` 注册 |
-| 复杂表达式 | mapcar/lambda/apply/foreach 的 CAD 编码 |
-| 错误处理函数 | `*error*`、条件子程序 |
+| t-series 剩余符号槽差异（t03/t09-t15） | ✅ 全部转正 byte-identity（见第 8 节 C1） |
+| i18n.lsp 混合模式 | ✅ 原文件 byte-identity（`test_i18n_original_byte_identity`，见第 8 节 C2） |
+| 命令函数 `c:` 特殊处理 | ✅ `vl-ACAD-defun` 注册（t14，见第 9 节阶段 3） |
+| 复杂表达式 | ✅ mapcar/lambda/apply/foreach/repeat 的 CAD 编码（t08/t16/t17/t20） |
+| 错误处理函数 | `*error*`、条件子程序（开放） |
 | CAD 兼容回归套件 | 扩展 D:\atlisp-test 测试集 |
 
 ### 4.4 长期（P2，3-6 月）
 
 目标：完整工具链，健壮性与性能。
 
-| 任务 | 说明 |
-|------|------|
 | 优化器增强 | 跨函数常量传播、死代码消除扩展 |
-| 性能 | 大文件编译/反编译优化 |
+| 性能 | 大文件编译/反编译优化；`decompiler/fas4_decompiler._render_block`、`compiler/cad_symbols` 定位热点，基准驱动优化 |
 | CAD 版本兼容 | 多 AutoCAD 版本（2008-2025）FAS 变体 |
 | VLX 增强 | 依赖收集、eTransmit |
 | 文档完善 | 完整 FAS 格式规范 |
+| ZELX 复杂文件压缩（8.D） | 复刻 ZWCAD 压缩重编码（模块代码重编码 + 符号重排），对小型/简单文件已逐字节一致，复杂文件需逆向 LispConverter.exe（`docs/zelx-format.md` §5-6 + `tools/zelx_diff.py`）+ ZWCAD 真机验证 |
+| CAD 加载器内部逆向 | 逆向 acad.exe FAS 加载器，完善 `build_mvar_tables` gvar 表精确模型（`core/fas_core.py`） |
 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见第 8 节 D1） |
 
 ---
@@ -272,7 +331,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | ~~P1~~ | ~~lambda 参数绑定~~ | ✅ 已修复（λ 常量 PUSH_G 操作数 = gvar 槽-1 = symtab 槽-nfuncs+1） |
 | ~~P1~~ | ~~while/cond/局部变量符号槽~~ | ✅ 已修复（while 无 WHILE 槽/末体无 POP；cond 测试正序+结果倒序） |
 | P0 | t-series 剩余符号槽差异（t03/t09-t15） | 字节级兼容补齐（见 8.C1） |
-| P0 | i18n.lsp 混合模式 | defun+顶层交错注册规则（见 8.C2；拆件 p01-p07 已全对齐，原文件仍待续） |
+| P0 | i18n.lsp 混合模式 | defun+顶层交错注册规则（见 8.C2；拆件 p01-p07 已全对齐，原文件 byte-identity 已锁入回归） |
 | P1 | 工具链健壮性 | `compiler/cli.py` ast 遮蔽、README/打包矛盾、validate 补强（见 8.A） |
 | P1 | 测试与 CI 完善 | t-series byte-identity 回归（已落地 18 份 golden，16 项 identical，2 项 xfail）、i18n roundtrip、mypy、twine check（见 8.B） |
 | P2 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见 8.D） |
@@ -285,7 +344,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 ## 6. 验收标准
 
-- **P0 完成**：`pytest` 200/200 通过；t-series 与 `tests/cad/` golden 逐字节一致（见 §8.C）；i18n 混合模式字节一致
+- **P0 完成**：✅ `pytest` 全绿（266 passed，无 xfail）；✅ t-series 与 `tests/cad/` golden 逐字节一致（见 §8.C）；✅ i18n 混合模式字节一致
 - **P1 完成**：工具链健壮性修复落地；t-series byte-identity 回归（239 passed + 4 xfailed）；i18n roundtrip 用例通过；CI 绿
 - **P2 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过；多版本 CAD 兼容；大文件性能达标
 
@@ -377,7 +436,8 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
   锁入 `I18N_SPLIT_FULL_IDENTICAL`；seg0+seg1+nsyms 对齐）。
   拆件修复了：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）、
   stub 下 if-then 分支尾 setq 补 DUP、"setq 目标归属优先于读取"
-- 验收：`i18n.lsp` 编译 seg0/seg1 与 CAD 逐字节一致
+- 验收：✅ **已完成**（2026-08-06）——`i18n.lsp` 原文件编译 seg0/seg1/nsyms 与
+  CAD golden 逐字节一致，锁入 `test_i18n_original_byte_identity`
 
 **C3 补充 CAD 验证样本**
 
@@ -405,7 +465,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 **验收标准**：
 - **8.A 完成**：`python compiler/cli.py` 与 `python -m compiler.cli` 双入口可运行（✅）；README 无矛盾；validate 增规则有测试；`--analyze` 输出新增统计字段
 - **8.B 完成**：t-series byte-identity 回归落地（16 项 identical + 2 项 xfail，新增 test_resource_stream 24 用例）；B4 i18n roundtrip 用例通过；CI 绿（mypy + pytest）；dev 依赖含 readme-renderer
-- **8.C 完成**：t10/t11/t12/t14 由 xfail 全部转正为 byte-identity（移入 `CAD_T_SERIES_IDENTICAL`；t03/t09/t13/t15 已于 2026-08-04 转正）；i18n 混合模式字节一致；`pytest` 全绿（无 xfail）
+- **8.C 完成**：✅ t10/t11/t12/t14 由 xfail 全部转正为 byte-identity（移入 `CAD_T_SERIES_IDENTICAL`；t03/t09/t13/t15 已于 2026-08-04 转正）；✅ i18n 混合模式字节一致（`test_i18n_original_byte_identity`，2026-08-06）；`pytest` 全绿（无 xfail）
 - **8.D 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过
 
 ---
@@ -416,7 +476,11 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 > **CAD 验证**：独立实例 + 快照流程（遵守 §3.7 安全策略，不手动 patch 字节码）。
 > **产出**：本文件作为单一事实源，逐阶段更新。
 
-## 9.1 现状核实（2026-08-06 实测，`pytest` 254 passed）
+## 9.1 现状核实（2026-08-06 实测，`pytest` 266 passed）
+
+> 变参样本（t19_variadic、t21_variadic_extra）**无 CAD golden**，仅真机功能验证
+> （`scripts/cad_verify.py`，22 项）；反编译参数名在单函数已修复、多函数仍有
+> 错位（见 §3.5b/§3.5c）。
 
 | 项 | seg0 | seg1 | nsyms | 根因 | 优先级 |
 |---|---|---|---|---|---|
@@ -424,7 +488,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | t10_init | ✓ | ✓ | 4vs4 | **已转正 2026-08-05**（混合模式顶层符号序 + 模块代码多函数尾） | P0 ✅ |
 | t12_quote | ✓ | ✓ | 5vs5 | **已转正 2026-08-05**（dotted 常量 `2a` 收尾） | P1 ✅ |
 | t14_command | ✓ | ✓ | 6vs6 | **已转正 2026-08-05**（`vl-ACAD-defun` 注册 + 命令模块代码） | P1 ✅ |
-| i18n 混合模式 | ✗ | ✗ | 92vs92 | defun+顶层交错持续块规则（roundtrip 通过，字节一致待续） | P1 |
+| i18n 混合模式 | ✓ | ✓ | 92vs92 | **已转正 2026-08-06**（defun+顶层交错持续块规则，原文件 `test_i18n_original_byte_identity` 回归） | P1 ✅ |
 | t18_multi_recursive | ✓ | ✓ | 7vs7 | **已转正 2026-08-05**（互递归多函数，天然一致） | C3 ✅ |
 | t16_foreach | ✓ | ✓ | 5vs5 | **已转正 2026-08-06**（CAD stub foreach 内建调用协议：`PUSH_G/PUSH_NIL/INIT_ARGS 3` 预载 + `JMP32_IFNOT` + 尾 `CLEAR_ARGS 1`） | C3 ✅ |
 | t17_repeat | ✓ | ✓ | 4vs4 | **已转正 2026-08-06**（repeat 递减循环：`GET_LOCAL; PUSH_INT8 0; FIX_LEQ; JMP32_IFNOT` + 体前 `DEC`） | C3 ✅ |
@@ -434,7 +498,8 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 `t07_list` `t08_apply_mapcar` `t09_funcall` `t10_init` `t11_localvars`
 `t12_quote` `t13_nested_if` `t14_command` `t15_cad_funcs`
 `t18_multi_recursive` `t16_foreach` `t17_repeat`
-（2026-08-06：t16/t17 转正后 `CAD_T_SERIES_DIFF` 空，`pytest` 254 passed）
+（2026-08-06：t16/t17 转正后 `CAD_T_SERIES_DIFF` 空，`pytest` 266 passed；
+i18n 原文件 byte-identity 锁入 `test_i18n_original_byte_identity`）
 
 > **t18_multi_recursive 转正记录（2026-08-05）**：互递归（`is-even`/`is-odd` 互相调用）
 > 属"多函数 + 递归重复槽"场景，符号槽/字节码与 CAD 天然一致，无需新逻辑。
@@ -513,14 +578,14 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
     `symtab.entries`（否则 seg0 引用的 function_gvars 槽位 +1 破坏字节一致）；
     `commands` 计数 = 1（vl 符号数），非命令函数数。
 
-### 阶段 4：i18n 混合模式（P1，1133 处主战场）🔄 部分完成
+### 阶段 4：i18n 混合模式（P1，1133 处主战场）✅ 已完成 2026-08-06
 - `CadSymbolCollector.collect_program` 持续块规则（defun/顶层交错）
   - ✅ 顶层符号序已对齐（t10 转正，与单函数一致）
   - ✅ `/ 局部变量` `_al-bind-alist` 协议已落地（t11 转正）
-- 模块注册段交错序：**待续**。i18n（9 defun + 7 顶层）模块注册首符号
+- 模块注册段交错序：✅ **已完成**。i18n（9 defun + 7 顶层）模块注册首符号
   `_`（`(set '_ @::_)` 顶层目标）在槽 0、`@::_` 槽 1、函数名逆序随后，
-  `@::CODEPAGE2LANG`（顶层引用）归入顶层符号段而非函数组——需按 CAD 实测
-  逐块持续规则进一步逆向。roundtrip 测试已通过，字节一致待续。
+  `@::CODEPAGE2LANG`（顶层引用）归入顶层符号段而非函数组——按 CAD 实测
+  逐块持续规则逆向完成，原文件 byte-identity（`test_i18n_original_byte_identity`）。
 
 ### 阶段 5：收尾 ✅ 已完成 2026-08-05
 - xfail → `CAD_T_SERIES_IDENTICAL` 逐项转正（`tests/test_compiler_output.py`）
@@ -534,14 +599,16 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - 函数体中间 foreach/repeat 后无 POP（foreach 自带 `CLEAR_ARGS 1`，repeat 栈已平衡）
 - 反编译器 `_defun_headers_are_argc` 允许 `b1 == b3+1`
 - 回归防护：t04_while/t11_localvars/t18/t-complex O2（含 foreach/repeat 混合）保持一致 ✅
-- t16/t17 移入 `CAD_T_SERIES_IDENTICAL`，`pytest` 254 passed
+- t16/t17 移入 `CAD_T_SERIES_IDENTICAL`，`pytest` 266 passed
 
 ## 9.4 涉及文件
 `compiler/codegen.py`、`compiler/cad_symbols.py`、`compiler/resource_builder.py`、
 `compiler/cli.py`、`tests/test_compiler_output.py`、`docs/development-plan.md`
 
 ## 9.5 验收
-- ✅ `pytest` 全绿（254 passed，无 xfail）；t16/t17 已转正，`CAD_T_SERIES_DIFF` 空
+- ✅ `pytest` 全绿（无 xfail）；t16/t17 已转正，`CAD_T_SERIES_DIFF` 空
 - ✅ t11/t10/t12/t14/t18 + t16/t17 移入 `CAD_T_SERIES_IDENTICAL`（18/18 字节级一致）
-- ⏳ i18n 字节一致：roundtrip 通过，模块注册交错序待续（阶段 4）
+- ✅ **i18n.lsp 原文件 byte-identity**（2026-08-06）：原文件（defun+顶层+kwote `-lambda-`
+  交错混合模式）编译 seg0+nsyms+seg1 与 `tests/cad/i18n-cad.fas` 逐字节一致，
+  锁入 `test_i18n_original_byte_identity` 回归。拆分件 p01-p07 亦全对齐
 - `cad_verify.py` 真机 15/15（独立实例流程）

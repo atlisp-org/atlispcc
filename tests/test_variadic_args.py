@@ -39,6 +39,12 @@ def test_rest_args_markup():
     assert "(defun g (" in out
 
 
+def test_rest_param_name_recovered_single():
+    out = _decompile("(defun foobar (a &rest n) (apply '+ (cons a n)))")
+    assert "(defun foobar (a &rest n)" in out
+    assert "arg_" not in out
+
+
 def test_rest_only_markup():
     out = _decompile("(defun sum (&rest n) n)")
     assert "&rest" in out
@@ -48,9 +54,59 @@ def test_rest_only_markup():
 def test_optional_and_rest_markup():
     out = _decompile("(defun h (a &optional b &rest r) (list a b r))")
     assert "&optional" in out and "&rest" in out
+    assert "(defun h (a &optional b &rest r)" in out
+
+
+def test_optional_param_name_recovered_single():
+    out = _decompile("(defun g (a &optional b) (list a b))")
+    assert "(defun g (a &optional b)" in out
+    assert "arg_" not in out
 
 
 def test_plain_args_no_markup():
     out = _decompile("(defun p (a b) (+ a b))")
     assert "&optional" not in out
     assert "&rest" not in out
+
+
+def test_multiple_optional_params():
+    out = _decompile("(defun f (a &optional b c) (list a b c))")
+    assert "(defun f (a &optional b c)" in out
+    assert "arg_" not in out
+
+
+def test_optional_only_no_required():
+    out = _decompile("(defun f (&optional a b) (list a b))")
+    assert "(defun f (&optional a b)" in out
+    assert "arg_" not in out
+
+
+def test_optional_and_rest_combined():
+    out = _decompile("(defun f (a &optional b &rest r) (list a b r))")
+    assert "(defun f (a &optional b &rest r)" in out
+    assert "arg_" not in out
+
+
+def test_multiple_required_then_rest():
+    out = _decompile("(defun f (a b &rest r) (cons a (cons b r)))")
+    assert "(defun f (a b &rest r)" in out
+    assert "arg_" not in out
+
+
+def test_rest_with_apply_quote_plus():
+    out = _decompile("(defun f (a &rest r) (apply (quote +) (cons a r)))")
+    assert "(defun f (a &rest r)" in out
+    assert "(apply '+ (cons a r))" in out
+    assert "arg_" not in out
+
+
+def test_rest_forwarded_to_other_call():
+    out = _decompile("(defun f (a &rest r) (g a r))")
+    assert "(defun f (a &rest r)" in out
+    assert "arg_" not in out
+
+
+def test_rest_recursive():
+    out = _decompile("(defun f (n &rest r) (if r (f n (cdr r)) n))")
+    assert "(defun f (n &rest r)" in out
+    assert "arg_" not in out

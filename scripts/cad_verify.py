@@ -4,12 +4,13 @@
 每个用例独立执行（编译 → 复制到 CAD → 加载 → 断言返回值），避免单个大脚本
 在 CAD 会话不稳定时整体中断（§3.7 安全策略）。
 
-覆盖 21 项：t01-t15 + t16_foreach/t17_repeat + t18 相互递归 +
+覆盖 22 项：t01-t15 + t16_foreach/t17_repeat + t18 相互递归 +
 t19_variadic（&optional/&rest）+ t20_kwote（`(function (lambda ...))` 内嵌
-函数）+ i18n（混合 defun+顶层+kwote，调 @::codepage2lang）。
+函数）+ t21_variadic_extra（变参扩展：optional 缺省/rest 收集/组合）
++ i18n（混合 defun+顶层+kwote，调 @::codepage2lang）。
 
 用法:
-    python scripts/cad_verify.py           # 全量验证 21 项
+    python scripts/cad_verify.py           # 全量验证 22 项
     python scripts/cad_verify.py t01 t05   # 只验证指定项
 """
 import json
@@ -56,6 +57,13 @@ CASES = [
     ("t19_variadic",
      '(list (t19-greet "CAD") (t19-greet "CAD" "Hi") (t19-sum 1 2 3 4))',
      ["Hello, CAD!", "Hi, CAD!", 10]),
+    # &optional/&rest 变参扩展（t21_variadic_extra：optional 缺省、rest 收集、
+    # optional+rest 组合、纯 &optional 无必填）
+    ("t21_variadic_extra",
+     '(list (t21-greet "CAD") (t21-greet "CAD" "Hi")'
+     ' (t21-sum-rest 1 2 3 4) (t21-product 2 3 4)'
+     ' (t21-first-arg 1 2 3) (t21-first-arg 5))',
+     ["Hello, CAD!", "Hi, CAD!", 10, 24, 2, 5]),
     # kwote `(function (lambda ...))` / `-lambda-` 内嵌函数完整运行链路
     # （t20_kwote：apply-fn 接收 kwote lambda 并调用，应得 2*21=42）
     ("t20_kwote", '(t20-kwote)', 42),
