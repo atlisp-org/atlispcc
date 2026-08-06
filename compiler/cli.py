@@ -263,7 +263,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
 
 
 def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: int = 0,
-                           top_level_count: int = 0, top_after_defun: bool = False) -> bytes:
+                           top_level_count: int = 0, top_after_defun: bool = False,
+                           func_names: object = ()) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
     CAD 模块代码规则（逆向，AutoCAD 24.1s 实测）：
@@ -372,7 +373,11 @@ def _build_cad_module_code(top_level_bc: bytes, symtab, other_forms, n_funcs: in
         out += b'\x57\x00\x00\x00\x00'  # JUMP
         for i in range(n_funcs):
             b = 2 * n_funcs + 1 + top_level_count - i
-            c = (n_funcs + 1 - i) if top_after_defun else (n_funcs - i)
+            # SETQ_G 目标是第 i 个函数（注册序逆序）的 gvar 槽 = 符号槽 + 1
+            # （p03 实测 @::codepage2lang 槽 4 → c=5）。未显式给定函数名时
+            # 退化为相对编号 n_funcs-i，与单函数槽=0 情形一致。
+            fn_slot = symtab.name_to_idx.get(func_names[i]) if i < len(func_names) and func_names else None
+            c = (fn_slot + 1) if fn_slot is not None else (n_funcs - i)
             out += bytes([0x09]) + struct.pack('<H', b)  # PUSH_G b
             out += bytes([0x06]) + struct.pack('<H', c)  # SETQ_G c
             if i < n_funcs - 1 or post_forms:
@@ -592,7 +597,13 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
             _top_slots.append(symtab.name_to_idx[s])
         elif f'__str_{s}__' in symtab.name_to_idx:
             _top_slots.append(symtab.name_to_idx[f'__str_{s}__'])
-    top_level_count = len(_top_slots)
+    # CAD 按"最高顶层符号槽号 + 1"计模块注册区宽，const/defun 名等内部槽
+    # 一并覆盖（i18n ap03 实测 syscodepage const@idx2 使 @::*I18N* 槽到 idx9，
+    # count 应为 max+1 而非顶层去重符号数）。
+    if _top_slots:
+        top_level_count = max(_top_slots) + 1 - len(defun_forms)
+    else:
+        top_level_count = 0
 
     codegen = CodeGenerator(symtab, stub_format=True,
                             defined_funcs=[f.name for f in defun_forms],
@@ -650,7 +661,8 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
         _top_after_defun = _last_overall is not None and not isinstance(_last_overall, (_Defun, Defpackage, InPackage))
         module_code = _build_cad_module_code(top_level_code, symtab, other_forms,
                                              n_funcs=len(defun_forms), top_level_count=top_level_count,
-                                             top_after_defun=_top_after_defun)
+                                             top_after_defun=_top_after_defun,
+                                             func_names=[f.name for f in defun_forms])
     elif n_cmds:
         module_code = build_command_module_code(len(defun_forms))
     else:
