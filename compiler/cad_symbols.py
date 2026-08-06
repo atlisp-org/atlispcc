@@ -271,30 +271,136 @@ class CadSymbolCollector:
         `(setq @::*codepage* (vl-catch-all-apply ...))` 在 defun 之后，其符号
         @::*CODEPAGE* VL-CATCH-ALL-APPLY syscodepage GETVAR 排在 @::CODEPAGE2LANG
         之前）。纯函数文件（无顶层）退化为"函数名逆序"。
+        顶层 form 里的用户函数名调用（force=True）不另发槽——并入 defun
+        槽（p04 实测 form4 调用 @::codepage2lang 不占顶层组）。
         """
         forms_all = [f for f in program.forms
                      if not isinstance(f, (Defpackage, InPackage))]
-        module_seen = set()
-        for form in reversed(forms_all):
+        n = len(forms_all)
+        reads, targets = [], []
+        for i, form in enumerate(forms_all):
+            r, t = set(), set()
             if isinstance(form, Defun):
-                if form.name not in module_seen:
+                t.add(form.name)
+            else:
+                self._form_read_target(form, r, t, set())
+            reads.append(r)
+            targets.append(t)
+        # 符号归属：读取(value)优先 → 最早读取的 form；否则 → 最早赋值的 form。
+        owner_read = {}
+        for i in range(n):
+            for s in reads[i]:
+                if s not in owner_read:
+                    owner_read[s] = i
+        ancestor = {}
+
+        def _owner_of(sym):
+            if sym in owner_read:
+                return owner_read[sym]
+            if sym not in ancestor:
+                pos = None
+                for i in range(n):
+                    if sym in targets[i]:
+                        pos = i
+                        break
+                ancestor[sym] = pos if pos is not None else -1
+            return ancestor[sym]
+
+        module_seen = set()
+        for i in reversed(range(n)):
+            form = forms_all[i]
+            if isinstance(form, Defun):
+                if _owner_of(form.name) == i and form.name not in module_seen:
                     module_seen.add(form.name)
                     self.add(form.name)
             else:
                 form_refs = []
                 self._collect_byteorder(form, form_refs, set())
-                seen_forced = set()
                 for name, force in reversed(form_refs):
-                    if force and name in seen_forced:
-                        continue
-                    n = name[1] if is_const_entry(name) else name
-                    if is_const_entry(name):
-                        self.add(name, force=force)
-                    elif n not in module_seen:
-                        module_seen.add(n)
-                        self.add(name, force=force)
+                    # 顶层符号调用（force=True）不登记槽——并入 defun 槽
+                    # （CAD p04 form4 cadr/not/codepage 组无 c2l）。
                     if force:
-                        seen_forced.add(n)
+                        continue
+                    # 符号由"归属 form"独占登记，其它 form 引用不重复发槽
+                    # （CAD p04：lang 属 form0 被放尾部，codepage 属 form3）。
+                    if _owner_of(name) != i:
+                        continue
+                    if is_const_entry(name):
+                        if name[1] in (('NIL',), ('T',)):
+                            # NIL/T 由 PUSH_NIL/PUSH_T 内建编码，不占常量槽
+                            # （CAD i18n golden 无 NIL/T 槽）。
+                            continue
+                        self.add(name, force=force)
+                    elif name not in module_seen:
+                        module_seen.add(name)
+                        self.add(name, force=force)
+
+    def _form_read_target(self, node, reads, targets, arg_names, in_quote=False):
+        """收集 form 的 读(value)/setq目标(target) 符号集合（模块归属用）。"""
+        if isinstance(node, Symbol):
+            if node.name not in arg_names:
+                reads.add(node.name)
+        elif isinstance(node, Call):
+            for a in node.args:
+                self._form_read_target(a, reads, targets, arg_names, in_quote)
+            if node.name not in self.func_names:
+                reads.add(node.name)
+        elif isinstance(node, Setq):
+            for target, value in node.pairs:
+                if value:
+                    self._form_read_target(value, reads, targets, arg_names, in_quote)
+                if isinstance(target, Symbol) and target.name not in arg_names:
+                    targets.add(target.name)
+                else:
+                    self._form_read_target(target, reads, targets, arg_names, in_quote)
+        elif isinstance(node, IfNode):
+            for part in (node.cond, node.then, node.else_expr):
+                if part:
+                    self._form_read_target(part, reads, targets, arg_names, in_quote)
+        elif isinstance(node, WhileNode):
+            if node.cond:
+                self._form_read_target(node.cond, reads, targets, arg_names, in_quote)
+            for expr in node.body:
+                self._form_read_target(expr, reads, targets, arg_names, in_quote)
+        elif isinstance(node, Progn):
+            for form in node.forms:
+                self._form_read_target(form, reads, targets, arg_names, in_quote)
+        elif isinstance(node, ForeachNode):
+            for expr in node.body:
+                self._form_read_target(expr, reads, targets, arg_names, in_quote)
+            if node.list_expr:
+                self._form_read_target(node.list_expr, reads, targets, arg_names, in_quote)
+            if node.var is not None:
+                self._form_read_target(node.var, reads, targets, arg_names, in_quote)
+        elif isinstance(node, RepeatNode):
+            for expr in node.body:
+                self._form_read_target(expr, reads, targets, arg_names, in_quote)
+            if node.count:
+                self._form_read_target(node.count, reads, targets, arg_names, in_quote)
+        elif isinstance(node, Cond):
+            for clause in node.clauses:
+                for item in clause:
+                    self._form_read_target(item, reads, targets, arg_names, in_quote)
+        elif isinstance(node, ListExpr):
+            for item in node.items:
+                self._form_read_target(item, reads, targets, arg_names, in_quote)
+        elif isinstance(node, QuotedExpr):
+            if node.expr is not None:
+                if isinstance(node.expr, Symbol) and node.expr.name not in ('T', 'nil'):
+                    if node.expr.name not in arg_names:
+                        reads.add(node.expr.name)
+                elif to_const(node.expr) is not None:
+                    reads.add((CONST_MARK, to_const(node.expr)))
+                else:
+                    self._form_read_target(node.expr, reads, targets, arg_names, True)
+        elif isinstance(node, LambdaNode):
+            if to_const(node) is not None:
+                reads.add((CONST_MARK, to_const(node)))
+            else:
+                for expr in node.body:
+                    self._form_read_target(expr, reads, targets, arg_names | set(node.args), in_quote)
+        elif isinstance(node, String):
+            reads.add('"' + node.value + '"')
 
     def _collect_byteorder(self, node, out, arg_names, in_quote=False):
         """按字节码首次引用序向前收集 (name, forced) 列表（单函数算法）。"""

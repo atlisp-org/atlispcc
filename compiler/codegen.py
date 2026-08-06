@@ -158,6 +158,7 @@ class CodeGenerator:
         self.stub_offsets: List[int] = []
         self._defined_funcs: set = set(defined_funcs or [])
         self._func_ref_slots: Dict[str, int] = {}
+        self._module_mode: bool = False
 
     def _get_local_slot(self, name: str) -> int:
         if name not in self.local_slots:
@@ -382,7 +383,7 @@ class CodeGenerator:
             buf.emit(encode_op_noarg(EXIT_IF_NOT_ZERO))
             return
         idx = self.symtab.get_or_add(name)
-        if self.stub_format and name in self._defined_funcs and name != self.current_func_name:
+        if self.stub_format and not self._module_mode and name in self._defined_funcs and name != self.current_func_name:
             # 跨函数调用：CAD 用重复符号槽（首次引用分配新槽）
             if name not in self._func_ref_slots:
                 rep = self.symtab.next_repeat_slot(name)

@@ -620,10 +620,12 @@ def cmd_compile(source: str, output: str = '', opt_level: int = 0, show_analysis
     #   - 顶部 `PUSH_G <符号总数+1>; POP` 占位
     #   - 无 defun 时无函数注册尾，以 END_DEFUN 结束
     top_level_bc = BytecodeBuffer()
+    codegen._module_mode = True
     for form in other_forms:
         codegen._emit_expr(top_level_bc, form)
         if isinstance(form, Setq):
             top_level_bc.emit(ENCODE_POP)
+    codegen._module_mode = False
     top_level_bc.resolve()
     top_level_code = bytes(top_level_bc.data)
 
