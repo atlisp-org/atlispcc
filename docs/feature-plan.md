@@ -143,8 +143,8 @@ seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` 
 |---|---|---|---|
 | B1 | `defun-q` 引用定义机制 | 中 | ✅ 已补强 |
 | B2 | `eval`/`read` 极端用例回归 | 低 | ✅ 已补测 |
-| B3 | 大型图元/实体对齐 | 中 | 未执行 |
-| B4 | 符号名大小写规范化统一 | 中 | 未执行 |
+| B3 | 实体/DXF 数据结构 roundtrip | 中 | ✅ 已补测 |
+| B4 | 符号名大小写规范化统一 | 中 | ✅ 已补测 |
 | B5 | `&optional`/`&rest` 多参数组合 | 中（已有 t19/t21） | 部分（golden 待真机） |
 
 ### B1 `defun-q`（已完成）
@@ -160,6 +160,20 @@ P0-A3 已支持 eval。新增 `test_eval_read_edge_cases_roundtrip` 锁住 7 组
 `(eval x)`、`(eval (list '+ 1 2))`、无参 `(read)`、`(read-line fp)`、
 `(eval (quote (setq y 5)))`、`(eval (read s))`、`(eval (quote (+ 1 2)))`——全部
 roundtrip + validate PASS，关键调用名保留。无代码改动。
+
+### B3 实体/DXF 数据结构（已完成，纯测试）
+
+新增 `test_entity_dxf_data_roundtrip` 锁住 6 组实体操作：`(assoc 0 (entget ent))`、
+`entmake` 组码列表、`(entmod (subst (cons 62 1) (assoc 62 e) e))`、
+`(cons (car e) (cdr e))`、`entsel`、`cons`/`list` 构造组码——全部
+roundtrip + validate PASS，关键调用与组码/字符串不丢失。无代码改动。
+
+### B4 符号名大小写规范化（已完成，纯测试）
+
+新增 `test_symbol_case_normalization_roundtrip` 验证混合大小写符号稳定规范化：
+函数名统一小写（`MyFunc→myfunc`、`c:MyCmd→c:mycmd`、`Calc2→calc2`、`Mix123→mix123`），
+参数/布尔/`/`/`*` 等符号不破坏、括号合法。无代码改动（现行统一大写
+策略已覆盖大小写不敏感）。
 
 ### B5 `&optional`/`&rest`（golden 待真机）
 

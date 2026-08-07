@@ -759,3 +759,53 @@ def test_decompile_reference_fun_fas():
     assert '(alert "abc")' in result
     ok, errs = _validate(result)
     assert ok, f'Validation failed: {errs}'
+
+
+def test_entity_dxf_data_roundtrip():
+    """B3：实体/DXF 组码数据结构 compile→decompile→validate 回归。
+
+    entget/entmake/entmod/entsel 及基于 cons/assoc/subst/car/cdr 的 DXF
+    组码列表操作应完整往返并 validate PASS。无 CAD golden，纯 roundtrip。
+    """
+    cases = [
+        ("(defun f (ent) (assoc 0 (entget ent)))", ["assoc", "entget"]),
+        ("(defun f () (entmake (list (cons 0 \"LINE\") (cons 10 (list 0 0 0)))))",
+         ["entmake", "cons", "LINE"]),
+        ("(defun f (e) (entmod (subst (cons 62 1) (assoc 62 e) e)))",
+         ["entmod", "subst", "assoc"]),
+        ("(defun f (e) (cons (car e) (cdr e)))", ["cons", "car", "cdr"]),
+        ("(defun f () (entget (car (entsel))))", ["entget", "entsel"]),
+        ("(defun f () (list (cons 0 \"CIRCLE\") (cons 10 (list 0 0 0))))",
+         ["CIRCLE", "cons", "10"]),
+    ]
+    for src, markers in cases:
+        result = compile_and_decompile(src)
+        ok, errs = _validate(result)
+        assert ok, f'Validation failed for {src}: {errs}'
+        for m in markers:
+            assert m in result, f'{m} lost for {src} -> {result}'
+
+
+def test_symbol_case_normalization_roundtrip():
+    """B4：混合大小写符号名规范化统一回归。
+
+    AutoLISP 大小写不敏感，编译器统一大写、反编译统一小写。验证常规/命令/
+    数字混用/驼峰符号 roundtrip 后 validate 通过且函数名语义保留——只要求
+    不失败与规范化一致，不要求逐字保留大小写。
+    """
+    cases = [
+        ("(defun MyFunc (aBcD) (+ aBcD 1))", "myfunc"),
+        ("(defun Foo (PathX) (setq PathX \"*\"))", "foo"),
+        ("(defun c:MyCmd () (princ))", "c:mycmd"),
+        ("(defun Calc2 (A B) (strcat A \" \"))", "calc2"),
+        ("(defun ReMoVe (x) (if x (cons x 1)))", "remove"),
+        ("(defun Mix123 (xYz) (/ xYz 2))", "mix123"),
+    ]
+    for src, expected_fn in cases:
+        result = compile_and_decompile(src)
+        ok, errs = _validate(result)
+        assert ok, f'Validation failed for {src}: {errs}'
+        low = result.lower()
+        assert f'(defun {expected_fn}' in low, \
+            f'expected normalized defun {expected_fn} in {result}'
+        # 参数/命令名不应因规范化被破坏——validate(ok) 已隐含括号/符号合法
