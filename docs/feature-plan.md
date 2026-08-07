@@ -192,7 +192,7 @@ t19_variadic / t21_variadic_extra 有 17 个单测（`test_variadic_args.py`）+
 | 项 | 说明 | 状态 |
 |---|---|---|
 | C1 | `vla-`/`vlax-` ActiveX 调用 | ✅ 已补测（roundtrip + cad_verify t22） |
-| C2 | `command` 交互调用 | 未执行 |
+| C2 | `command` 交互调用 | ✅ 已补测（roundtrip + cad_verify t23） |
 | C3 | 多 CAD 版本（ZWCAD/ZRX）兼容矩阵 | 未执行 |
 | C4 | DCL/ODCL 对话框 | 未执行 |
 
@@ -206,3 +206,13 @@ t19_variadic / t21_variadic_extra 有 17 个单测（`test_variadic_args.py`）+
 - `tests/cad/t22_activex.lsp` + `scripts/cad_verify.py` 真机用例：只读结构断言
   （ActiveDoc 存在 + 文档计数 > 0），不用具体图元名，无破坏性。待 CAD 会话
   运行确认。
+
+### C2 `command` 交互调用（已完成）
+
+`command`/`command-s`/`vl-cmdf`/`vl-cmd-s` 作为普通内建（USUBR）调用，参数正常
+求值（字符串/坐标列表/数字/`pause` 符号），无需特殊编译器逻辑。新增：
+- `test_command_vlcmdf_roundtrip`：9 组形态（字符串命令、坐标列表、pause、
+  多语句、`(if ...)` 实参、`nil` 结尾）全 roundtrip + validate PASS。
+- `tests/cad/t23_command.lsp` + `scripts/cad_verify.py` 真机用例：`command-s`
+  画圆 → `entlast` 断言为 CIRCLE → 擦除，全程包在 UNDO 组内自清理，不留新
+  实体。待 CAD 会话运行确认。

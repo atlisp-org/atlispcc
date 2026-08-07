@@ -79,6 +79,9 @@ CASES = [
      '(list (t22-has-active-doc)'
      ' (t22-positive-count (vla-get-Application (t22-acad-doc))))',
      [True, True]),
+    # C2: command-s 交互执行真实 CAD 命令。创建圆 → 断言 entlast 为 CIRCLE →
+    # 擦除，全部在 UNDO 组内自清理，不留新实体。
+    ("t23_command", '(t23-created-circle-p)', True),
 ]
 
 # 已知功能缺陷（混合模式，§8.C2 待修）：t10 的 get-version/hello 符号错位

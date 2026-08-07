@@ -840,3 +840,34 @@ def test_activex_vla_vlax_roundtrip():
         low = result.lower()
         for m in markers:
             assert m in low, f'{m} lost for {src} -> {result}'
+
+
+def test_command_vlcmdf_roundtrip():
+    """C2：command/command-s/vl-cmdf/vl-cmd-s 交互调用 roundtrip 回归。
+
+    command 系列是普通内建（USUBR）调用，参数正常求值（字符串/坐标列表/
+    数字/嵌套表达式/`pause` 符号）。验证字符串、列表、pause、多语句、
+    `(if ...)` 求值等形态完整往返且 validate PASS。无 CAD golden，纯
+    roundtrip（真机功能验证在 scripts/cad_verify.py，需 CAD 会话）。
+    """
+    cases = [
+        ("(defun d () (command \"LINE\" \"0,0\" \"10,10\" \"\"))",
+         ["(command \"LINE\" \"0,0\" \"10,10\" \"\")"]),
+        ("(defun c () (command-s \"ZOOM\" \"E\"))", ["command-s", "\"ZOOM\""]),
+        ("(defun m () (vl-cmdf \"_.CIRCLE\" \"0,0\" 5))", ["vl-cmdf", "\"_.CIRCLE\""]),
+        ("(defun u () (vl-cmd-s \"_.UNDO\" \"_END\"))", ["vl-cmd-s", "\"_.UNDO\""]),
+        ("(defun r () (command nil))", ["(command nil)"]),
+        ("(defun p () (vl-cmdf (quote pause)))", ["vl-cmdf", "'pause"]),
+        ("(defun d2 (p1 p2) (command \"LINE\" p1 p2 \"\"))",
+         ["(command \"LINE\" p1 p2 \"\")"]),
+        ("(defun e () (command \"_ZOOM\" \"_E\") (command \"_REGEN\"))",
+         ["(command \"_ZOOM\" \"_E\")", "(command \"_REGEN\")"]),
+        ("(defun h (sel) (command \"SELECT\" sel (quote pause)))",
+         ["(command \"SELECT\" sel 'pause)"]),
+    ]
+    for src, markers in cases:
+        result = compile_and_decompile(src)
+        ok, errs = _validate(result)
+        assert ok, f'Validation failed for {src}: {errs}'
+        for m in markers:
+            assert m in result, f'{m} lost for {src} -> {result}'
