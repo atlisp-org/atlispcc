@@ -2,3 +2,5 @@
 # 需被 git 跟踪（父目录 .gitignore 的 *.lsp/*.fas 规则例外）
 !*.lsp
 !*.fas
+# 反编译调试产物不跟踪（手动 decompile 生成）
+*_decompiled.lsp
