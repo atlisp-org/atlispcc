@@ -252,6 +252,31 @@ def test_exit_quit_emits_exit_opcode(form):
     assert b'\x35' not in bc, f'USUBR emitted for {form}: {bc!r}'
 
 
+def test_value_position_if_no_then_pop():
+    """A value-position `if` (setq RHS) must NOT get a then-branch POP.
+
+    Regression for P1-3: `(setq r (if ...))` in the *middle* of a function
+    previously emitted `PUSH_INT8 <then>; POP` (via _emit_if's non-tail POP),
+    dropping the then-value before SETQ_G consumed it. CAD golden a4.fas
+    byte-identity shows `PUSH_INT8[1]; JUMP; PUSH_INT8[2]; SETQ_G` — no POP
+    between the then literal and SETQ_G.
+    """
+    from compiler.cli import cmd_compile
+
+    src = '(defun f (x) (setq r (if (> x 0) 1 2)) (princ r))'
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        _, bc, _, _ = _parse_fas(open(out, 'rb').read())
+        # then-branch PUSH_INT8 (0x32) must be directly followed by JUMP (0x57):
+        # no POP (0x0a) between them.
+        assert b'\x32\x01\x0a\x57' not in bc, (
+            f'value-if then-branch has a POP before JUMP: {bc.hex()}'
+        )
+        # else value PUSH_INT8[2] feeds SETQ_G (0x06) -> value flows to consumer
+        assert b'\x32\x02\x06' in bc, f'then SETQ_G pattern missing: {bc.hex()}'
+
+
 #: (source, cad_golden) pairs where our compact-stub output must be byte-identical
 #: to the AutoCAD `vlisp-compile` golden (bytecode AND resource items).
 CAD_GOLDEN_PAIRS = [

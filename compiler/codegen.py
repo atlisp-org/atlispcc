@@ -161,6 +161,10 @@ class CodeGenerator:
         self._defined_funcs: set = set(defined_funcs or [])
         self._func_ref_slots: Dict[str, int] = {}
         self._module_mode: bool = False
+        # 语句上下文（值将被 POP 丢弃）：仅裸语句位置（函数体中间语句、
+        # progn 中间语句、循环体）置位。值上下文（setq RHS、函数/算术实参）
+        # 不置位——_emit_if 据此决定 then 分支尾是否兼 POP。
+        self._in_stmt_ctx: bool = False
 
     def _get_local_slot(self, name: str) -> int:
         if name not in self.local_slots:
@@ -176,8 +180,9 @@ class CodeGenerator:
 
     def _emit_arith(self, buf: BytecodeBuffer, op_name: str, args: List[Node]):
         if self.stub_format:
-            for arg in args:
-                self._emit_expr(buf, arg)
+            with self._value_ctx():
+                for arg in args:
+                    self._emit_expr(buf, arg)
             idx = self.symtab.get_or_add(op_name)
             buf.emit(encode_usubr3(len(args), idx))
             buf.emit(encode_op_noarg(0x00))
@@ -186,32 +191,34 @@ class CodeGenerator:
         fas_op = ARITH_OP_TO_FAS.get(op_name)
         if fas_op:
             if len(args) == 1:
-                if op_name == "-":
-                    self._emit_expr(buf, Integer(0))
-                    self._emit_expr(buf, args[0])
-                    buf.emit(encode_op_noarg(FIX_SUB))
-                elif op_name == "/":
-                    self._emit_expr(buf, Integer(1))
-                    self._emit_expr(buf, args[0])
-                    buf.emit(encode_op_noarg(FIX_DIV))
-                else:
-                    self._emit_expr(buf, Integer(0))
-                    self._emit_expr(buf, args[0])
-                    buf.emit(encode_op_noarg(NAME_TO_OPCODE[fas_op]))
+                with self._value_ctx():
+                    if op_name == "-":
+                        self._emit_expr(buf, Integer(0))
+                        self._emit_expr(buf, args[0])
+                    elif op_name == "/":
+                        self._emit_expr(buf, Integer(1))
+                        self._emit_expr(buf, args[0])
+                    else:
+                        self._emit_expr(buf, Integer(0))
+                        self._emit_expr(buf, args[0])
+                buf.emit(encode_op_noarg(NAME_TO_OPCODE[fas_op]))
                 return
-            for arg in args:
-                self._emit_expr(buf, arg)
+            with self._value_ctx():
+                for arg in args:
+                    self._emit_expr(buf, arg)
             for _ in range(len(args) - 1):
                 buf.emit(encode_op_noarg(NAME_TO_OPCODE[fas_op]))
         else:
             idx = self.symtab.get_or_add(op_name)
-            for arg in reversed(args):
-                self._emit_expr(buf, arg)
+            with self._value_ctx():
+                for arg in reversed(args):
+                    self._emit_expr(buf, arg)
             buf.emit(encode_usubr(len(args), idx))
 
     def _emit_unary(self, buf: BytecodeBuffer, op_name: str, arg: Node):
         if self.stub_format:
-            self._emit_expr(buf, arg)
+            with self._value_ctx():
+                self._emit_expr(buf, arg)
             idx = self.symtab.get_or_add(op_name)
             buf.emit(encode_usubr3(1, idx))
             buf.emit(encode_op_noarg(0x00))
@@ -219,12 +226,37 @@ class CodeGenerator:
             return
         fas_op = UNARY_OP_TO_FAS.get(op_name)
         if fas_op:
-            self._emit_expr(buf, arg)
+            with self._value_ctx():
+                self._emit_expr(buf, arg)
             buf.emit(encode_op_noarg(NAME_TO_OPCODE[fas_op]))
         else:
             idx = self.symtab.get_or_add(op_name)
-            self._emit_expr(buf, arg)
+            with self._value_ctx():
+                self._emit_expr(buf, arg)
             buf.emit(encode_usubr(1, idx))
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _value_ctx(self):
+        saved = self._in_stmt_ctx
+        self._in_stmt_ctx = False
+        try:
+            yield
+        finally:
+            self._in_stmt_ctx = saved
+
+    def _emit_stmt(self, buf: BytecodeBuffer, node: Node):
+        """在语句上下文（值被丢弃）中发射一条表达式。"""
+        saved = self._in_stmt_ctx
+        self._in_stmt_ctx = True
+        try:
+            if isinstance(node, IfNode):
+                self._emit_if(buf, node)
+            else:
+                self._emit_expr(buf, node)
+        finally:
+            self._in_stmt_ctx = saved
 
     def _emit_expr(self, buf: BytecodeBuffer, node: Node, _tail: bool = False):
         saved_tail = self._in_tail_context
@@ -318,7 +350,7 @@ class CodeGenerator:
                 # 中间语句（值被 POP 丢弃）：独立清尾上下文，避免内层 if/表达式
                 # 误按尾上下文编译（i18n-cad update-locale progn 内层 if 实测）。
                 self._in_tail_context = False
-                self._emit_expr(buf, form)
+                self._emit_stmt(buf, form)
                 # 中间 setq（SETQ_G 已消费栈顶）、中间 if（_emit_if 内部处理）、
                 # while/foreach/repeat（自带栈平衡）后均无 POP；仅普通表达式
                 # 追加 POP（规则同 generate_function 中间语句）。
@@ -386,7 +418,7 @@ class CodeGenerator:
             return
         if name == "progn":
             for form in args[:-1]:
-                self._emit_expr(buf, form)
+                self._emit_stmt(buf, form)
                 buf.emit(encode_op_noarg(POP))
             if args:
                 self._emit_expr(buf, args[-1])
@@ -424,8 +456,9 @@ class CodeGenerator:
                 self._func_ref_slots[name] = rep if rep >= 0 else self.symtab.add_force(name)
             idx = self._func_ref_slots[name]
         is_builtin = self.symtab.is_builtin(name)
-        for arg in args:
-            self._emit_expr(buf, arg)
+        with self._value_ctx():
+            for arg in args:
+                self._emit_expr(buf, arg)
         if self.stub_format:
             buf.emit(encode_usubr3(len(args), idx))
             # CAD stub: 每次调用后 NIL + PUSH_VALUE[0]（结果清理/保留）
@@ -438,7 +471,8 @@ class CodeGenerator:
 
     def _emit_setq_expr(self, buf: BytecodeBuffer, target: Node, value: Node):
         if isinstance(target, Symbol):
-            self._emit_expr(buf, value)
+            with self._value_ctx():
+                self._emit_expr(buf, value)
             if self.stub_format:
                 if self._in_tail_context:
                     buf.emit(encode_op_noarg(DUP))
@@ -451,8 +485,9 @@ class CodeGenerator:
                 idx = self.symtab.get_or_add(target.name)
                 buf.emit(encode_op_u16(SETQ_G, idx))
         else:
-            self._emit_expr(buf, value)
-            self._emit_expr(buf, target)
+            with self._value_ctx():
+                self._emit_expr(buf, value)
+                self._emit_expr(buf, target)
             buf.emit(encode_func(1, self.symtab.get_or_add("set")))
 
     def _emit_setq(self, buf: BytecodeBuffer, node: Setq):
@@ -460,7 +495,8 @@ class CodeGenerator:
         n = len(pairs)
         for i, (target, value) in enumerate(pairs):
             if isinstance(target, Symbol) and value:
-                self._emit_expr(buf, value)
+                with self._value_ctx():
+                    self._emit_expr(buf, value)
                 if self.stub_format:
                     if self._in_tail_context and i == n - 1:
                         buf.emit(encode_op_noarg(DUP))
@@ -493,12 +529,13 @@ class CodeGenerator:
             # （模块代码顶层 if-then-setq，p04/i18n-cad 实测 `0b 06`）。
             _then_tail = self._in_tail_context or self._module_mode
             self._emit_expr(buf, node.then or Symbol("nil"), _tail=_then_tail)
-            if not self._in_tail_context and not isinstance(node.then, (Setq, IfNode, Progn)):
-                # 中间 if（非尾上下文）：then 分支值被丢弃。then 为 setq 时
-                # SETQ_G 已消费栈顶，无需 POP；普通表达式则 POP 丢弃
-                # （i18n-cad update-locale 内层 if-then @::load-module 后 `POP`）。
-                # then 为 progn/if 时由其自身管理栈（i18n-cad load-locale 外层
-                # if-then=progn 后无额外 POP）。
+            if self._in_stmt_ctx and not isinstance(node.then, (Setq, IfNode, Progn)):
+                # 语句上下文（中间 if，值被丢弃）：then 分支值被 POP。值上下文
+                # （setq RHS、函数/算术实参）不 POP——值需流到外层消费者。
+                # then 为 setq 时 SETQ_G 已消费栈顶，无需 POP；普通表达式则
+                # POP 丢弃（i18n-cad update-locale 内层 if-then @::load-module
+                # 后 `POP`）。then 为 progn/if 时由其自身管理栈（i18n-cad
+                # load-locale 外层 if-then=progn 后无额外 POP）。
                 # POP 位于 then 末尾、JUMP 之前（ref 实测顺序 `03 0a 57`）。
                 buf.emit(encode_op_noarg(POP))
             jmp2_pos = buf.pos()
@@ -555,7 +592,7 @@ class CodeGenerator:
             buf.add_patch(jmp_pos + 1, label_end, 2)
 
         for i, form in enumerate(node.body):
-            self._emit_expr(buf, form)
+            self._emit_stmt(buf, form)
             # CAD stub：中间 setq 无 POP（SETQ_G 自身消费栈顶），仅非 setq 追加。
             # 与 generate_function 顶层体规则一致（t11_localvars 实测）。
             if self.stub_format:
@@ -607,7 +644,7 @@ class CodeGenerator:
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         for form in node.body:
-            self._emit_expr(buf, form)
+            self._emit_stmt(buf, form)
             buf.emit(encode_op_noarg(POP))
 
         jmp_back = buf.pos()
@@ -657,7 +694,7 @@ class CodeGenerator:
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         for i, form in enumerate(node.body):
-            self._emit_expr(buf, form)
+            self._emit_stmt(buf, form)
             # 非尾 foreach（_in_tail_context=False）体最后语句若留值（print/cons
             # 等调用）→ POP 丢弃（i18n-cad save-mt `(print opt% fp)` 后 `POP`）；
             # setq/if 自身管理栈；尾 foreach 无 POP（update-locale-all 实测）。
@@ -774,7 +811,7 @@ class CodeGenerator:
             buf.label(f"{base}_body_{i}")
             buf.emit(encode_op_noarg(POP))
             for a in actions[:-1]:
-                self._emit_expr(buf, a)
+                self._emit_stmt(buf, a)
                 buf.emit(encode_op_noarg(POP))
             if actions:
                 self._emit_expr(buf, actions[-1])
@@ -799,7 +836,7 @@ class CodeGenerator:
         buf.emit(encode_op_u16(JMP16_IFNOT, 0))
         buf.add_patch(jmp_pos + 1, label_end, 2)
         for form in body:
-            self._emit_expr(buf, form)
+            self._emit_stmt(buf, form)
             buf.emit(encode_op_noarg(POP))
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
         buf.emit(encode_op_noarg(DEC))
@@ -835,7 +872,7 @@ class CodeGenerator:
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         for form in body:
-            self._emit_expr(buf, form)
+            self._emit_stmt(buf, form)
 
         jmp_back = buf.pos()
         buf.emit(encode_op_s32(JUMP, 0))
@@ -949,7 +986,7 @@ class CodeGenerator:
         self._emit_init_args(buf, node.args)
         body = node.body
         for expr in body[:-1]:
-            self._emit_expr(buf, expr)
+            self._emit_stmt(buf, expr)
             if not isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode)):
                 buf.emit(encode_op_noarg(POP))
         if body:
@@ -1111,7 +1148,7 @@ class CodeGenerator:
             body = body[1:]
 
         for expr in body[:-1]:
-            self._emit_expr(buf, expr)
+            self._emit_stmt(buf, expr)
             # CAD stub: SETQ_G 自身消费栈顶值，中间 setq 后无 POP（v10/v11 实测）；
             # while 循环结束栈已清空（条件被 JMP32_IFNOT 消费、体结果各被 POP），
             # 中间 while 后同样无 POP（t04_while 实测）。

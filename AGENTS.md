@@ -235,5 +235,10 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 
 ### 已知限制
 
+- **`if` 值/语句上下文**（2026-08-07）：`(setq r (if c e1 e2))` 的值位置 `if`
+  不编译 then 分支 POP（值须流到 SETQ_G/算术/函数实参，与 CAD a4 golden 一致）；
+  仅**裸语句** `if` 才在 then 末尾、JUMP 前发 `POP` 丢弃值。判别标志 `_in_stmt_ctx`
+  （`_emit_stmt` 置位；`setq`/算术/实参等值位置经 `_value_ctx` 清位）。回归
+  `test_value_position_if_no_then_pop`。
 - 文件头注释/版本戳（`;A<日期>`）随日期变化，非字节一致性目标；seg0+sec2 已全对齐
 - MCP CAD 连接不稳定，建议手动测试

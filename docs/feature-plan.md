@@ -98,7 +98,23 @@ seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` 
      正解是把 `(CONS,off,off)` byte-offset 指针 deref 成资源项（该项工作与
      `resource_items_with_offsets` 复用），属 decompiler 范围。
    - 验收：单函数 decoded 反编译得 `'(1 2 3)`，(resolve) validate PASS。
-3. **反编译 A5-2**：`(setq x (if ...))` 渲染保留赋值语义。
+3. **已修复 A5-2**（本为"反编译渲染"，2026-08-07 实证为**编译器 bug**）：
+   `(setq r (if c e1 e2))`（`if` 作为 setq RHS 的**值位置**，函数中段）。
+   - **结论**：CAD golden `D:/atlisp-test/a4.fas` 逐字节证实——值位置的 `if`
+     不 POP then 分支值（`PUSH_INT8[1]; JUMP; PUSH_INT8[2]; SETQ_G`），值须
+     流到外围消费者（SETQ_G / 算术/函数实参）。
+   - **根因**：`_emit_if`（codegen.py:496）原以 `not self._in_tail_context`
+     判别 then 分支是否 POP——但中段 setq RHS / 算术实参的 `if` 使尾上下文为
+     False，误发 `POP` 丢弃 then 值，SETQ_G 拿到 nil。
+   - **修复**：引入语句上下文标志 `_in_stmt_ctx`（codegen.py）。仅裸语句位置
+     （函数体中间语句 / progn 中间语句 / while·foreach·repeat 体 / cond 体 /
+     kwote `-lambda-` 体 / init code）置位；值位置（setq RHS、算术、函数实参、
+     list/cond 求值）经 `_value_ctx()` 清位。`_emit_if` 的 then-POP 改由
+     `self._in_stmt_ctx` 触发（`_emit_stmt` 封装）。语句位置的 if 仍 POP。
+   - 回归：`test_value_position_if_no_then_pop`（PUSH_INT8→JUMP 间无 POP）。
+     全量 295 tests、CAD a4 值位置字节对齐、既有 byte-identity（i18n/t-series/
+     CAD golden）全绿。
+4. **反编译 A5-2**：`(setq x (if ...))` 渲染保留赋值语义。
 
 ---
 
