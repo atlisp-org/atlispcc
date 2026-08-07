@@ -114,7 +114,9 @@ seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` 
    - 回归：`test_value_position_if_no_then_pop`（PUSH_INT8→JUMP 间无 POP）。
      全量 295 tests、CAD a4 值位置字节对齐、既有 byte-identity（i18n/t-series/
      CAD golden）全绿。
-4. **反编译 A5-2**：`(setq x (if ...))` 渲染保留赋值语义。
+4. **已修复反编译 A5-2**（随 codegen A5-2 修复连带解决，2026-08-07）：
+   CAD golden `D:/atlisp-test/a4.fas` 现正确反编译为 `(setq r (if ...))`（保留
+   赋值语义），不再把值丢给外侧。无 decompiler 改动。
 
 ---
 
