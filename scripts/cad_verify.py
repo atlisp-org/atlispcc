@@ -73,6 +73,12 @@ CASES = [
      '(list (@::codepage2lang "ANSI_936") (@::codepage2lang "ANSI_949")'
      ' (@::codepage2lang "ANSI_1258"))',
      [["zh", "zh_CN"], ["kor", "kr"], ["vie", "vi"]]),
+    # C1: vla-/vlax- ActiveX 只读结构断言。断言 T（文档存在）+ 计数为正整数，
+    # 不用具体图元名，避免破坏性与环境依赖。
+    ("t22_activex",
+     '(list (t22-has-active-doc)'
+     ' (t22-positive-count (vla-get-Application (t22-acad-doc))))',
+     [True, True]),
 ]
 
 # 已知功能缺陷（混合模式，§8.C2 待修）：t10 的 get-version/hello 符号错位

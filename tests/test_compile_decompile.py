@@ -809,3 +809,34 @@ def test_symbol_case_normalization_roundtrip():
         assert f'(defun {expected_fn}' in low, \
             f'expected normalized defun {expected_fn} in {result}'
         # 参数/命令名不应因规范化被破坏——validate(ok) 已隐含括号/符号合法
+
+
+def test_activex_vla_vlax_roundtrip():
+    """C1：vla-/vlax- ActiveX 调用 compile→decompile→validate 回归。
+
+    vla-get-*/vla-put-*/vla-* 属性与方法、vlax-get/put-property、
+    vlax-invoke-method、vlax-variant-value、vlax-get-acad-object 等
+    常见 ActiveX 形态应完整往返且 validate PASS。无 CAD golden，纯
+    roundtrip（真机功能验证在 scripts/cad_verify.py，需 CAD 会话）。
+    """
+    cases = [
+        ("(defun doc () (vla-get-ActiveDoc (vlax-get-acad-object)))",
+         ["vla-get-activedoc", "vlax-get-acad-object"]),
+        ("(defun add (col pt) (vla-AddPoint col pt))", ["vla-addpoint"]),
+        ("(defun setcolor (o c) (vla-put-Color o c))", ["vla-put-color"]),
+        ("(defun getval (o) (vlax-get-property o (quote Layer)))",
+         ["vlax-get-property", "'layer"]),
+        ("(defun setval (o v) (vlax-put-property o (quote Layer) v))",
+         ["vlax-put-property"]),
+        ("(defun inv (m p) (vlax-invoke-method m (quote Move) p))",
+         ["vlax-invoke-method"]),
+        ("(defun asv (o) (vlax-variant-value o))", ["vlax-variant-value"]),
+        ("(defun prop (o key) (vla-getproperty o key))", ["vla-getproperty"]),
+    ]
+    for src, markers in cases:
+        result = compile_and_decompile(src)
+        ok, errs = _validate(result)
+        assert ok, f'Validation failed for {src}: {errs}'
+        low = result.lower()
+        for m in markers:
+            assert m in low, f'{m} lost for {src} -> {result}'
