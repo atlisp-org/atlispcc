@@ -82,10 +82,21 @@ seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` 
 
 1. **已修复 A5-1**（2026-08-07）：`/ locals` + `cond` 大写 `T` else 槽位错位
    已修（`add()` force + Cond else 键 force 注册）。见上方 P0-A5 节。
-2. **修 单函数 + quoted 数值型常量 丢失**。
-   - `(defun a () (quote (1 2 3)))` 单函数编译后 seg0 `PUSH_G[1]` 指向重复
-     函数名槽，常量 `(1 2 3)` 未注册，反编译为 `'a`。多函数（t12）byte-identity
-     正常 → 问题在单函数分支的资源构建/补槽。
+2. **单函数 + quoted 数值型常量 丢失**（CAD golden 证实 = 纯 decompile-only，
+   编译产物正确，2026-08-07）。
+   - **结论**：`(defun a () (quote (1 2 3)))` 的**编译产物完全正确**——
+     CAD golden `D:/atlisp-test/qsingle.fas`（`vlisp-compile 'st` 真机生成）
+     与我们的 seg0、nsyms、sec2 **逐字节一致**（`seg0=1400000000090100`、
+     `symbo_slots=[A,A]`、`fg[1]=(CONS,0,9)`）。且在 CAD 加载运行
+     `(a)` 均返回 `(1 2 3)`（golden 与 ours 双验证）✅。
+   - **仅反编译器渲染失败**：单函数常量以指针形式存于资源
+     `(CONS,0,9)`（byte-offset 引用），而 t12 多函数因槽位错开把常量
+     存为**已解析值** `fg[2]=(1,2,3)`，故 PUSH_G[1]→gvar(2) 恰命中、可渲染。
+     单函数缺该错位 → 反编译回退 `symbol_slots[1]`=`'a`，或经实验性改动
+     渲染成 `'((cons 0 9))`（未达 `'(1 2 3)`）。
+   - 已尝试在 `_gvar_item` 加直接 idx 解析，但会破坏其他符号解析 → 回退。
+     正解是把 `(CONS,off,off)` byte-offset 指针 deref 成资源项（该项工作与
+     `resource_items_with_offsets` 复用），属 decompiler 范围。
    - 验收：单函数 decoded 反编译得 `'(1 2 3)`，(resolve) validate PASS。
 3. **反编译 A5-2**：`(setq x (if ...))` 渲染保留赋值语义。
 

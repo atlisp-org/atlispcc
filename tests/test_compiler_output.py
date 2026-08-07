@@ -273,6 +273,7 @@ CAD_T_SERIES_IDENTICAL = [
     't10_init', 't11_localvars', 't12_quote', 't13_nested_if',
     't14_command', 't15_cad_funcs', 'andor', 'and2', 'or2', 'andval',
     't18_multi_recursive', 't16_foreach', 't17_repeat', 'chinese',
+    'qsingle',
 ]
 
 #: t-series sources with KNOWN remaining byte diffs (see docs/development-plan.md 8.C1).
