@@ -145,7 +145,7 @@ seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` 
 | B2 | `eval`/`read` 极端用例回归 | 低 | ✅ 已补测 |
 | B3 | 实体/DXF 数据结构 roundtrip | 中 | ✅ 已补测 |
 | B4 | 符号名大小写规范化统一 | 中 | ✅ 已补测 |
-| B5 | `&optional`/`&rest` 多参数组合 | 中（已有 t19/t21） | 部分（golden 待真机） |
+| B5 | `&optional`/`&rest` 多参数组合 | 中（已有 t19/t21） | ✅ 真机运行验证（无 golden，CAD 不支持变参编译） |
 
 ### B1 `defun-q`（已完成）
 
@@ -175,13 +175,17 @@ roundtrip + validate PASS，关键调用与组码/字符串不丢失。无代码
 参数/布尔/`/`/`*` 等符号不破坏、括号合法。无代码改动（现行统一大写
 策略已覆盖大小写不敏感）。
 
-### B5 `&optional`/`&rest`（golden 待真机）
+### B5 `&optional`/`&rest`（真机运行验证，**无 golden**）
 
-t19_variadic / t21_variadic_extra 已有 17 个单测 + 22 项真机功能验证
-（`scripts/cad_verify.py`），但**无 CAD golden**（仅 `.lsp`，golden `.fas` 需
-CAD 真机 `vlisp-compile` 生成）。当前无真机会话，无法 byte-identity 化。
-记待办：下次真机会话用 `vlisp-compile` 产出 t19/t21 golden → 移入
-`CAD_T_SERIES_IDENTICAL`。
+t19_variadic / t21_variadic_extra 有 17 个单测（`test_variadic_args.py`）+ 真机
+功能验证（`scripts/cad_verify.py`）。**无法产出 byte-identity golden**：CAD 的
+`vlisp-compile`/编译器本身不支持 `&optional`/`&rest`（AutoLISP 标准参数不支持
+变参），因此**不存在**可比对的 CAD 编译产物。
+
+正确锚点 = **真机运行验证**：`scripts/cad_verify.py` 把编译好的 t19/t21 `.fas`
+加载进 CAD 执行并断言返回值（optional 缺省、rest 收集、组合、纯 optional），
+结果语义一致性由此保证，而非字节比对。已转正为 B5 的主要验收方式。（该限制
+同时说明：变参语法是 LispConverter 扩展，超出 CAD 原生编译范围。）
 
 ## P2（延展，未执行）
 
