@@ -2406,6 +2406,122 @@ class LispGenerator:
 
         return f"fas_fn_{func_index + 1:04d}"
 
+    def _deref_deferred_constant(self, value: Any) -> Any:
+        """解析 stub 的 deferred 字节区间字面量引用。
+
+        CAD 对未被当前模块消费的字面量（单函数文件的 quoted 常量等）不直接物化，
+        而是存 `(('CONS', A, B),)`：A = 字节区间起点（相对），B = 字节长度。
+        实际数据在 sec2 中紧跟 deferred 语句（`INT8 A, INT8 B, CONS, LIST1`）
+        之后。通过 resource_items_with_offsets 定位该语句，取其结束偏移作 base，
+        读 sec2[base : base + Bpasses] 并按资源流语义解码为常量值。
+
+        仅在值严格为单元素包裹的 deferred 时触发；解析失败/无法定位则原样返回，
+        保证不破坏既有路径。t12 的链式 `(('CONS',c,d),('CONS',a,b),('CONS',0,x))`
+        是多元素 tuple，不在此处理。
+        """
+        if not (isinstance(value, tuple) and len(value) == 1):
+            return value
+        leaf = value[0]
+        if not (
+            isinstance(leaf, tuple)
+            and len(leaf) == 3
+            and leaf[0] == "CONS"
+            and isinstance(leaf[1], int)
+            and isinstance(leaf[2], int)
+        ):
+            return value
+        offset, length = leaf[1], leaf[2]
+        sec = self.fas.sec2_data
+        if length <= 0 or offset < 0 or offset + length > len(sec):
+            return value
+        base = self._locate_deferred_base(offset, length)
+        if base is None or base + length > len(sec):
+            return value
+        return self._decode_deferred_value(sec[base : base + length])
+
+    def _locate_deferred_base(self, offset: int, length: int) -> Optional[int]:
+        """定位 deferred 语句结束偏移（= 字面量数据起始）。
+
+        语句为 `INT8 offset, INT8 length, CONS(0x2A), OP_0x39(1)` 序列，后跟
+        STOP(0x00)。从 resource_items_with_offsets 找 `INT8 offset, INT8 length,
+        OP_0x39 1` 三元组，返回其 OP_0x39 项偏移 + 3。
+        """
+        items = getattr(self.fas, "resource_items_with_offsets", None)
+        if not items:
+            return None
+        for i in range(len(items) - 2):
+            aoff, ait = items[i]
+            _, bit = items[i + 1]
+            coff, cit = items[i + 2]
+            if ait[0] != "INT8" or bit[0] != "INT8" or cit[0] != "OP_0x39" or cit[1] != 1:
+                continue
+            if ait[1] != offset or bit[1] != length:
+                continue
+            return coff + 3
+        return None
+
+    def _decode_deferred_value(self, block: bytes) -> Any:
+        """把字面量 block 解码回常量值。支持 INT8/INT32、SYMBOL/STRING、LIST、
+        CONS（含 dotted）与递归结构。返回单个值（list 或原子）。"""
+        stack: List[Any] = []
+        pos = 0
+
+        def pop_many(n):
+            if n <= 0:
+                return []
+            if n > len(stack):
+                n = len(stack)
+            vals = stack[-n:]
+            del stack[-n:]
+            return vals
+
+        while pos < len(block):
+            op = block[pos]
+            if op in (0x32,):
+                pos += 1
+                if pos < len(block):
+                    v = block[pos]
+                    stack.append(v if v <= 127 else v - 256)
+                    pos += 1
+            elif op in (0x33,):
+                pos += 1
+                if pos + 4 <= len(block):
+                    import struct as _st
+
+                    stack.append(_st.unpack("<i", block[pos : pos + 4])[0])
+                    pos += 4
+            elif op in (0x39,):
+                pos += 1
+                if pos + 2 <= len(block):
+                    n = struct.unpack("<H", block[pos : pos + 2])[0]
+                    pos += 2
+                    stack.append(tuple(pop_many(n)))
+            elif op == 0x2A:
+                if len(stack) >= 2:
+                    r = stack.pop()
+                    l = stack.pop()
+                    stack.append(("CONS", l, r))
+                pos += 1
+            elif op == 0x43:
+                pos += 1
+            elif op in (0x56, 0x5B):
+                pos += 1
+                end = block.find(b"\x00", pos)
+                if end < 0:
+                    break
+                from core.fas_core import decode_fas_text
+
+                name = decode_fas_text(block[pos:end])
+                stack.append(("SYMBOL", name))
+                pos = end + 1
+            elif op in (0x1C, 0x01, 0x00):
+                stack.append(None)
+                pos += 1
+            else:
+                break
+        # 取栈末（LIST/CONS 包裹后应只剩一个值）
+        return stack[-1] if stack else None
+
     def _gvar_item(self, idx: int) -> Any:
         if self.is_stub_format:
             # stub 字节码引用（PUSH_G/PUSH_VALUE/SETQ_G/USUBR）的操作数均为
@@ -2415,8 +2531,20 @@ class LispGenerator:
             # gvar_table[0]=None、[1]=CONS 为固定结构槽，不参与 mvar-1 引用
             # （自包含格式的模块代码用 symbol_slots 直接编址，其 PUSH_G 0 会
             # 命中 [1]=CONS，必须回退）。
+            result = None
             if 1 < idx + 1 < len(self.gvar_table):
-                return self.gvar_table[idx + 1]
+                result = self.gvar_table[idx + 1]
+            elif 0 <= idx < len(self.gvar_table):
+                # 单函数紧凑 stub：操作数直接指向 gvar 槽（非 +1），deferred
+                # 字面量常驻 gvar_table[idx]（q_single 的 PUSH_G 1 → 槽 1）。
+                # 仅当该槽为可解析成非空常量值（长度 >0 且解码出真实值）时
+                # 采纳，避免把 `(CONS,0,0)` 这类占位单例误认成 deferred
+                # （dotted `(cons 1 . 2)` 合成产物），破坏既有符号回退。
+                candidate = self.gvar_table[idx]
+                deref = self._deref_deferred_constant(candidate)
+                if deref is not candidate:
+                    result = deref
+                    return result
             if 0 <= idx < len(self.symbol_slots):
                 return self.symbol_slots[idx]
             return None

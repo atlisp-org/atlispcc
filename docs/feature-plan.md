@@ -82,22 +82,27 @@ seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` 
 
 1. **已修复 A5-1**（2026-08-07）：`/ locals` + `cond` 大写 `T` else 槽位错位
    已修（`add()` force + Cond else 键 force 注册）。见上方 P0-A5 节。
-2. **单函数 + quoted 数值型常量 丢失**（CAD golden 证实 = 纯 decompile-only，
+2. **已修复 单函数 + quoted 数值型常量 丢失**（CAD golden 证实 = 纯 decompile-only，
    编译产物正确，2026-08-07）。
    - **结论**：`(defun a () (quote (1 2 3)))` 的**编译产物完全正确**——
      CAD golden `D:/atlisp-test/qsingle.fas`（`vlisp-compile 'st` 真机生成）
      与我们的 seg0、nsyms、sec2 **逐字节一致**（`seg0=1400000000090100`、
      `symbo_slots=[A,A]`、`fg[1]=(CONS,0,9)`）。且在 CAD 加载运行
      `(a)` 均返回 `(1 2 3)`（golden 与 ours 双验证）✅。
-   - **仅反编译器渲染失败**：单函数常量以指针形式存于资源
-     `(CONS,0,9)`（byte-offset 引用），而 t12 多函数因槽位错开把常量
-     存为**已解析值** `fg[2]=(1,2,3)`，故 PUSH_G[1]→gvar(2) 恰命中、可渲染。
-     单函数缺该错位 → 反编译回退 `symbol_slots[1]`=`'a`，或经实验性改动
-     渲染成 `'((cons 0 9))`（未达 `'(1 2 3)`）。
-   - 已尝试在 `_gvar_item` 加直接 idx 解析，但会破坏其他符号解析 → 回退。
-     正解是把 `(CONS,off,off)` byte-offset 指针 deref 成资源项（该项工作与
-     `resource_items_with_offsets` 复用），属 decompiler 范围。
-   - 验收：单函数 decoded 反编译得 `'(1 2 3)`，(resolve) validate PASS。
+   - **已修复（2026-08-07）**：单函数常量以 deferred 字节区间引用存于资源
+     `(('CONS',A,B),)`（A=相对偏移、B=字节长度，数据紧跟 deferred 语句）。
+     在 `_gvar_item` 对单函数 stub 的 PUSH_G 槽位做 deref：
+     - `_locate_deferred_base`：在 `resource_items_with_offsets` 找
+       `INT8 A, INT8 B, CONS, LIST1` 三元组 → base = 语句结束偏移。
+     - `_decode_deferred_value`：按资源流语义解码 sec2[base:base+B]
+       （INT8/INT32/SYMBOL/STRING/LIST/CONS 递归），得到 `(1 2 3)`。
+     - 仅当长度>0 且解码出真实值时采纳；`(CONS,0,0)` 占位（dotted
+       `(cons 1 . 2)` 合成产物）与多元素链式（t12）不受影响。
+     - 单函数 stub 的 PUSH_G 操作数**直接指向 gvar 槽**（非多函数 +1），
+       修复前 `idx+1` 越界回退符号 `'a`。
+   - 验收：`test_qsingle_golden_deferred_quoted_list`（qsingle_cad.fas 反编译
+     得 `(defun a () '(1 2 3))`，validate PASS）。全量 296 tests、38 disasm→asm、
+     18 CAD byte-identity 全绿。
 3. **已修复 A5-2**（本为"反编译渲染"，2026-08-07 实证为**编译器 bug**）：
    `(setq r (if c e1 e2))`（`if` 作为 setq RHS 的**值位置**，函数中段）。
    - **结论**：CAD golden `D:/atlisp-test/a4.fas` 逐字节证实——值位置的 `if`
@@ -132,15 +137,37 @@ seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` 
 
 ---
 
-## P1（延展，未执行）
+## P1（延展）
 
-| 项 | 说明 | 难度 |
-|---|---|---|
-| B1 | `defun-q` 引用定义机制 | 中 |
-| B2 | `eval`/`read` 极端用例回归 | 低 |
-| B3 | 大型图元/实体对齐 | 中 |
-| B4 | 符号名大小写规范化统一 | 中 |
-| B5 | `&optional`/`&rest` 多参数组合 | 中（已有 t19/t21） |
+| 项 | 说明 | 难度 | 状态 |
+|---|---|---|---|
+| B1 | `defun-q` 引用定义机制 | 中 | ✅ 已补强 |
+| B2 | `eval`/`read` 极端用例回归 | 低 | ✅ 已补测 |
+| B3 | 大型图元/实体对齐 | 中 | 未执行 |
+| B4 | 符号名大小写规范化统一 | 中 | 未执行 |
+| B5 | `&optional`/`&rest` 多参数组合 | 中（已有 t19/t21） | 部分（golden 待真机） |
+
+### B1 `defun-q`（已完成）
+
+`(defun-q foo (x) (princ x))` 编译成 `(setq foo '(lambda (x) (princ x)))`（foo 为
+quoted 数据列表，非被调函数）。codegen `_generate_quoted_defun` 已实现；新增回归
+`test_defun_q_preserves_lambda_semantics`：断言 `setq foo`/`lambda`/`princ` 保留、
+`(foo ...)` 命名调用不出现、validate PASS。语义正确。
+
+### B2 `eval`/`read`（已完成，纯测试）
+
+P0-A3 已支持 eval。新增 `test_eval_read_edge_cases_roundtrip` 锁住 7 组极端组合：
+`(eval x)`、`(eval (list '+ 1 2))`、无参 `(read)`、`(read-line fp)`、
+`(eval (quote (setq y 5)))`、`(eval (read s))`、`(eval (quote (+ 1 2)))`——全部
+roundtrip + validate PASS，关键调用名保留。无代码改动。
+
+### B5 `&optional`/`&rest`（golden 待真机）
+
+t19_variadic / t21_variadic_extra 已有 17 个单测 + 22 项真机功能验证
+（`scripts/cad_verify.py`），但**无 CAD golden**（仅 `.lsp`，golden `.fas` 需
+CAD 真机 `vlisp-compile` 生成）。当前无真机会话，无法 byte-identity 化。
+记待办：下次真机会话用 `vlisp-compile` 产出 t19/t21 golden → 移入
+`CAD_T_SERIES_IDENTICAL`。
 
 ## P2（延展，未执行）
 

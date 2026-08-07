@@ -3,6 +3,7 @@ import sys
 sys.path.insert(0, '.')
 
 import tempfile
+import re
 import pytest
 from compiler.parser import Parser
 from compiler.symbol_table import SymbolTable
@@ -611,6 +612,25 @@ def test_t17_golden_repeat_arg_and_structure():
     assert '(repeat n' in result
 
 
+def test_qsingle_golden_deferred_quoted_list():
+    """P1-2：CAD 单函数 quoted 常量反编译为 `(1 2 3)` 而非 `'a`。
+
+    qsingle_cad.fas 是 CAD `vlisp-compile` 产物，其 `'(1 2 3)` 以 deferred
+    `(('CONS', 0, 9),)` 字节区间引用存储（未在当前模块物化）。解编译器应
+    deref 之，输出 `(defun a () '(1 2 3))`。仅真 CAD 产物触发（我们的
+    编译器物化常量，roundtrip 不走此路径）。
+    """
+    golden = os.path.join(os.path.dirname(__file__), 'cad', 'qsingle_cad.fas')
+    if not os.path.exists(golden):
+        pytest.skip('tests/cad/qsingle_cad.fas golden not present')
+    result = Fas4Decompiler().decompile(golden, None)
+    assert '(defun a ()' in result
+    assert "'(1 2 3)" in result
+    assert "'a" not in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
 def test_defun_q():
     """Defun-q compiles correctly (body is quoted)."""
     src = '(defun-q foo (x) (princ x))'
@@ -624,6 +644,50 @@ def test_defun_q():
     result = compile_and_decompile(src)
     ok, errs = _validate(result)
     assert ok, f'Validation failed: {errs}'
+
+
+def test_defun_q_preserves_lambda_semantics():
+    """B1：defun-q 反编译应保留引用语义：foo 绑定为 quoted lambda 列表而非函数。
+
+    `(defun-q foo (x) (princ x))` 应产生 `(setq foo '(lambda (x) (princ x)))`
+    （foo 为数据列表，非被调用的 defun）。CLI 管线会把顶层 setq 编译进模块代码，
+    反编译结果含 quoted lambda 构造。
+    """
+    src = '(defun-q foo (x) (princ x))'
+    result = compile_and_decompile(src)
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+    low = result.lower()
+    assert "setq foo" in low
+    assert "lambda" in low
+    assert "princ" in low
+    # 不能编译成被调用函数 `(foo ...)` 命名调用——必须是 quoted 数据体
+    assert re.search(r"\(foo\b", result) is None
+
+
+def test_eval_read_edge_cases_roundtrip():
+    """B2：eval/read 极端用例回归（纯测试，validate PASS）。
+
+    eval/read 均为 P0-A3 已支持的单向路径。此测试锁住常见极端组合：
+    eval 普通引用、eval 数据调用、eval+quote、eval+read，以及 read/read-line
+    无参/有参，确保 roundtrip 后 validate 全过且关键调用保留。
+    """
+    cases = [
+        ("(defun f (x) (eval x))", ["eval"]),
+        ("(defun f (x) (eval (list '+ 1 2)))", ["eval", "+"]),
+        ("(defun f () (read))", ["read"]),
+        ("(defun f () (read-line fp))", ["read-line"]),
+        ("(defun f () (eval (quote (setq y 5))))", ["eval", "setq"]),
+        ("(defun f (s) (eval (read s)))", ["eval", "read"]),
+        ("(defun f () (eval (quote (+ 1 2))))", ["eval", "+"]),
+    ]
+    for src, markers in cases:
+        result = compile_and_decompile(src)
+        ok, errs = _validate(result)
+        assert ok, f'Validation failed for {src}: {errs}'
+        low = result.lower()
+        for m in markers:
+            assert m in low, f'{m} lost for {src} -> {result}'
 
 
 def test_real_fas_decompile():
