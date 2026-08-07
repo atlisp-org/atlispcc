@@ -1,0 +1,120 @@
+# 功能完善开发计划（Feature-Completion Plan）
+
+状态：2026-08-07，P0 阶段执行中（v0.1.16，291 tests 基线）。
+
+本计划聚焦 **AutoLISP 语言特性支持** 的补齐与验证。以分阶段（P0/P1/P2）+ 验收
+标准组织；每项标注：目标、验收、结论（验证时填充）。
+
+---
+
+## P0 核心语言特性（本次执行对象）
+
+### A1. `set` / `setq`
+
+**结论：已完全支持（无需代码改动）。**
+
+- `(set 'x val)` 作为原生 `set` USUBR 调用编译，与 CAD byte-identity
+  （setcmp / i18n golden 证明）。
+- 期间曾尝试把 `(set 'x val)` 改写为 setq 路径，导致 5 个 byte-identity
+  测试失败（setcmp/p06/p07/i18n），已 `git checkout compiler/codegen.py` 回退，
+  恢复 291 绿。→ **`(set 'x val)` 必须以 `set` USUBR 发出，不可当 setq。**
+
+### P0-A1. `*error*` 处理函数
+
+**结论：已支持。**
+
+- 作为独立 defun 编译/反编译/validate 全通过。
+- 作为 `/ 局部变量`（经 `_al-bind-alist` 协议）亦通过；`tools/validate.py`
+  的 `SYMBOL_RE` 已允许 `*` 等字符。
+- 无代码改动。
+
+### P0-A3. `eval`
+
+**结论：已支持（功能正确）。**
+
+- 单向 compile→decompile→validate 通过。
+- 有一个既有的 cosmetic 反编译顺序重排（`(setq expr ...)` 移到 `(eval expr)`
+  之后），属 §10.4 cosmetic 类，不影响功能。
+
+### P0-A4. `apply` / `funcall`
+
+**结论：已支持，所有变体单向通过。**
+
+- `(apply '+ lst)`、`(funcall fn a b)`、`(apply '(lambda ...) (list ...))`、
+  `(apply f args)`（&rest）全部编译/反编译/validate 通过。
+
+### P0-A5. 多语句位置（progn / if / cond / foreach / while 嵌套）
+
+**基础支持；发现 2 个既有缺陷（非本次会话引入）。**
+
+正常：`(if c e1 e2)`、嵌入式 `foreach`/`while`/`cond`（无 `/ locals` 时）
+roundtrip 正确，`t05_cond`（cond+T，无 locals）与 CAD golden 逐字节一致。
+
+问题 A5-1（**编译产物错误**）：
+`/ 局部变量` + `cond` 含大写 `T` 子句（`(T <int>)`）时，codegen 符号槽错位：
+- `(defun s (x / lst) (setq lst (cond ((> x 10) 100) (T 5))) lst)`
+  反编译 → `(defun s (t / lst) ... ((lst t 10) 100) ...)`，`>` 被映射成 `LST`，
+  参数 `x` 变 `t`。
+- disasm 证实是 **seg0 发射字节错误**（`USUBR 2` 引用 LST 而非 `>`），非
+  反编译渲染问题。
+- 小写 `(t 5)` 正常、无 `/ locals` 时 `(T 5)` 也正常 → 触发条件 = `_al-bind-alist`
+  协议 + `cond` `T` 子句。
+- 根因：`get_or_add` 区分大小写，`T`/`t` 注册为不同词槽；`_emit_cond_stub`
+  对 cond `t` 子句 `symtab.get_or_add(cond.name)`（codegen.py:758）使大写 T
+  与他人错位。**风险高（触及 byte-identity 链），建议单独修。**
+
+问题 A5-2（**仅反编译渲染**，产物正确）：
+```
+(setq x (if c e1 e2))
+```
+seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` + `(setq x nil)`，
+丢失赋值关系。属 decompiler 渲染层缺陷，不影响 CAD 运行。
+
+---
+
+## 修补补齐清单（P1，建议优先级）
+
+1. **修 A5-1**（`/ locals` + `cond` 大写 `T` 槽位错位，编译产物错误）。
+   - 方案：normalize `T`/`t` 到单一符号槽（区分大小写前先归一），或
+     `_emit_cond` 对不区分大小写的 `t`/`T` uniform 化。
+   - 验收：上述复现反编译得 `(defun s (x / ls t) ... (> x 10) ... (t 5) ...)`，
+     validate PASS；t05/byte-identity 回归全绿。
+2. **修 单函数 + quoted 数值型常量 丢失**。
+   - `(defun a () (quote (1 2 3)))` 单函数编译后 seg0 `PUSH_G[1]` 指向重复
+     函数名槽，常量 `(1 2 3)` 未注册，反编译为 `'a`。多函数（t12）byte-identity
+     正常 → 问题在单函数分支的资源构建/补槽。
+   - 验收：单函数 decoded 反编译得 `'(1 2 3)`，(resolve) validate PASS。
+3. **反编译 A5-2**：`(setq x (if ...))` 渲染保留赋值语义。
+
+---
+
+## 验收标准（本次 P0）
+
+- [x] A1 set/setq 已支持（byte-identity 净校验）。
+- [x] A2 *error* 单向通过。
+- [x] A3 eval 单向通过（含 cosmetic 备注）。
+- [x] A4 apply/funcall 全变体单向通过。
+- [x] A5 多语句位置正常路径通过；新增 A5-1 / A5-2 两个缺陷登记。
+- [ ] 全量 pytest 保持 291 passed / 1 skipped。
+- [ ] `scripts/run_tests.sh` 全绿。
+
+---
+
+## P1（延展，未执行）
+
+| 项 | 说明 | 难度 |
+|---|---|---|
+| B1 | `defun-q` 引用定义机制 | 中 |
+| B2 | `eval`/`read` 极端用例回归 | 低 |
+| B3 | 大型图元/实体对齐 | 中 |
+| B4 | 符号名大小写规范化统一 | 中 |
+| B5 | `&optional`/`&rest` 多参数组合 | 中（已有 t19/t21） |
+
+## P2（延展，未执行）
+
+| 项 | 说明 |
+|---|---|
+| C1 | `vla-`/`vlax-` ActiveX 调用 |
+| C2 | `command` 交互调用 |
+| C3 | 多 CAD 版本（ZWCAD/ZRX）兼容矩阵 |
+| C4 | DCL/ODCL 对话框 |
