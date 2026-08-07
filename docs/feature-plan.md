@@ -50,7 +50,7 @@
 正常：`(if c e1 e2)`、嵌入式 `foreach`/`while`/`cond`（无 `/ locals` 时）
 roundtrip 正确，`t05_cond`（cond+T，无 locals）与 CAD golden 逐字节一致。
 
-问题 A5-1（**编译产物错误**）：
+问题 A5-1（**编译产物错误，已修复**）：
 `/ 局部变量` + `cond` 含大写 `T` 子句（`(T <int>)`）时，codegen 符号槽错位：
 - `(defun s (x / lst) (setq lst (cond ((> x 10) 100) (T 5))) lst)`
   反编译 → `(defun s (t / lst) ... ((lst t 10) 100) ...)`，`>` 被映射成 `LST`，
@@ -59,9 +59,15 @@ roundtrip 正确，`t05_cond`（cond+T，无 locals）与 CAD golden 逐字节�
   反编译渲染问题。
 - 小写 `(t 5)` 正常、无 `/ locals` 时 `(T 5)` 也正常 → 触发条件 = `_al-bind-alist`
   协议 + `cond` `T` 子句。
-- 根因：`get_or_add` 区分大小写，`T`/`t` 注册为不同词槽；`_emit_cond_stub`
-  对 cond `t` 子句 `symtab.get_or_add(cond.name)`（codegen.py:758）使大写 T
-  与他人错位。**风险高（触及 byte-identity 链），建议单独修。**
+- 根因：`CadSymbolCollector.add()` 只过滤精确字符串 `'T'`（不滤 `t`），大写 T
+  未进 derive；codegen `_emit_cond_stub` `symtab.get_or_add(cond.name)`
+  （codegen.py:758）晚注册 → 槽位错位。
+- **修复（2026-08-07）**：`add()` 的 `T`/`nil` 过滤改为仅非 force 时生效；
+  Cond 收集对 `t`/`T` else 子句键以 `force=True` 注册（CAD t05 golden `SYMBOL T`
+  实测，大小写不敏感）。`(T 5)` 与 `(t 5)` 现等价；`T` 单独作值（PUSH_T 内联）
+  仍不占槽，仅 cond else 键占槽。
+- 回归测试：`test_cond_upper_t_else_slot` / `test_cond_upper_t_if_value`。
+  全量 293 tests、37 disasm→asm byte、18 CAD byte-identity 全绿。
 
 问题 A5-2（**仅反编译渲染**，产物正确）：
 ```
@@ -74,11 +80,8 @@ seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` 
 
 ## 修补补齐清单（P1，建议优先级）
 
-1. **修 A5-1**（`/ locals` + `cond` 大写 `T` 槽位错位，编译产物错误）。
-   - 方案：normalize `T`/`t` 到单一符号槽（区分大小写前先归一），或
-     `_emit_cond` 对不区分大小写的 `t`/`T` uniform 化。
-   - 验收：上述复现反编译得 `(defun s (x / ls t) ... (> x 10) ... (t 5) ...)`，
-     validate PASS；t05/byte-identity 回归全绿。
+1. **已修复 A5-1**（2026-08-07）：`/ locals` + `cond` 大写 `T` else 槽位错位
+   已修（`add()` force + Cond else 键 force 注册）。见上方 P0-A5 节。
 2. **修 单函数 + quoted 数值型常量 丢失**。
    - `(defun a () (quote (1 2 3)))` 单函数编译后 seg0 `PUSH_G[1]` 指向重复
      函数名槽，常量 `(1 2 3)` 未注册，反编译为 `'a`。多函数（t12）byte-identity

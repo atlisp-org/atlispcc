@@ -133,7 +133,12 @@ class CadSymbolCollector:
                 self.names.append(name)
             return
         if name in ('T', 'nil'):
-            return
+            # T/nil 为内建常量（PUSH_T/PUSH_NIL 内联编码），默认不占符号槽。
+            # 但 cond 的 else 子句键（`(t ...)`/`(T ...)`）在 CAD 中会注册一个
+            # 真实符号槽（t05_cond golden `SYMBOL T` 实测），以 force=True 强制
+            # 注册；否则 codegen `get_or_add("T")` 晚于 derive 注册，造成槽位错位。
+            if not force:
+                return
         if force or name not in self.names:
             self.names.append(name)
 
@@ -513,7 +518,14 @@ class CadSymbolCollector:
             clauses = [c for c in node.clauses if c]
             for clause in clauses:
                 if clause:
-                    self._collect_byteorder(clause[0], out, arg_names, in_quote)
+                    cond = clause[0]
+                    # cond 的 else 子句键 `(t ...)`/`(T ...)` 在 CAD 中注册一个真实
+                    # SYMBOL T 槽（t05_cond golden 实测），需 force 强制注册。
+                    # CAD weak_keywords 里 t 大小写不敏感，统一作 SYMBOL T。
+                    if isinstance(cond, Symbol) and cond.name.lower() in ('t',):
+                        out.append((cond.name, True))
+                    else:
+                        self._collect_byteorder(cond, out, arg_names, in_quote)
             for clause in reversed(clauses):
                 for item in clause[1:]:
                     self._collect_byteorder(item, out, arg_names, in_quote)

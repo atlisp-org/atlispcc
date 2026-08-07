@@ -346,6 +346,29 @@ def test_local_vars():
     assert ok, f'Validation failed: {errs}'
 
 
+def test_cond_upper_t_else_slot():
+    """回归：`/ 局部变量` + cond 大写 `T` else 子句不得把符号槽错位。
+
+    `add()` 曾只过滤精确字符串 `'T'`（不滤 `t`），导致大写 T 未进 derive，
+    codegen `get_or_add("T")` 晚注册 → seg0 符号引用错位（`>` 被映射为 LST）。
+    修复后 `(T 5)` 与 `(t 5)` 应编译、反编译等价。
+    """
+    for k in ('T', 't'):
+        src = f'(defun s (x / lst) (setq lst (cond ((> x 10) 100) ({k} 5))) lst)'
+        result = compile_and_decompile(src)
+        assert '(> x 10)' in result, f'{k}: predicate misresolved:\n{result}'
+        assert '({k} 5)' not in result or '(t 5)' in result
+        ok, errs = _validate(result)
+        assert ok, f'{k}: Validation failed: {errs}'
+
+
+def test_cond_upper_t_if_value():
+    src = '(defun s (x) (if (> x 0) T nil))'
+    result = compile_and_decompile(src)
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
 def test_setq():
     src = '(defun foo () (setq x 5) x)'
     result = compile_and_decompile(src)
