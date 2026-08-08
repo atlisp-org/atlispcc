@@ -162,6 +162,17 @@ atlispcc link lib1.fas lib2.fas main.fas -o combined.fas
 
 至少需要 2 个输入文件。输出默认以最后一个输入为基础命名。
 
+链接输出与 CAD 编译器直接编译同源码**逐字节一致**（seg0 + seg1 + nsyms + items，
+`tests/cad/link/*_cad.fas` golden 回归）。CAD 真机可加载并调用全部函数：
+- 简单多函数（`add`/`mul`）、跨文件交叉引用（`square`/`sum-squares`）
+- 多文件多参数（`f1`/`f2`/`f3`）、重名函数首次定义优先（碰撞场景）
+
+```sh
+# 链接后立即在 CAD 中验证
+atlispcc link lib.fas program.fas -o combined.fas
+# 在 CAD: (load "combined.fas") 后调用 lib/program 中的全部函数
+```
+
 ### build-vlx — 构建 VLX 容器
 
 将 FAS 文件打包为 VLX 容器，支持独立命名空间隔离：
@@ -234,8 +245,14 @@ make cad-test    # 或: python scripts/cad_verify.py
 | 勾股定理 | ✅ | `(hypot 3 4)` → 5.0 |
 | 顶层 setq/set | ✅ | setq 在 defun 前后均正确执行 |
 | lambda/quote | ✅ | `(map-inc '(1 2 3))` → (2 3 4)；lambda 参数局部化正确 |
+| vla-/vlax- ActiveX | ✅ | `(t22-acad-doc)` 返回文档对象；编译产物与 CAD golden 逐字节一致 |
+| command 交互调用 | ✅ | `(t23-created-circle-p)` → T（画圆→断言→自清理） |
+| **多文件链接** | ✅ | `atlispcc link` 输出与 CAD 直接编译逐字节一致，CAD 真机全部函数可调用（含跨文件交叉引用、多参数、重名冲突） |
 
 > 单函数文件（`fun.lsp`、`fact.lsp`）与 CAD 编译器输出解密后逐字节一致。
+> t-series（t01-t18）与 `tests/cad/t01_math_cad.fas` 等 **19 份 CAD golden**
+> 编译产物 byte-identity（含 t22 ActiveX）；链接输出与 `tests/cad/link/*_cad.fas`
+> **3 份 CAD golden** 逐字节一致。CAD 真机验证 24/24（`scripts/cad_verify.py`）。
 
 ## 完整示例
 
@@ -293,7 +310,7 @@ atlispcc validate output.lsp
 - `tools.fas-split` — 函数分割（`--trim`/`--outdir`）
 - `tools.decrypt_fas4` / `tools.crack_key` — 解密/密钥破解
 - `tools.find_key` — 在 FAS 中定位 XOR 加密密钥
-- `tools.validate` — 生成的 `.lsp` 语法/危险函数/未使用局部变量检查
+- `tools.validate` — 生成的 `.lsp` 语法/危险函数（quit/exit/startapp）/危险命令（command-s 调 shell/del 等）/未使用局部变量检查
 - `tools.compare_lsp` — `.lsp` 对比分析
 - `tools.zelx_info` / `tools.zelx_diff` / `tools.zelx_build` / `tools.zelx_to_fas` — ZWCAD `.zelx` 解析/对比/构建/恢复（逆向 LispConverter）
 - `tools.lisp_converter_auto` — ZWCAD LispConverter.exe GUI 自动化（样本生产）

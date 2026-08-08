@@ -122,6 +122,21 @@ FAS A + FAS B + ... → 合并符号表/函数目录
                     → 写入合并 FAS
 ```
 
+链接输出与 CAD 编译器直接编译同源码**逐字节一致**（2026-08-08 修复，`§3.6`
+development-plan）：
+
+- **函数间分隔符**：单个 `16`（END_DEFUN，CAD stub 实测，非 `01 00 16`）
+- **参数绑定/读取槽**：按合并 gvar 槽 - 1（`_pre_gvar` 表内）或参数序
+  `nsyms-1-arg_rev`（表外）；单函数文件操作数 = 符号槽、多函数 = 符号槽 - 1
+- **符号槽顺序**：单函数文件分离函数体符号/参数（共享参数最后注册），多函数
+  文件参数穿插各函数体内不分离
+- **sec2_items**：`2 * 函数数 + 2`（CAD 实测 2 函数→6、3 函数→8）
+- **函数偏移**：`final_offset` 按分隔符长度 1 累计
+
+回归：`test_link_byte_identity_with_cad_golden`（3 份 CAD golden：
+`tests/cad/link/{addmul,sqsum,three}_cad.fas`）seg0+sec2+nsyms+items 逐字节一致；
+CAD 真机 add/mul、square/sum-squares、f1/f2/f3、重名冲突场景全部可调用。
+
 ### Fas4Parser
 
 解析 FAS4 二进制文件：
@@ -201,7 +216,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录
 ./scripts/run_tests.sh         # 一键全量检查（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）
 ./scripts/run_tests.sh --cad   # 附加 CAD 真机验证（需 CAD 连接）
 python scripts/cad_verify.py   # CAD 真机验证（逐个编译 t01-t15 加载断言）
-python -m pytest               # 运行所有测试（277 用例 + 1 skip 占位）
+python -m pytest               # 运行所有测试（310 用例 + 1 skip 占位）
 python -m pytest tests/ -v     # 详细输出
 python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 ```
@@ -215,7 +230,7 @@ python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 - `test_compile_decompile.py` — 编译-反编译往返（29 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返）
 - `test_compiler_output.py` — FAS 输出正确性（12 用例）
 - `test_optimizer.py` — 所有优化 pass（32 用例，含循环携带变量回归）
-- `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
+- `test_linker.py` — 多文件链接（13 用例，含重名冲突警告 + 3 份 CAD golden byte-identity）
 - `test_assembler.py` — 反汇编/汇编往返（5 用例）
 - `test_disasm.py` — 反汇编健壮性（8 用例，含未处理操作码降级）
 - `test_packages.py` — CL 风格包系统（4 用例）
