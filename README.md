@@ -218,7 +218,20 @@ atlispcc validate combined.lsp
 ```sh
 make cad-test    # 或: python scripts/cad_verify.py
 ```
-`scripts/cad_verify.py` 逐个编译 t01-t15 → 在 CAD 加载 → 断言返回值（14 项通过）。
+`scripts/cad_verify.py` 逐个编译 t01-t15 → 在 CAD 加载 → 断言返回值（24 项通过）。
+
+> **CAD 模态对话框自动关闭**：CAD 偶发弹出模态对话框（`alert` 错误框、命令中断框）
+> 会阻塞 `atlisp-mcp` 的 eval 调用。可用 `tools.cad_dialog_killer` 自动关闭：
+> ```sh
+> # 在 CAD 测试前启动后台监听（自动点击确定/取消关闭任何 #32770 对话框）
+> python -m tools.cad_dialog_killer <cad-pid> --watch --timeout-s 3600 &
+> python -m tools.cad_dialog_killer all --watch --timeout-s 3600   # 或扫描全部 CAD 进程
+> # 单次扫描：
+> python -m tools.cad_dialog_killer <cad-pid>
+> ```
+> 工具用 C#（`tools/src/cad_dialog_killer.cs`）编译为 exe，首次运行自动编译，
+> 枚举 CAD 窗口检测可见 `#32770` 对话框并模拟点击按钮关闭。已实测自动关闭
+> `alert` 对话框并解除 MCP 阻塞（2026-08-08）。需 Windows + .NET Framework。
 
 手动测试：
 ```lisp
@@ -315,6 +328,7 @@ atlispcc validate output.lsp
 - `tools.zelx_info` / `tools.zelx_diff` / `tools.zelx_build` / `tools.zelx_to_fas` — ZWCAD `.zelx` 解析/对比/构建/恢复（逆向 LispConverter）
 - `tools.lisp_converter_auto` — ZWCAD LispConverter.exe GUI 自动化（样本生产）
 - `tools.cad_probe` — MCP CAD 交互辅助（开发调试）
+- `tools.cad_dialog_killer` — 自动关闭 CAD 模态对话框（alert 等，避免阻塞 MCP 会话）；`python -m tools.cad_dialog_killer <pid> [--watch]`
 - `tools.analyze_rosetta` — Rosetta 代码分析
 
 用法与输出说明见 `docs/development.md`。
