@@ -186,6 +186,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 
 - `README.md` — 使用者文档（安装、CLI 用法、工作流、工具参考）
 - `docs/lasm.md` — LASM 汇编语言参考（disasm/asm）
+- `docs/compilation-process.md` — 编译过程说明（.lsp → .fas 各阶段详解）
 - `docs/development.md` — 架构详解、代码规范、调试指南
 - `docs/development-plan.md` — 开发计划、已验证兼容性矩阵
 

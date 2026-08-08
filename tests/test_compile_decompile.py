@@ -690,6 +690,75 @@ def test_eval_read_edge_cases_roundtrip():
             assert m in low, f'{m} lost for {src} -> {result}'
 
 
+def test_stmt_order_setq_before_eval_call():
+    """T4：`(setq x ...)` 语句须渲染在后续 `(eval ...)` 之前（源码顺序）。
+
+    回归 §12.4 T4：POP（语句调用丢弃值）不得把滞留在栈中的先前完整
+    setq 语句反置于其后。锁住 eval 调用与普通语句调用的源码顺序。
+    """
+    src = '''
+(defun f ()
+  (setq e 123)
+  (eval '(setq y 5))
+  (setq x 9)
+  (princ "done"))
+'''
+    result = compile_and_decompile(src)
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+    body = result.lower()
+    s_e = body.find("(setq e 123)")
+    ev = body.find("(eval")
+    s_x = body.find("(setq x 9)")
+    pr = body.find("(princ")
+    assert (
+        -1 < s_e < ev < s_x < pr
+    ), f'setq/eval/setq/princ order broken in:\n{result}'
+
+
+def test_stmt_order_setq_value_position_untouched():
+    """T4：setq 作为函数实参/值位置时不受顺序修复影响。
+
+    值位置的 setq 参与内联表达式（`(princ (setq ...))`），不得被语句
+    flush 拆散成独立语句。
+    """
+    src = "(defun f () (setq a 1) (princ (setq b 2)) (setq c 3))"
+    result = compile_and_decompile(src)
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+    low = result.lower()
+    assert "(princ (setq b 2))" in low, f'value-position setq broken in:\n{result}'
+    assert low.find("(setq a 1)") < low.find("(princ"), f'order broken in:\n{result}'
+
+
+def test_t11_locals_decl_and_setq_order():
+    """T5：`/ locals` 声明清单与源码对齐 + setq 初始化保序（t11 golden）。
+
+    反编译 t11 的词法：
+    - `/ locals` 清单必须含全部局部变量（源码 `(/ result i)`）；
+    - `(setq result 0)` 与 `(setq i 1)` 初始化须渲染在 `(while ...)` 循环
+      之前（顺序修复）；回归 `_gvar_item`：PUSH_G 操作数是“gvar 槽 - 1”，
+      gvar_table[idx+1] 的列表常量 `(result i)` 命中即返回，不得无条件回退
+      symbol_slots 造成 `_al-bind-alist 'result` 丢失符号。
+    """
+    golden = os.path.join(os.path.dirname(__file__), 'cad', 't11_localvars_cad.fas')
+    if not os.path.exists(golden):
+        pytest.skip('t11_localvars_cad.fas golden not present')
+    result = Fas4Decompiler().decompile(golden, None)
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+    assert '(defun sum-to-n (n / result i)' in result, f'signature lost / locals:\n{result}'
+    low = result.lower()
+    assert "(_al-bind-alist '(result i))" in low, (
+        f'local binding list must keep all names (got\n{result}'
+    )
+    s0 = low.find("(setq result 0)")
+    s1 = low.find("(setq i 1)")
+    wh = low.find("(while")
+    assert -1 < s0 < wh, f'result init must precede while:\n{result}'
+    assert -1 < s1 < wh, f'i init must precede while:\n{result}'
+
+
 def test_real_fas_decompile():
     """Decompile a real multi-function FAS file and validate output."""
     fas_path = os.path.join(os.path.dirname(__file__), 'cad', 'i18n-cad.fas')

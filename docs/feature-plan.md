@@ -247,3 +247,24 @@ seg0+sec2+nsyms **逐字节一致**（锁入 `test_t_series_byte_identity`），
 - `tests/cad/t23_command.lsp` + `scripts/cad_verify.py` 真机用例：`command-s`
   画圆 → `entlast` 断言为 CIRCLE → 擦除，全程包在 UNDO 组内自清理，不留新
   实体。**CAD 真机确认**（2026-08-08）：`(t23-created-circle-p)` = T。
+
+---
+
+## S3 反编译精细度收尾（2026-08-09，已完成 ✅）
+
+主线计划见 `docs/development-plan.md` §12（T0-T7）。全部为解码器侧修复，
+compiler/资源段零改动，CAD byte-identity 18/18 不回归。完成项：
+
+| 任务 | 内容 | 结果 |
+|---|---|---|
+| T1 | foreach/repeat 循环前置 setq 保序 | t16/t17 golden 与源码顺序一致 |
+| T2 | `/ locals` 清单与源码对齐 | t16/t17 移除多余本地化（保持全局）；t11 经 `_al-bind-alist` 不变 |
+| T3 | c: 命令参数本地化语义澄清 | 确认有意设计（§10.4 显式标注），不改 |
+| T4 | `(setq expr)` 与 `(eval expr)` 顺序 | 根因 POP 分支先 flush 滞留语句；+2 回归 |
+| T5 | `_gvar_item` stub 多元素常量 | `PUSH_G` 命中 `gvar_table[idx+1]` 立即返回；t11 `'(result i)` 完整 + setq 保序；+1 回归 |
+| T6 | `_render_block` 性能热点 | 大样本 6.9s → 5.5s（`lru_cache` 缓存 `is_compact_stub`）；无残余热点 |
+| T7 | 回归与文档 | pytest 316 passed / 1 skipped；新增 4 项语义回归；新增 `docs/compilation-process.md` |
+
+**已知限制**（非本阶段范围）：t12 的 deferred 链式 quote 常量解码
+（`(setq lst 'a)` 应为 `'(a b c)`、`'(cons 1 2)` 应为 `'(1 . 2)`）——
+`_deref_deferred_constant` 仅处理单元素包裹，多元素链式 tuple 未展开，另出处理。

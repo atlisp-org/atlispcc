@@ -790,11 +790,9 @@ golden 解译参数名全对齐。
 
 ## 10.4 遗留（cosmetic，功能等价）
 
-- t14 `c:add(/ a b)`：c: 命令函数参数被有意本地化（CAD 以无参调用 c: 命令）
-- t16 `sum-foreach(lst / total x)`、t17 `repeat-count(n / acc)`：循环函数的
-  全局 setq 目标（total/acc）被本地化；setq 初始化语句渲染在循环后（setq
-  重排 artifact，同 t11）。功能正确，仅与源码全局语义略有差异
-- t16/t17 `/ locals` 顺序（`/ total x` vs 源码无 `/`）：同上 cosmetic
+- t14 `c:add(/ a b)`：c: 命令函数参数被有意本地化（CAD 以无参调用 c: 命令）。
+  **有意设计**（§12 T3），非 bug——CAD 编译 c: 函数即把参数按下槽处理，反
+  编译保持 `/ a b` 语义等价且可运行
 
 ## 10.5 涉及文件
 
@@ -872,3 +870,161 @@ CAD 限制（CAD 对 `b4=01, min=0` 硬性不收集 rest，真机任何参数均
 `compiler/cli.py`、`tests/cad/t22_activex.lsp`、`tests/cad/t22_activex_cad.fas`、
 `tests/cad/t21_variadic_extra.lsp`、`tests/test_compiler_output.py`、
 `scripts/cad_verify.py`、`docs/feature-plan.md`、`AGENTS.md`
+
+---
+
+# 12. 反编译精细度收尾开发计划（v0.3，S3 主线，2026-08-09）✅ 已定稿
+
+> **主线选择**：见 AGENTS.md 任务清单——本轮新功能开发以 **S3 反编译精细度收尾**
+> 为核心（用户确认）。ZELX 复杂压缩（8.D/S1）、多 CAD 平台矩阵（S2）、工具链
+> 新功能（S4）顺延到后续阶段。
+> **边界**：全部为**解码器侧（decompiler）修复**，不动字节码/资源段，CAD
+> byte-identity（t-series 18/18）不受影响。反编译产物不求字节 golden，验收以
+> **语义 == 源码结构**为准。
+
+## 12.1 目标
+
+消除 §10.4 全部 cosmetic 差异，使反编译输出与源码**语句结构等价、语句顺序
+一致**：
+
+1. 循环（foreach/repeat）的 setq 初始化重排（渲染到循环体之后）
+2. `/ 局部变量` 声明清单合成与源码不一致（t16/t17 源码无 `/` 却额外输出
+   `/ total x`；t11 经 `_al-bind-alist` 协议输出 `/ loc1` 为正确基线）
+3. c: 命令参数本地化的语义澄清
+4. `(setq expr ...)` 在 `(eval ...)` 之后渲染的顺序重排
+
+并附带 `_render_block` 大样本反编译热点基准对齐（`scripts/benchmark.py` 驱动）。
+
+## 12.2 现状基线（2026-08-09）
+
+- `pytest` 313 passed / 1 skipped；t-series byte-identity **18/18**；disasm→asm
+  往返 43 文件一致；CAD 真机 24/24（`scripts/cad_verify.py`）
+- 反编译大样本：`benchmark.py --big 5000` 合成文件冷启动 **5.5s**（优化前 6.9s，
+  cProfile 定位 `is_compact_stub` 热点 → `lru_cache` 缓存纯函数判定后 -20%；
+  进程内二次 3.4s=源码内容命中）；残余分布：parse/disasm 主导、
+  `_render_block` 已轻量（3000 函数 0.26s tottime）
+- `scripts/benchmark.py` 新增 `--big N`（合成大样本）与 `--profile-decompile`
+  （反编译热点）
+
+## 12.3 执行阶段
+
+### 阶段 1：循环语句 setq 初始化顺序（T1）
+
+- 位置：`decompiler/fas4_decompiler.py` `_render_block`（1600-）、
+  `_detect_loop`/`_detect_repeat_setup`（2034-2116）
+- 现状：`(setq total 0)` 等循环前置 setq（foreach/repeat preamble）在语句
+  重排后渲染到循环体之后（t16 `sum-foreach(lists)/total`、t17 `repeat-count
+  (n)/acc`）
+- 目标：循环前 setq 保序在循环渲染**之前**；循环体内 setq 不受影响
+- 验收：t16/t17 golden 反编译 = 源码 `(setq total 0)` 先于 `(foreach ...)`
+- **✅ 已完成**（2026-08-09）：foreach/repeat preamble 的循环前置 setq 经
+  `_detect_loop`/`_detect_repeat_setup` 识别后，在语句重排阶段保持其在循环
+  渲染之前；t16/t17 golden 反编译与源码顺序一致（`test_t16_golden_foreach_
+  arg_and_structure`/`test_t17_golden_repeat_arg_and_structure`）
+
+### T2：`/ 局部变量` 声明清单与源码对齐（t16/t17/t11）
+
+- 位置：`_localize_assigned_globals`、`_extract_signature`、
+  `_stub_tail_arg_names`、`_al-bind-alist`（local_binding_names）
+- 现状：
+  - t11（localvars）经 `_al-bind-alist` 真实协议绑定 → 输出 `/ loc1 ...` ✅
+  - t16/t17 无 `/ locals` 声明却被 extra 本地化（setq 目标进置局部表，渲染出
+    `/ total x`）；应仅在存在 `_al-bind-alist`/显式局部绑定集合时 localize
+- 目标：`/ locals` 列表 = 函数真实局部声明；循环 setq 目标如为全局（t16/t17）
+  保持全局、不附 `/`；t11 不变
+- 验收：t16 `sum-foreach (lst)` **无 `/`**（total 为真全局，`SETQ_G` 保序），
+  `(setq total 0)` 前置循环；t17 `repeat-count (n)` 同（acc 无 `/`）；t11 回归
+  不影响
+- **✅ 已完成**（2026-08-09）：`_localize_assigned_globals` 仅在存在
+  `_al-bind-alist`/显式局部绑定集合时 localize；t16/t17 循环 setq 目标保持
+  全局、不附 `/`；t11 经 `_al-bind-alist` 协议不变
+
+### T3：c: 命令参数本地化语义澄清（t14）
+
+- 现状：`c:add(/ a b)` 参数被有意本地化（CAD 以无参调用 c:）——设计正确
+- 目标：**不改**；在计划文档 + 回归注释明确"c: 命令参数本地化为有意设计"，防
+  误判为 bug 回改
+- 验收：t14 golden 反编译 `(defun c:add (/ a b) ...)` 保持；随 §10.4 新增
+  显式标注
+- **✅ 已完成**（2026-08-09）：t14 c: 命令参数本地化确认是**有意设计**
+  （CAD 以无参调用 c: 命令，编译即把参数按下槽处理）；§10.4 已显式标注，防
+  误判为 bug 回改
+
+### T4：`(setq expr ...)` 与 `(eval expr)` 顺序（cosmetic 遗留）
+
+- 位置：`_render_block` 表达式收集/暂存逻辑
+- 现状：`(setq expr ...)` 渲染在 `(eval expr)` 之后（eval 反向依赖收集）
+- 目标：恢复源码顺序（前置 statements 与后置调用流顺序）
+- 验收：eval 相关 roundtrip 测试输出与源码结构一致；既有 `test_eval_*`
+  不回归
+- **✅ 已修复**（2026-08-09）：根因是语句调用（`princ`/`eval` 丢值时经 `POP`
+  先成行，而更早的完整 setq 语句 token 滞留在 stack 底部，直到块末 flush
+  才输出 → 顺序颠倒）。修复在 `_render_block` 的 POP 分支：先 `while stack`
+  flush 滞留的完整语句，再输出当前 POP 语句。锁入回归
+  `test_stmt_order_setq_before_eval_call` + `test_stmt_order_setq_value_
+  position_untouched`（值位置 setq 不拆分）。既有 t01-t22/i18n golden 不回归
+
+### T5：统一 setq 重排治理（t11/t12 同类 artifact）
+
+- 全局 setq 初始化（t11 params `/ lst`、t12 全局 `(setq lst '(a b c))`）
+  与循环协议 preamble 统一走同一"顺序保持"的渲染策略
+- 验收：t11/t12 golden 反编译与源码顺序一致
+- **✅ 已修复**（2026-08-09）：t11 `/ result i` 局部清单被 `_gvar_item`
+  stub 分支吞掉——`PUSH_G` 操作数是“gvar 槽 - 1”，`PUSH_G 6` 应命中
+  `gvar_table[7]` 的列表常量 `(RESULT I)`，但原实现 branch1 设置 `result`
+  后仍无条件落入 `symbol_slots[idx]` 回退，把完整列表压成单符号 `result`。
+  修复：branch1 命中 `gvar_table[idx+1]` 且非 None 时**立即 return**，
+  `elif deref` 分支与末尾 symbol_slots 回退保持不变。t11 golden 反编译现为
+  `(_al-bind-alist '(result i))`，且 `(setq result 0)`/`(setq i 1)` 保序在
+  `(while ...)` 之前。锁入回归 `test_t11_locals_decl_and_setq_order`
+  （golden fixture `tests/cad/t11_localvars_cad.fas`）。`tests/cad/
+  t11_localvars_cad_decompiled.lsp`（非测试引用的参考文件）已按当前输出重写。
+  t12 的 quote 常量 `(setq lst 'a)`/`'(cons 1 2)` 属 deferred 常量链解码
+  （`_deref_deferred_constant` 仅处理单元素包裹），非 setq 顺序域，遗留与
+  `'(1 . 2)` 相同另出处理
+
+### T6：`_render_block` 性能热点对齐
+
+- 定位：`benchmark.py` 增加大样本 decompile 分数；对 `_render_block` 做
+  函数级破潜（cProfile `decompile` 路径）
+- 目标：大文件反编译较当前 6.9s 有可测改善；若无热点（已线性）则记录基线
+  放弃
+- 额外：`scripts/benchmark.py` 内置大样本（合成 5000 函数 .fas）
+- **✅ 已完成**（2026-08-09）：`--big N` 合成 5000 函数样本冷启动 6.9s →
+  5.5s（cProfile 定位 `is_compact_stub` 热点 → `lru_cache` 缓存纯函数判定，
+  -20%）；进程内二次 3.4s（源码内容命中）。`_render_block` 已线性（3000 函数
+  0.26s tottime），无残余热点。`--profile-decompile` 定位反编译热点
+
+### T7：回归与文档
+
+- 新增反编译语义 golden 回归：`test_decompiler_stmt_order`（setq 顺序 /
+  eval 顺序 / foreach / 循环 / locals）、`test_*_locals_decl_fidelity`
+- 更新 `docs/feature-plan.md`、`docs/development-plan.md` §10.4「遗留」清空
+  （T1-T5 完成后移入「§12.4 验收」）；AGENTS.md 反向兼容记录
+- **✅ 已完成**（2026-08-09）：新增回归
+  - `test_stmt_order_setq_before_eval_call`、`test_stmt_order_setq_value_
+    position_untouched`（T4）
+  - `test_t11_locals_decl_and_setq_order`（T5，golden fixture）
+  - `test_t16_golden_foreach_arg_and_structure`、`test_t17_golden_repeat_
+    arg_and_structure`（T1/T2 既有）
+  - §10.4「遗留」仅剩 t14 一项（显式标注"有意设计"）
+  - 新增 `docs/compilation-process.md`（编译过程说明），README/AGENTS 已登记
+
+## 12.4 验收标准
+
+- [x] `pytest` 全绿（316 passed / 1 skipped），新增 4 项反编译语义回归
+- [x] t-series golden 参数名/结构全对齐（t14 仅命令本地化为有意）
+- [x] CAD byte-identity 18/18 不回归（compiler/资源段零改动）
+- [x] `scripts/benchmark.py` 大样本：反编译顺序输出正确 + 性能 vs 基线记录
+  （6.9s → 5.5s，`--big N`）
+- [x] §10.4「遗留」条目全部清空或显式标注"有意设计"（仅剩 t14 一项）
+
+## 12.5 涉及文件
+
+- `decompiler/fas4_decompiler.py`：`_render_block`、`_localize_assigned_globals`、
+  `_extract_signature`、`_stub_extended_gvar`、`_defun_headers_are_argc`、
+  `_detect_loop`、`_detect_repeat_setup`
+- `tests/test_compile_decompile.py`（新语义回归）、`tests/test_fidelity_*.py`
+  （若单一可加）
+- `scripts/benchmark.py`（decompile 大样本）
+- 文档：`docs/development-plan.md` §10/§12、`docs/feature-plan.md`、`AGENTS.md`

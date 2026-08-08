@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import struct
 import re
+import functools
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any, Set
 
@@ -61,32 +62,37 @@ class Fas4File:
 # ─── Decryption & Parsing ──────────────────────────────────────────────────
 
 
-def is_compact_stub(bytecode: bytes, function_catalog: list, sym_count: int = 0) -> bool:
-    """判断是否为 AutoCAD 紧凑 stub 格式（3 字节 Xsubr、符号按注册序编址）。
+def _is_compact_stub_cached(bytecode, sym_count, has_catalog):
+    """计算 ``is_compact_stub`` 结果（纯函数，参数均 hashable）。
 
-    USUBR/FUNC 有 3 字节与 6 字节两种编码。用字节启发式（长度/目录大小/
-    END_DEFUN 存在性）不可靠：操作数中可能恰好出现 0x16/0x21，且多函数
-    编译输出也会超过 64 字节。改为分别按两种格式反汇编，选择产生更少
-    UNK 指令的格式；平局时退回函数目录判定。
-
-    ``sym_count`` 为可选符号槽数，供 stub PUSH_VALUE 单字节/3字节启发式使用。
+    ``function_catalog`` 仅以非空性参与判定，故模块级缓存键用
+    ``(bytes哈希, sym_count, has_catalog)``。大文件 bytecode 反汇编成本高
+    （两份全量反汇编 × 通常 2-3 次调用），缓存避免重复计算。
     """
+    cache_key = bytes(bytecode)
 
     def _unk_count(insts) -> int:
         return sum(1 for inst in insts if inst.op_name.startswith("UNK_"))
 
     try:
-        i3 = Disassembler(short_subr=True).disassemble(bytecode, 0)
+        i3 = Disassembler(short_subr=True).disassemble(cache_key, 0)
     except Exception:
         i3 = []
     try:
-        i6 = Disassembler(short_subr=False).disassemble(bytecode, 0)
+        i6 = Disassembler(short_subr=False).disassemble(cache_key, 0)
     except Exception:
         i6 = []
     c3, c6 = _unk_count(i3), _unk_count(i6)
     if c3 != c6:
         return c3 < c6
-    return not bool(function_catalog)
+    return not has_catalog
+
+
+_is_compact_stub_cached = functools.lru_cache(maxsize=64)(_is_compact_stub_cached)
+
+
+def is_compact_stub(bytecode: bytes, function_catalog: list, sym_count: int = 0) -> bool:
+    return _is_compact_stub_cached(bytes(bytecode), int(sym_count or 0), bool(function_catalog))
 
 
 class Fas4Parser:
@@ -1137,11 +1143,14 @@ class LispGenerator:
         return spec
 
     def _localize_assigned_globals(self, spec: Dict[str, Any], instructions: List[Instruction]) -> None:
-        # 仅当函数声明了 `/ 局部变量`（`func.locals` 非空，CAD stub 经
-        # `_al-bind-alist` 协议绑定）时，把 setq 目标加入局部变量表；否则 setq
-        # 目标是全局变量（t12 `(setq lst '(a b c))` 的 lst 为全局，不应输出
-        # `/ lst`）。bound 映射无论如何都要建立，保证函数体引用能解析到名字。
-        has_locals = bool(spec["func"].locals) or bool(spec.get("local_binding_names"))
+        # 仅当函数经 `_al-bind-alist` 协议声明了 `/ 局部变量`
+        # （`local_binding_names` 非空或函数体调用 `_al-bind-alist`，t11 实测）
+        # 时，才把 setq 目标加入局部变量表；否则 setq 目标是全局变量
+        # （t12 `(setq lst '(a b c))` 的 lst、t16 foreach 累加器 total、
+        # t17 repeat 累加器 acc 均为全局，不应输出 `/ lst`/`/ total x`）。
+        # `func.locals` 只是局部槽编号（foreach/repeat 循环槽），不代表 `/`
+        # 声明。bound 映射无论如何都要建立，保证函数体引用能解析到名字。
+        has_locals = bool(spec.get("local_binding_names")) or self._uses_al_bind_alist(spec)
         for inst in instructions:
             if inst.op_name not in ("SETQ_G",) or not inst.operands:
                 continue
@@ -1152,6 +1161,24 @@ class LispGenerator:
                 spec["localized_globals"].add(name)
             spec["bound_gvar_map"][inst.operands[0]] = name
             spec["bound_symbol_map"][name.upper()] = name
+
+    def _uses_al_bind_alist(self, spec: Dict[str, Any]) -> bool:
+        """函数体是否调用 `_al-bind-alist` 协议（实际 `/ 局部变量` 绑定，t11 实测）。
+
+        t16/t17 的 foreach/repeat 也用局部槽（`func.locals` 非空）但**不**经过
+        `_al-bind-alist`，其 setq 目标是全局变量。`/` 声明的权威信号是
+        `_al-bind-alist` 调用本身（AGENTS t11：符号收集在函数体符号后、参数前
+        注入 `_al-bind-alist` + `(quote (locals...))`）。
+        """
+        for inst in spec["func"].instructions[spec["body_start"] :]:
+            if inst.op_name not in ("USUBR", "FUNC") or len(inst.operands) < 2:
+                continue
+            if inst.operands[0] != 1:
+                continue
+            raw_name = self._gvar_symbol(inst.operands[1]) or self._code_gvar_symbol(inst.operands[1])
+            if raw_name and raw_name.upper() == "_AL-BIND-ALIST":
+                return True
+        return False
 
     def _apply_command_fallback(self, specs: List[Dict[str, Any]]) -> None:
         unique_commands = list(
@@ -1711,6 +1738,10 @@ class LispGenerator:
                         target_idx = end
                     loop_info = self._detect_loop(spec, instructions, offset_to_idx, i, target_idx, end, cond)
                     if loop_info and (loop_info["keyword"] == "foreach" or self._looks_structured_condition(cond)):
+                        # 循环是语句而非值：渲染前先 flush 栈中在此之前的语句
+                        # （t17 repeat 前置 `(setq acc 0)` 在栈中累积，跳过 flush 会
+                        # 在循环后才输出；foreach 的 INIT_ARGS 预载本已触发 flush）。
+                        flush_stack()
                         head = f'({loop_info["keyword"]} {loop_info["head"]}'
                         lines.append(f'{"  " * indent}{head}')
                         lines.extend(
@@ -1894,6 +1925,12 @@ class LispGenerator:
             elif name == "POP":
                 expr = pop_expr(default=None)
                 if expr is not None:
+                    # 语句调用（princ/eval 等的值被丢弃）在 POP 处成行输出。
+                    # 栈中更早滞留的完整语句（如 `(setq e 123)`）须先于本行
+                    # 输出以保持源码顺序（T4：`(setq x e) (eval y)` 时 eval
+                    # 不得反置于 setq 之前）。此时栈内剩余项应为先前完整语句。
+                    while stack:
+                        lines.append(self._statement_line(stack.pop(0), indent))
                     lines.append(self._statement_line(expr, indent))
             elif name == "INIT_ARGS" and inst.operands:
                 consumed = pop_many((inst.operands[0] // 2) * 2)
@@ -2557,6 +2594,13 @@ class LispGenerator:
             result = None
             if 1 < idx + 1 < len(self.gvar_table):
                 result = self.gvar_table[idx + 1]
+                # 命中 gvar_table[idx+1] 时须立即返回：该操作数是“gvar 槽 - 1”，
+                # 运行时读 gvar_table[operand+1]（t11：操作数 6 → 槽 7 的
+                # `(RESULT I)` 局部绑定列表）。若继续无条件以 symbol_slots[idx]
+                # 回退，会把多元素常量（`'(result i)`）误收为单符号槽（`'result`）。
+                # 仅当该槽为占位单例/None 时才回退 symbol_slots。
+                if result is not None:
+                    return result
             elif 0 <= idx < len(self.gvar_table):
                 # 单函数紧凑 stub：操作数直接指向 gvar 槽（非 +1），deferred
                 # 字面量常驻 gvar_table[idx]（q_single 的 PUSH_G 1 → 槽 1）。

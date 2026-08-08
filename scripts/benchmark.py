@@ -71,6 +71,20 @@ def run_link(pairs, tmpdir: str) -> float:
     return dt
 
 
+def write_big_sample(filepath: str, nfuncs: int = 5000) -> None:
+    """生成覆盖 defun（含 setq/if/list）+ 顶层 setq 的合成大样本。"""
+    lines = ["; atlispcc synthetic big sample"]
+    for i in range(nfuncs):
+        lines.append(
+            f"(defun f{i} (x y z) (setq a (+ x 1)) (setq b (* y 2))"
+            f" (if (> x z) (list a b) (list b a)))"
+        )
+    for i in range(nfuncs):
+        lines.append(f"(setq g{i} {i})")
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
 def profile_compile(src: str, tmpdir: str) -> str:
     pr = cProfile.Profile()
     pr.enable()
@@ -82,6 +96,17 @@ def profile_compile(src: str, tmpdir: str) -> str:
     return s.getvalue()
 
 
+def profile_decompile(fas: str, tmpdir: str) -> str:
+    pr = cProfile.Profile()
+    pr.enable()
+    run_decompile(fas, tmpdir)
+    pr.disable()
+    s = io.StringIO()
+    ps = pstats.Stats(pr, stream=s).sort_stats("cumulative")
+    ps.print_stats(30)
+    return s.getvalue()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="atlispcc 性能基准套件")
     ap.add_argument("--json", action="store_true", help="JSON 输出")
@@ -89,6 +114,8 @@ def main() -> int:
     ap.add_argument("--samples", default="", help="额外扫描的 .lsp 目录")
     ap.add_argument("--opt", type=int, default=2, help="编译优化级别（默认 2）")
     ap.add_argument("--baseline", default="", help="基线 JSON 文件（对比相对改善率）")
+    ap.add_argument("--big", type=int, default=0, help="额外合成 N 函数大样本（默认 0=不加入）")
+    ap.add_argument("--profile-decompile", action="store_true", help="cProfile 反编译热点")
     args = ap.parse_args()
 
     samples = list(BUILTIN_SAMPLES)
@@ -97,6 +124,17 @@ def main() -> int:
             samples.append((os.path.basename(fp)[:30], fp))
 
     results = {}
+    big_tmp = tempfile.TemporaryDirectory()
+    big_fas = None
+    if args.big > 0:
+        big_lsp = os.path.join(big_tmp.name, "big.lsp")
+        big_fas = os.path.join(big_tmp.name, "big.fas")
+        write_big_sample(big_lsp, args.big)
+        entry = {}
+        entry["compile_O0"] = run_compile(big_lsp, big_tmp.name, 0)
+        cmd_compile(big_lsp, big_fas, opt_level=0)
+        entry["decompile"] = run_decompile(big_fas, big_tmp.name)
+        results["big_synthetic"] = entry
     with tempfile.TemporaryDirectory() as tmp:
         for name, src in samples:
             if not os.path.exists(src):
@@ -122,6 +160,15 @@ def main() -> int:
         with tempfile.TemporaryDirectory() as tmp:
             print(profile_compile(samples[0][1], tmp))
 
+    if args.profile_decompile and samples:
+        with tempfile.TemporaryDirectory() as tmp:
+            if big_fas and os.path.exists(big_fas):
+                print(profile_decompile(big_fas, tmp))
+            else:
+                fas = os.path.join(tmp, "p.fas")
+                cmd_compile(samples[0][1], fas, opt_level=0)
+                print(profile_decompile(fas, tmp))
+
     baseline = {}
     if args.baseline and os.path.exists(args.baseline):
         with open(args.baseline, "r", encoding="utf-8") as f:
@@ -141,6 +188,7 @@ def main() -> int:
             base = baseline.get(name, {}).get("compile_O%d" % args.opt)
             delta = f"{(dt2 - base) / base * 100:+.1f}%" if base else "-"
             print(f"{name:<22} {dt:8.3f} {dt2:8.3f} {dc:12.3f}  {delta}")
+    big_tmp.cleanup()
     return 0
 
 

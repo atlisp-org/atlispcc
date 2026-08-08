@@ -370,6 +370,7 @@ make clean       # 清理构建产物与缓存
 - `docs/fas-format.md` — FAS4 二进制文件格式详解
 - `docs/opcodes.md` — 操作码参考
 - `docs/lasm.md` — LASM 汇编语言参考（disasm/asm 文本格式）
+- `docs/compilation-process.md` — 编译过程说明（.lsp → .fas 各阶段详解）
 - `docs/development.md` — 开发者说明（架构、管线、测试、代码规范）
 - `docs/development-plan.md` — 开发计划、遗留问题与功能完善路线图
 
