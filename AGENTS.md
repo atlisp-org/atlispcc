@@ -122,7 +122,7 @@ make clean       # 清理构建产物与缓存
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 307 用例 + 1 skip 占位）：
+**测试文件在 `tests/` 目录下**（pytest 风格，共 310 用例 + 1 skip 占位）：
 - `test_parser.py` — AST 解析器（19 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
@@ -131,7 +131,7 @@ make clean       # 清理构建产物与缓存
 - `test_compile_decompile.py` — 编译-反编译往返（68 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
 - `test_compiler_output.py` — FAS 输出正确性（56 用例，含 7 对 CAD golden 逐字节比对 + t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
-- `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
+- `test_linker.py` — 多文件链接（13 用例，含重名冲突警告 + 3 份 CAD golden byte-identity）
 - `test_assembler.py` — 反汇编/汇编往返（8 用例）
 - `test_disasm.py` — 反汇编健壮性（9 用例，含未处理操作码降级）
 - `test_resource_stream.py` — 资源码解析/资源段构建（24 用例：符号/字符串块、GVARINIT、DEFCODE、build_mvar_tables、资源码 vs 操作码区分）

@@ -10,9 +10,9 @@
 
 | 指标 | 数值 |
 |------|------|
-| 测试用例 | **307 用例**（306 passed + 1 skip，无 xfail） |
+| 测试用例 | **310 用例**（309 passed + 1 skip，无 xfail） |
 | t-series byte-identity | **19/19**（t01-t18 + t22_activex） |
-| CAD 真机验证 | **24/24**（`scripts/cad_verify.py`，含 t22/t23） |
+| CAD 真机验证 | **24/24**（`scripts/cad_verify.py`）+ 链接器 4 场景可调用 |
 | disasm→asm 往返 | 39 文件字节一致 |
 
 ### 本周期成果
@@ -32,6 +32,20 @@
    `(t21-product 2 3 4)` → 24。
 4. **文档同步**：AGENTS.md 测试统计（292→304）、t22 golden 覆盖、
    development-plan §11 新章节、feature-plan C1/C2 真机确认。
+
+## 0.2 追加（2026-08-08，§3.6 链接器 CAD 兼容根治）
+
+修复链接器输出在 CAD 真机功能错误的预先存在问题（§3.6「字节码功能正确」
+断言不成立，CAD 复核证实）：
+- **分隔符** `01 00 16` → `16`（CAD stub 实测）；`final_offset` 长度 3→1
+- **参数绑定/读取槽** 按合并 gvar 槽-1（`_pre_gvar` 表内）或参数序
+  `nsyms-1-arg_rev`（表外）；单/多函数文件操作数语义区分
+- **符号槽顺序** 单函数文件分离体符号/参数（共享参数最后），多函数不分离
+- **sec2_items** 补 `2*nfuncs+2` 修正
+- 新增 `test_link_byte_identity_with_cad_golden`（3 份 CAD golden：
+  addmul/sqsum/three，`tests/cad/link/*_cad.fas`）逐字节一致；CAD 真机
+  add/mul、square/sum-squares、f1/f2/f3、碰撞场景全部可调用
+- pytest **309 passed + 1 skip**
 
 ---
 

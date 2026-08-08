@@ -290,6 +290,26 @@ symbol_slots 布局重算参数槽（风险高，CAD 复核后方可推进）。
 - 修正 `_decompile` 依赖（若 `16` 是正确分隔符则修测试）
 - 参数绑定用合并 gvar 槽-1，碰撞场景需特殊处理
 
+**修复完成（2026-08-08）✅ §3.6 链接器 CAD 兼容根治**：
+1. **函数间分隔符** `01 00 16` → `16`（CAD stub 实测，`t01_math_cad.fas`/
+   链接 golden 两函数间仅 `16`）。`_decompile` 依赖同步修正（`16` 正确）。
+2. **参数绑定/读取槽** 改用「合并 gvar 槽 - 1」（`_pre_gvar[sym] - 1`，表内）
+   或「参数序 nsyms-1-arg_rev」（表外，CAD 实测 add 参数 A=nsyms-1、B=nsyms-2、
+   3 函数 X=nsyms-1）。单函数文件参数绑定操作数 = 符号槽、多函数 = 符号槽-1
+   （`_param_slot` 从文件 symbol_slots 反查符号名）。
+3. **符号槽顺序**：单函数文件分离「函数体符号 + 参数」，参数区分共享（跨文件
+   同名）最后注册、非共享紧跟所属文件；多函数文件（如 foo+call-foo）不分离
+   （参数穿插在各函数体内）。
+4. **sec2_items**：链接器补 `min_items = 2*nfuncs + 2` 修正（CAD 实测 2 函数→6、
+   3 函数→8，而 `count_resource_records` 仅 4）。
+5. **`final_offset`** 分隔符长度 3→1。
+
+**回归**：新增 `test_link_byte_identity_with_cad_golden`（3 份 CAD golden：
+addmul/sqsum/three，`tests/cad/link/*_cad.fas`，CAD `vlisp-compile` 2026-08-08
+生成），链接输出与 CAD 直接编译同源码 **seg0+sec2+nsyms+sec2_items 逐字节一致**。
+CAD 真机验证：add/mul `(5 20)`、square/sum-squares `(49 25)`、f1/f2/f3 `(6 7 8)`、
+碰撞场景 foo/call-foo `(6 6)` 全部正常。pytest **309 passed + 1 skip**。
+
 **技术路线**：
 - 用 CAD 实测链接输出的模块代码/函数注册，对比单文件多函数（cmd）
    的差异（cmd 多函数 CAD 全注册可用）
@@ -366,7 +386,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 | 任务 | 状态 | 说明 |
 |------|------|------|
-| 链接器多函数 CAD 注册（3.6） | ⚠️ 待 CAD 真机复核 | `derive_symbol_names` 复刻 + 本地测试全绿；**CAD 真机（2026-08-08）发现链接产物功能错误**（add/square/sum-squares 调用失败），见 §3.6「CAD 真机复核」 |
+| 链接器多函数 CAD 注册（3.6） | ✅ 已修复（2026-08-08） | 分隔符 `16`、参数绑定 gvar 槽-1/参数序、符号槽顺序、sec2_items 修正；`test_link_byte_identity_with_cad_golden` 3 份 golden 逐字节一致 + CAD 真机可调用 |
 | `build_module_code` PUSH_G 越界 | ✅ | n≥4 动态计算，4+函数交叉引用 CAD 实测通过 |
 | `_build_cad_module_code` 增强 | ✅ | 支持 defun 间夹杂 setq/if 的顶层表达式（模块代码） |
 
@@ -397,7 +417,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | ZELX 复杂文件压缩（8.D） | 复刻 ZWCAD 压缩重编码（模块代码重编码 + 符号重排），对小型/简单文件已逐字节一致，复杂文件需逆向 LispConverter.exe（`docs/zelx-format.md` §5-6 + `tools/zelx_diff.py`）+ ZWCAD 真机验证 |
 | CAD 加载器内部逆向 | 逆向 acad.exe FAS 加载器，完善 `build_mvar_tables` gvar 表精确模型（`core/fas_core.py`） |
 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见第 8 节 D1） |
-| **链接器 CAD 兼容根治（3.6）** | 链接产物在 CAD 真机功能错误（add/square/sum-squares 调用失败，2026-08-08 复核）。需按合并 symbol_slots 布局 + CAD 参考逐字节对齐：函数间分隔符 `16`（非 `01 00 16`）、参数绑定 gvar 槽-1、符号槽顺序；同步修正本地 linker 测试对 `01 00 16` 的依赖。见 §3.6「CAD 真机复核」 |
+| **链接器 CAD 兼容根治（3.6）** | ✅ 已修复（2026-08-08）：链接产物与 CAD golden 逐字节一致（分隔符 `16`、参数绑定 gvar 槽-1/参数序、符号槽顺序、sec2_items），CAD 真机 add/mul/square/sum-squares/f1-f3/碰撞场景全部可调用。见 §3.6「修复完成」 |
 
 ---
 

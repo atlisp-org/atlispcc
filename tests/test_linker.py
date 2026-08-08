@@ -1,6 +1,8 @@
 """Tests for the FAS4 linker — merging multiple .fas files."""
 import os
 import tempfile
+
+import pytest
 from compiler.linker import link_fas
 from compiler.cli import cmd_compile as compile_lsp
 from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
@@ -233,5 +235,56 @@ def test_link_first_definition_wins(capsys):
         assert '(+ foo 1)' in code or '+ x 1' in code or '+ 1' in code, f'first definition lost: {code}'
     finally:
         for p in [fas1, fas2, out]:
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+#: 链接器 CAD golden 回归：合并多文件的输出与 CAD `vlisp-compile` 直接编译
+#: 同源码逐字节一致（seg0 + sec2 + nsyms + sec2_items）。
+#: golden 由 AutoCAD 24.1s `vlisp-compile 'st` 生成（tests/cad/link/*_cad.fas，
+#: 2026-08-08）。CAD 真机验证：add/mul、square/sum-squares、f1/f2/f3 均可调用。
+LINK_GOLDEN_PAIRS = [
+    # (golden 名, [输入源码列表])
+    ('addmul', ['(defun add (a b) (+ a b))\n', '(defun mul (a b) (* a b))\n']),
+    ('sqsum',
+     ['(defun square (x) (* x x))\n',
+      '(defun sum-squares (a b) (+ (square a) (square b)))\n']),
+    ('three',
+     ['(defun f1 (x) (+ x 1))\n', '(defun f2 (x) (+ x 2))\n',
+      '(defun f3 (x) (+ x 3))\n']),
+]
+
+
+@pytest.mark.parametrize('name,srcs', LINK_GOLDEN_PAIRS,
+                         ids=[p[0] for p in LINK_GOLDEN_PAIRS])
+def test_link_byte_identity_with_cad_golden(name, srcs):
+    """链接多文件输出与 CAD 直接编译同源码逐字节一致。
+
+    §3.6 回归：分隔符（16 vs 01 00 16）、参数绑定/读取槽（合并 gvar 槽-1 /
+    参数逆序 nsyms-1-arg_rev）、sec2_items（2*nfuncs+2）等修复的守卫。
+    链接器此前输出在 CAD 真机功能错误（add/square/sum-squares 调用失败），
+    修复后 byte-identity 且 CAD 真机全部可调用。
+    """
+    _BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cad', 'link')
+    golden = os.path.join(_BASE, f'{name}_cad.fas')
+    if not os.path.exists(golden):
+        pytest.skip(f'missing linker golden: {golden}')
+    fas_list = [_compile(s) for s in srcs]
+    out = os.path.join(tempfile.gettempdir(), f'test_lk_golden_{name}.fas')
+    try:
+        link_fas(fas_list, out)
+        ours = Fas4Parser().parse(out)
+        ref = Fas4Parser().parse(golden)
+        assert ours.nsyms == ref.nsyms, f'{name}: nsyms {ours.nsyms} != {ref.nsyms}'
+        assert ours.bytecode == ref.bytecode, (
+            f'{name}: seg0 differs from CAD golden\n'
+            f'  ours: {ours.bytecode.hex()}\n  CAD : {ref.bytecode.hex()}'
+        )
+        assert ours.sec2_data == ref.sec2_data, f'{name}: sec2 differs'
+        assert ours.sec2_items == ref.sec2_items, (
+            f'{name}: sec2_items {ours.sec2_items} != {ref.sec2_items}'
+        )
+    finally:
+        for p in fas_list + [out]:
             if os.path.exists(p):
                 os.unlink(p)
