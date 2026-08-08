@@ -319,7 +319,14 @@ class CodeGenerator:
                 buf.emit(struct.pack("<Bi", PUSH_INT32, val))
 
         elif isinstance(node, Real):
-            buf.emit(encode_real(node.value))
+            if self.stub_format:
+                # CAD stub：实数常量注册为资源段 REAL 槽，字节码 PUSH_G 引用
+                # （CAD 实测 real/real_arith/real_list/real_param golden：
+                # `(defun f () 3.14159)` → PUSH_G 引用 REAL 槽，非内联 PUSH_REAL）。
+                idx = self.symtab.add_real(node.value)
+                buf.emit(encode_op_u16(PUSH_G, idx))
+            else:
+                buf.emit(encode_real(node.value))
 
         elif isinstance(node, String):
             idx = self.symtab.add_string(node.value)

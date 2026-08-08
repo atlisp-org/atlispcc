@@ -287,6 +287,11 @@ CAD_GOLDEN_PAIRS = [
     ('mix.lsp', 'mix_cad.fas'),
     ('multi.lsp', 'multi_cad.fas'),
     ('rt_e.lsp', 'rt_e_cad.fas'),
+    # 实数常量（2026-08-08 修复：CAD 注册资源段 REAL 槽 + PUSH_G，非内联 PUSH_REAL）
+    ('cad/real_simple.lsp', 'cad/real_simple_cad.fas'),
+    ('cad/real_arith.lsp', 'cad/real_arith_cad.fas'),
+    ('cad/real_list.lsp', 'cad/real_list_cad.fas'),
+    ('cad/real_param.lsp', 'cad/real_param_cad.fas'),
 ]
 
 #: t-series sources whose compiled output is byte-identical to the CAD golden

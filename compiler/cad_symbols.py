@@ -598,7 +598,15 @@ class CadSymbolCollector:
         elif isinstance(node, String):
             if not self._seen(out, '"' + node.value + '"'):
                 out.append(('"' + node.value + '"', False))
-        elif isinstance(node, (Integer, Real)):
+        elif isinstance(node, Real):
+            # 实数常量：CAD 注册为资源段 REAL 槽（字节码 PUSH_G 引用），符号
+            # 收集随其它符号逆序注册（real/real_arith/real_list/real_param
+            # CAD golden 实测 `[+, 2.5, 1.5]`——第二个实参 2.5 槽更小）。
+            # 键与 codegen `symtab.add_real` 一致（`__real_<value>__`）。
+            key = '__real_%s__' % node.value
+            if not self._seen(out, key):
+                out.append((key, False))
+        elif isinstance(node, Integer):
             pass
 
     def _collect_forward(self, node, out, locals_):

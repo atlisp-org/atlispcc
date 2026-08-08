@@ -795,6 +795,8 @@ def cmd_compile(
     for sym in derive_symbol_names(program):
         if is_const_entry(sym):
             symtab.add_constant(sym[1])
+        elif isinstance(sym, str) and sym.startswith('__real_') and sym.endswith('__'):
+            symtab.add_real(float(sym[len('__real_'):-len('__')]))
         elif sym.startswith('"') and sym.endswith('"'):
             symtab.add_string(sym[1:-1])
         elif sym in symtab.name_to_idx:
