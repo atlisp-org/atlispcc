@@ -390,7 +390,7 @@ def _build_cad_module_code(
         CAD 以其求值结果作为模块代码的返回值——此时 form 内部的尾 setq
         （如 if-then 分支最后一句）需按尾上下文编译（补 DUP，p04 实测）。
         """
-        from compiler.ast_nodes import Symbol, String as _Str
+        from compiler.ast_nodes import Symbol, String as _Str, Integer as _Int
 
         cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
         # 模块代码上下文：顶层 if-then 的 setq 需 DUP、无 else if 补 PUSH_NIL
@@ -417,17 +417,28 @@ def _build_cad_module_code(
                     pre += bytes([0x01])  # PUSH_NIL（CAD 用 PUSH_NIL 值 nil）
                     v_ok = True
                 else:
-                    v_idx = _slot_of(symtab, value)
-                    if v_idx is None:
-                        break  # 复杂值 → 退回通用路径
-                    if isinstance(value, Symbol):
-                        # 非引号符号值：CAD 用 PUSH_VALUE（setcmp
-                        # `(setq _ @::_)` 实测 `03 <槽+1>`）；字符串/引用
-                        # 符号（QuotedExpr）用 PUSH_G。
-                        pre += bytes([0x03]) + struct.pack("<H", v_idx + 1)
+                    if isinstance(value, _Int):
+                        # 整数字面量：内联 PUSH_INT8 / PUSH_INT32（CAD 模块代码
+                        # `setq x 10` 实测 `32 0a 0b 06 03 00`；与 codegen 编码一致），
+                        # 无需走通用路径（避免 per-form 反汇编）。
+                        val = value.value
+                        if -128 <= val <= 127:
+                            pre += bytes([0x32, val & 0xFF])  # PUSH_INT8
+                        else:
+                            pre += struct.pack("<Bi", 0x33, val)  # PUSH_INT32
+                        v_ok = True
                     else:
-                        pre += bytes([0x09]) + struct.pack("<H", v_idx + 1)  # PUSH_G
-                    v_ok = True
+                        v_idx = _slot_of(symtab, value)
+                        if v_idx is None:
+                            break  # 复杂值 → 退回通用路径
+                        if isinstance(value, Symbol):
+                            # 非引号符号值：CAD 用 PUSH_VALUE（setcmp
+                            # `(setq _ @::_)` 实测 `03 <槽+1>`）；字符串/引用
+                            # 符号（QuotedExpr）用 PUSH_G。
+                            pre += bytes([0x03]) + struct.pack("<H", v_idx + 1)
+                        else:
+                            pre += bytes([0x09]) + struct.pack("<H", v_idx + 1)  # PUSH_G
+                        v_ok = True
                 if not v_ok:
                     break
                 if i == n - 1:

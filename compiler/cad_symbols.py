@@ -142,34 +142,71 @@ def is_const_entry(item):
     return isinstance(item, tuple) and len(item) == 2 and item[0] == CONST_MARK
 
 
+class _SeenList(list):
+    """维护 `_seen` 去重的 O(1) 集合，供收集器 `out` 列表单调 append 使用。
+
+    与原始 O(n) 语义完全一致：`names` set 记录已出现的名字（含 "str"/real
+    键），`structs` set 记录已出现的常量结构。索引/逆序/迭代行为继承 list，
+    仅覆盖 append 以同步集合。
+    """
+
+    __slots__ = ("names", "structs")
+
+    def __init__(self):
+        super().__init__()
+        self.names = set()
+        self.structs = set()
+
+    def append(self, item):
+        name, _forced = item
+        super().append(item)
+        if is_const_entry(name):
+            self.structs.add(name[1])
+        else:
+            self.names.add(name)
+
+
 class CadSymbolCollector:
     def __init__(self):
         self.names = []
+        self._name_set = set()
+        self._const_set = set()
         self.shared = set()
         self.func_names = set()
 
     def add(self, name, force=False):
         if is_const_entry(name):
             structure = name[1]
-            if force or not any(is_const_entry(n) and n[1] == structure for n in self.names):
+            if force or structure not in self._const_set:
                 self.names.append(name)
+                self._const_set.add(structure)
             return
         name = normalize_vla_name(name)
         if name.lower() in ('t', 'nil'):
-            # T/nil 为内建常量（PUSH_T/PUSH_NIL 内联编码），默认不占符号槽。
+            # T/nil 为内建常量（PUSH_T/PUSH_NIL 内联），默认不占符号槽。
             # 但 CAD 对 `(if c T nil)` / `(cond (c ... T))` 等**值位置**的 T
             # 会注册真实符号槽并用 PUSH_VALUE 引用（t18 小写 t、t22 大写 T
             # golden 实测，大小写不敏感）；纯 `(and ...)` 短路与 cond else 键
             # 仍内联/强制。仅 nil 恒不占槽（PUSH_NIL 内联）。
             if not force and name.lower() == 'nil':
                 return
-        if force or name not in self.names:
+            if force or name not in self._name_set:
+                self.names.append(name)
+                self._name_set.add(name)
+            return
+        if force or name not in self._name_set:
             self.names.append(name)
+            self._name_set.add(name)
 
     @staticmethod
     def _seen(out, name=None):
         if name is None:
             return out
+        if isinstance(out, _SeenList):
+            if is_const_entry(name):
+                structure = name[1]
+                return structure in out.structs
+            return name in out.names
         if is_const_entry(name):
             structure = name[1]
             return any(is_const_entry(n) and n[1] == structure for n, _ in out)
@@ -210,7 +247,7 @@ class CadSymbolCollector:
         seen_refs = set()
         kept_refs = []
         for f in defuns:
-            refs = []
+            refs = _SeenList()
             arg_names = set(f.args)
             for expr in strip_docstring(f.body):
                 self._collect_byteorder(expr, refs, arg_names)
@@ -274,7 +311,7 @@ class CadSymbolCollector:
                     # 逆序迭代索引 i 对应源码索引 nfuncs-1-i。
                     if shared_first_user.get(arg) == nfuncs - 1 - i:
                         self.add(arg)
-                elif arg not in self.names:
+                elif arg not in self._name_set:
                     self.add(arg)
 
         return self.names
@@ -293,7 +330,7 @@ class CadSymbolCollector:
             self._register_module(program)
         elif others:
             # 纯顶层文件：顶层 refs 按字节码引用序收集后全局逆序注册。
-            refs = []
+            refs = _SeenList()
             for form in others:
                 self._collect_byteorder(form, refs, set())
             for name, force in reversed(refs):
@@ -307,7 +344,7 @@ class CadSymbolCollector:
         for f in reversed(defuns):
             all_args = f.args + f.optional + ([f.rest] if f.rest else [])
             arg_names = set(all_args)
-            refs = []
+            refs = _SeenList()
             for expr in strip_docstring(f.body):
                 self._collect_byteorder(expr, refs, arg_names)
             seen_forced = set()
@@ -327,7 +364,7 @@ class CadSymbolCollector:
                 self.add('_al-bind-alist')
                 self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
             for arg in reversed(all_args):
-                if arg not in self.names:
+                if arg not in self._name_set:
                     self.add(arg)
             for loc in reversed(f.locals):
                 self.add(loc)
@@ -387,7 +424,7 @@ class CadSymbolCollector:
                     module_seen.add(form.name)
                     self.add(form.name)
             else:
-                form_refs = []
+                form_refs = _SeenList()
                 self._collect_byteorder(form, form_refs, set())
                 for name, force in reversed(form_refs):
                     # 顶层符号调用（force=True）不登记槽——并入 defun 槽

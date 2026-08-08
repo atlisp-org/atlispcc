@@ -381,6 +381,11 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | seg1 items 计数 | ✅ | `count_resource_records` 按操作码结构跳转，避免 `0x1c/0x43` 误计 |
 | 死代码清理 | ✅ | 移除 `Fas4Parser.build_mvar_tables`（~196 行，从未调用） |
 | 纯 `&rest` min=0 | ✅ | 已逆向（CAD 硬性不收集）+ 编译警告 |
+| 编译符号整理 O(n²)→O(n)（2026-08-09） | ✅ | `compiler/cad_symbols.derive_name` 等改用 `_Seen`/set 去重，5000 函数源 `pytest` 编译 10.6s → 0.28s（~38×） |
+| 反编译 O(n²) 热点（2026-08-09） | ✅ | `decompiler/fas4_decompiler` 的 `_stub_extended_gvar`、`_defun_headers_are_argc` 加 memoization，大文件反编译 456s → 6.9s（~66×） |
+| 编译模块代码 per-form 反汇编消除（2026-08-09） | ✅ | `compiler/cli._stmt_bytes` setq 快路径新增 Integer 分肢（内联 `PUSH_INT8/INT32` + `DUP` + `SETQ_G`），消除每顶层 setq 的两段 disassemble（5000 setq → 10000×），字节输出与 codegen 逐字节一致 |
+| 链接器去重复核 | ✅ | 字符串/符号表已 dict/set 背靠（`_collect_global_data` O(n)），确非 O(n²)，无需改动 |
+| 性能基准套件 | ✅ | 新增 `scripts/benchmark.py`：compile -O0/-O2 + decompile + link，支持 --json/--profile/--samples/--baseline 相对改善率 |
 
 ### 4.2 短期（P0）✅ 已完成
 
@@ -410,7 +415,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 目标：完整工具链，健壮性与性能。
 
 | 优化器增强 | 跨函数常量传播、死代码消除扩展 |
-| 性能 | 大文件编译/反编译优化；`decompiler/fas4_decompiler._render_block`、`compiler/cad_symbols` 定位热点，基准驱动优化 |
+| 性能 | 大文件编译/反编译优化（基准驱动，2026-08-09 已落地一线：cad_symbols O(n²)→O(n)、反编译两热点 memoization、模块代码 per-form 反汇编消除、`scripts/benchmark.py` 基准套件；后续以相对改善率为准） |
 | CAD 版本兼容 | 多 AutoCAD 版本（2008-2025）FAS 变体 |
 | VLX 增强 | 依赖收集、eTransmit |
 | 文档完善 | 完整 FAS 格式规范 |
@@ -436,7 +441,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | P1 | 测试与 CI 完善 | t-series byte-identity 回归（已落地 18 份 golden，16 项 identical，2 项 xfail）、i18n roundtrip、mypy、twine check（见 8.B） |
 | P2 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见 8.D） |
 | P2 | CAD 加载器内部逆向 | gvar 表精确模型 |
-| P2 | 性能与多版本兼容 | 工具链健壮性 |
+| P2 | 性能与多版本兼容 | 大文件性能（2026-08-09 首批优化已落地，见 §4.1）+ 工具链健壮性 |
 
 > 纯 `&rest` min=0（3.5）已逆向并加编译警告（CAD 硬性不收集），移出优先级表。
 
@@ -447,7 +452,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - **P0 完成**：✅ `pytest` 全绿（266 passed，无 xfail）；✅ t-series 与 `tests/cad/` golden 逐字节一致（见 §8.C）；✅ i18n 混合模式字节一致
 - **P1 完成**：工具链健壮性修复落地；t-series byte-identity 回归（239 passed + 4 xfailed）；i18n roundtrip 用例通过；CI 绿
 - **P2 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过；多版本 CAD 兼容；大文件性能达标
-- **当前（2026-08-08）**：`pytest` **304 用例**（303 passed + 1 skip，无 xfail）；t-series byte-identity **19/19**（t01-t18 + t22_activex）；CAD 真机 **24/24**（`scripts/cad_verify.py`）；disasm→asm 往返 39 文件一致
+- **当前（2026-08-09）**：`pytest` **314 用例**（313 passed + 1 skip，无 xfail）；t-series byte-identity **18/18**（t01-t18，t22_activex 另锁入回归）；CAD 真机 **24/24**（`scripts/cad_verify.py`）；disasm→asm 往返 43 文件一致；性能基线见 `scripts/benchmark.py`
 
 ---
 

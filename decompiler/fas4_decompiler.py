@@ -804,6 +804,9 @@ class LispGenerator:
         否则 `_gvar_item` 对函数体引用的越界回退会被扩展槽打乱
         （test_minimal_compile_decompile 的 princ→hello 实测）。
         """
+        cached = getattr(self, "_stub_extended_gvar_cache", None)
+        if cached is not None:
+            return cached
         if not self.fas.symbol_slots:
             return self.gvar_table
         existing: set = set()
@@ -829,8 +832,14 @@ class LispGenerator:
                     existing.add(name)
                     extra.append(item)
         if extra:
-            return self.gvar_table + extra
-        return self.gvar_table
+            result = self.gvar_table + extra
+        else:
+            result = self.gvar_table
+        # gvar_table / symbol_slots 在 `__init__` 后不可变，逐函数重复全量
+        # 收集会退化 O(F×N)（t21 大文件 5000 函数 × 1.5 万符号实测）。缓存
+        # 结果，输出与逐次计算逐字节一致。
+        self._stub_extended_gvar_cache = result
+        return result
 
     def _build_symbol_slots(self) -> List[Any]:
         """Build the interleaved symbol/string/constant table from the
@@ -862,6 +871,20 @@ class LispGenerator:
         return False
 
     def _defun_headers_are_argc(self) -> bool:
+        """检查 DEFUN 头 argc 编码（见 `_defun_headers_are_argc_impl`）。
+
+        `bytecode`/`function_names_by_offset` 在 `__init__` 后不可变，结果
+        恒定。逐函数重算会对函数偏移排序（5000 函数 × 5000 偏移 ≈ O(F² log F)，
+        t21 大文件实测 14s），故缓存首次结果，输出与逐次计算一致。
+        """
+        cached = getattr(self, "_defun_headers_are_argc_cache", None)
+        if cached is not None:
+            return cached
+        result = self._defun_headers_are_argc_impl()
+        self._defun_headers_are_argc_cache = result
+        return result
+
+    def _defun_headers_are_argc_impl(self) -> bool:
         bc = self.fas.bytecode
         offsets = sorted(k for k in self.function_names_by_offset.keys() if isinstance(k, int))
         if offsets:
