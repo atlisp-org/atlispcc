@@ -143,6 +143,39 @@ def test_validate_unused_local_warns():
     assert validate_unused(forms) == []
 
 
+def test_validate_command_danger_warns():
+    """command/command-s with dangerous system commands must be warned."""
+    from tools.validate import tokenize, parse_tokens, validate_command
+    # dangerous: shell / del / vbastmt via command/command-s
+    src = ('(defun a () (command-s "_.SHELL" "dir"))\n'
+           '(defun b () (command "_.DEL" f))\n'
+           '(defun c () (vl-cmdf "_.VBASTMT" s))\n')
+    tokens, _ = tokenize(src)
+    forms, _ = parse_tokens(tokens)
+    warns = validate_command(forms)
+    assert len(warns) == 3
+    assert all('dangerous command' in w for w in warns)
+    # safe commands must not warn
+    src2 = ('(defun d () (command-s "_.CIRCLE" "0,0" 5))\n'
+            '(defun e () (command "line" p1 p2 ""))\n')
+    tokens, _ = tokenize(src2)
+    forms, _ = parse_tokens(tokens)
+    assert validate_command(forms) == []
+
+
+def test_validate_command_danger_cli_rc_zero():
+    """CLI validate still returns 0 when command warnings are present."""
+    from tools.validate import validate_file
+    from pathlib import Path
+    p = _tmp('cmd_warn.lsp')
+    with open(p, 'w') as f:
+        f.write('(defun run () (command-s "_.SHELL" "dir"))\n')
+    try:
+        assert validate_file(Path(p)) is True
+    finally:
+        os.unlink(p)
+
+
 def test_validate_danger_unused_cli_rc_zero():
     """CLI validate still returns 0 when only warnings are present."""
     from tools.validate import validate_file

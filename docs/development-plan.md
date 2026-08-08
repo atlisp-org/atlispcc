@@ -84,6 +84,10 @@
 与真机样本 `tests/cad/t21_variadic_extra.lsp`（`scripts/cad_verify.py` 注册 t21 真机断言）。
 单函数变参参数名槽位修复见 §3.4 补充。
 
+**v0.1.18（2026-08-08）**:304 用例（303 passed + 1 skip）。新增 t22_activex
+（vla-/vlax- ActiveX）byte-identity golden 回归（`tests/cad/t22_activex_cad.fas`）。
+CAD 真机 24/24 全过（含 t22/t23）。t22 修复与 t21 修正见 §9.6。
+
 ---
 
 ## 3. 遗留问题与根因分析
@@ -260,6 +264,32 @@ link：square 因 `add_force` 在槽 2），导致 `build_module_code` 的
 nsyms 截断区，映射不可靠）。已回退，保持 HEAD 稳定行为。根治需按合并
 symbol_slots 布局重算参数槽（风险高，CAD 复核后方可推进）。
 
+**CAD 真机复核（2026-08-08）⚠️ §3.6 结论需修正**：CAD 会话恢复后，对链接
+产物做了真机验证，发现**链接输出在 CAD 加载后功能错误**（非仅参数名 cosmetic）：
+- `add`（`(defun add (a b) (+ a b))`，与 `mul` 链接）：`(add 2 3)` 返回空
+- `square`/`sum-squares`（跨文件调用）链接：`(square 7)` 报
+  `Xsubr(L) 指令 (偏移代码) 错误: 29`，`(sum-squares 3 4)` 报 `函数错误`
+- 同源码由 CAD `vlisp-compile` 直接编译（两函数同文件）真机正常
+  （`(square 7)`=49、`(sum-squares 3 4)`=25）
+
+**对比链接输出与 CAD 参考（link_ref.fas）发现的字节差异**：
+1. **函数间分隔符**：CAD 用单个 `16`（END_DEFUN），链接输出 `01 00 16`。
+   改 `16` 后 `(square 7)` 恢复 49，但本地 3 项 linker 测试失败——`01 00 16`
+   被本地测试（`_decompile` 函数识别）依赖，两者冲突。
+2. **参数绑定/读取槽**：CAD 参考用合并表 gvar 槽-1（square 参数 X 操作数 6、
+   mix 参数 A/B 操作数 4/3），链接输出用 `param_delta`（merged_nsyms-file_nsyms）
+   平移（square X→6 对、mix A/B→6/5 错）。尝试 `_pre_gvar-1` 映射修好
+   square/sum-squares，但破坏 `test_link_first_definition_wins`（碰撞场景）。
+3. **符号槽顺序**：合并符号表与 CAD 参考的 `+`/参数相对顺序不同，导致
+   USUBR/PUSH 槽整体错位。
+
+**结论**：§3.6 的「字节码功能正确」断言不成立。链接器需按合并 symbol_slots
+布局 + CAD 参考逐字节对齐（分隔符、参数绑定 gvar 槽-1、符号槽顺序）。此修复
+与本地 linker 测试（`_decompile` 依赖 `01 00 16`）存在张力，需专项处理：
+- 生成更多 CAD 参考（跨文件调用、多参数、碰撞场景）作为 golden
+- 修正 `_decompile` 依赖（若 `16` 是正确分隔符则修测试）
+- 参数绑定用合并 gvar 槽-1，碰撞场景需特殊处理
+
 **技术路线**：
 - 用 CAD 实测链接输出的模块代码/函数注册，对比单文件多函数（cmd）
    的差异（cmd 多函数 CAD 全注册可用）
@@ -309,7 +339,14 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - B. 移植 lint 核心语法规则（括号/符号/setq/c: 等 ~10 条）入 validate.py（保持自包含）
 - C. 反编译产物额外脚本化跑 `analyze_lisp_code` 做质量检查（非 CI）
 
-**建议**：A + C（validate 保持门禁并补强；质量检查用 lint 脚本化）。暂不实施，后续决策。
+**决策（2026-08-08）**：采用 **A + C**。方案 A 已落地：
+- `validate_danger`（quit/exit/startapp）✅ 已有
+- `validate_unused`（`/` 局部变量未使用）✅ 已有
+- **新增 `validate_command`**（2026-08-08）：检测 `command`/`command-s`/`vl-cmdf`/
+  `vl-cmd-s` 调用危险系统命令（shell/del/erase/rename/copy/xcopy/mkdir/rmdir/
+  type/vbastmt 等，含 `_.`/`_` 前缀规范化），warn 级不阻断。附 2 个测试
+  （`test_validate_command_danger_warns` / `test_validate_command_danger_cli_rc_zero`）。
+- C（脚本化跑 lint 做质量检查）作为可选运维手段，不强制。
 
 ---
 
@@ -329,7 +366,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 | 任务 | 状态 | 说明 |
 |------|------|------|
-| 链接器多函数 CAD 注册（3.6） | ✅ | `derive_symbol_names` 复刻 + `fd_new == fd_cmd` 字节级一致 |
+| 链接器多函数 CAD 注册（3.6） | ⚠️ 待 CAD 真机复核 | `derive_symbol_names` 复刻 + 本地测试全绿；**CAD 真机（2026-08-08）发现链接产物功能错误**（add/square/sum-squares 调用失败），见 §3.6「CAD 真机复核」 |
 | `build_module_code` PUSH_G 越界 | ✅ | n≥4 动态计算，4+函数交叉引用 CAD 实测通过 |
 | `_build_cad_module_code` 增强 | ✅ | 支持 defun 间夹杂 setq/if 的顶层表达式（模块代码） |
 
@@ -360,6 +397,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | ZELX 复杂文件压缩（8.D） | 复刻 ZWCAD 压缩重编码（模块代码重编码 + 符号重排），对小型/简单文件已逐字节一致，复杂文件需逆向 LispConverter.exe（`docs/zelx-format.md` §5-6 + `tools/zelx_diff.py`）+ ZWCAD 真机验证 |
 | CAD 加载器内部逆向 | 逆向 acad.exe FAS 加载器，完善 `build_mvar_tables` gvar 表精确模型（`core/fas_core.py`） |
 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见第 8 节 D1） |
+| **链接器 CAD 兼容根治（3.6）** | 链接产物在 CAD 真机功能错误（add/square/sum-squares 调用失败，2026-08-08 复核）。需按合并 symbol_slots 布局 + CAD 参考逐字节对齐：函数间分隔符 `16`（非 `01 00 16`）、参数绑定 gvar 槽-1、符号槽顺序；同步修正本地 linker 测试对 `01 00 16` 的依赖。见 §3.6「CAD 真机复核」 |
 
 ---
 
@@ -389,6 +427,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - **P0 完成**：✅ `pytest` 全绿（266 passed，无 xfail）；✅ t-series 与 `tests/cad/` golden 逐字节一致（见 §8.C）；✅ i18n 混合模式字节一致
 - **P1 完成**：工具链健壮性修复落地；t-series byte-identity 回归（239 passed + 4 xfailed）；i18n roundtrip 用例通过；CI 绿
 - **P2 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过；多版本 CAD 兼容；大文件性能达标
+- **当前（2026-08-08）**：`pytest` **304 用例**（303 passed + 1 skip，无 xfail）；t-series byte-identity **19/19**（t01-t18 + t22_activex）；CAD 真机 **24/24**（`scripts/cad_verify.py`）；disasm→asm 往返 39 文件一致
 
 ---
 
@@ -739,3 +778,72 @@ golden 解译参数名全对齐。
   `_detect_repeat_setup`、`_detect_loop`、`_localize_assigned_globals`、
   `_defun_headers_are_argc`
 - `tests/test_variadic_args.py`、`tests/test_compile_decompile.py`
+
+# 11. vla-/vlax- ActiveX 真机缺陷修复（2026-08-08）
+
+## 11.1 目标
+
+t22_activex（vla-/vlax- ActiveX）此前仅 roundtrip + 真机待确认。CAD 真机
+（`scripts/cad_verify.py`）复核时发现编译产物在 CAD 返回空。根因两类编译 bug，
+修复后 t22 编译产物与 CAD golden（`tests/cad/t22_activex_cad.fas`）逐字节一致，
+CAD 真机 24/24 全过。
+
+## 11.2 根因与修复
+
+**A. vla- 符号名保留大小写**（`cad_symbols.py` / `codegen.py` / `resource_builder.py`）
+
+- CAD 对 `vla-get-<Method>` 等方法符号保留**原始大小写**且方法名首字母大写
+  （ActiveX 接口方法名大小写敏感）：源码 `vla-get-count` → 符号槽 `vla-get-Count`
+  （`vla-get-Documents`/`ModelSpace`/`ActiveDocument` 保持源码写法，`vlax-` 前缀
+  保持小写如 `vlax-get-acad-object`）。
+- 此前 `_enc_sym` 统一大写（`VLA-GET-COUNT`）导致 CAD 无法匹配 ActiveX 方法，
+  函数调用返回空。
+- 修复：新增 `normalize_vla_name`（`cad_symbols` + `codegen` 各一份，避免循环
+  import），`add()`/`_emit_call_expr`/`_emit_expr` 统一在符号名层面规范化；
+  `resource_builder._enc_sym` 对 `vla-get-`/`vla-put-`/`vla-call-`/`vla-add-`/
+  `vla-insert-`/`vlax-` 前缀不再 `.upper()`。
+
+**B. 值位置 `T`/`t` 符号槽**（`cad_symbols.add` / `codegen._emit_expr`）
+
+- `(if c T nil)` 的大写 `T` 此前被 `add()` 的 `('T','nil')` 过滤（不注册符号槽）
+  且 codegen `_emit_expr` 内联 `PUSH_T`，导致 T 符号槽缺失、nsyms 少 1、
+  后续符号槽（vla- 内建等）整体偏移、USUBR 索引错乱。
+- CAD 对值位置 `T`/`t` **均注册符号槽并用 `PUSH_VALUE` 引用**（t18 小写 `t`
+  走符号引用路径碰巧通过，t22 大写 `T` 触发）。`(and ...)` 短路尾部与 cond
+  else 键仍各自处理（CAD golden 实测 PUSH_T/force 注册）。
+- 修复：`add()` 对 `t`/`T` 大小写不敏感注册（`nil` 恒内联 PUSH_NIL）；
+  codegen stub 格式下 `T` 走 `PUSH_VALUE` 引用（非 stub 保持 PUSH_T）。
+
+**C. USUBR/FUNC 符号槽末尾编址**（`cli.py _patch_usubr_idx`）
+
+- 符号槽末尾（超出 gvar 表，`build_mvar_tables` 的 fg 仅 nsyms 项）的调用目标
+  （t22 的 `vlax-get-acad-object` 在符号槽 15、fg 表外）此前保留 codegen 原始
+  操作数（15），CAD 无法解析。CAD 按 `gvar 槽 = nsyms` 编址（操作数 = nsyms-1，
+  t22 实测操作数 11）。
+- 修复：USUBR/FUNC 分支新增 elif——`sym` 是 SYMBOL 且不在 gvar_map 时，
+  操作数 = `nsyms - 1 - offset`。
+
+## 11.3 t21 修正（测试期望，非编译 bug）
+
+`t21-product` 原定义 `(&optional factor &rest rest)` 为 min=0，触发 §3.5 已知
+CAD 限制（CAD 对 `b4=01, min=0` 硬性不收集 rest，真机任何参数均返回空）。
+已改为 `(factor &rest rest)`（min=1，CAD 收集「剩余参数」），真机
+`(t21-product 2 3 4)` → 24。optional+rest 组合意图由 `t21-greet`（纯 optional）
++ `t21-first-arg`（纯 rest）保留。
+
+## 11.4 验收
+
+- ✅ `pytest` 304 用例（303 passed + 1 skip，无 xfail）
+- ✅ `t22_activex` byte-identity：编译产物 seg0+sec2+nsyms 与
+  `tests/cad/t22_activex_cad.fas`（CAD `vlisp-compile` 2026-08-08 生成）逐字节一致，
+  锁入 `test_t_series_byte_identity`（`CAD_T_SERIES_IDENTICAL` 加入 `t22_activex`）
+- ✅ CAD 真机 `scripts/cad_verify.py` 24/24 全过（t22 `(T T)`、t23 `T`）
+- ✅ 既有 18 份 t-series byte-identity 与 i18n 混合模式不回归；disasm→asm 往返
+  38→39 文件一致（新增 t22_activex_cad.fas）
+
+## 11.5 涉及文件
+
+`compiler/cad_symbols.py`、`compiler/codegen.py`、`compiler/resource_builder.py`、
+`compiler/cli.py`、`tests/cad/t22_activex.lsp`、`tests/cad/t22_activex_cad.fas`、
+`tests/cad/t21_variadic_extra.lsp`、`tests/test_compiler_output.py`、
+`scripts/cad_verify.py`、`docs/feature-plan.md`、`AGENTS.md`

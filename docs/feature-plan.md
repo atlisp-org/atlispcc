@@ -187,6 +187,12 @@ t19_variadic / t21_variadic_extra 有 17 个单测（`test_variadic_args.py`）+
 结果语义一致性由此保证，而非字节比对。已转正为 B5 的主要验收方式。（该限制
 同时说明：变参语法是 LispConverter 扩展，超出 CAD 原生编译范围。）
 
+> **t21-product 修正**（2026-08-08，CAD 真机发现）：`t21-product` 原定义
+> `(&optional factor &rest rest)` 为 min=0，触发 §3.5 CAD 硬性不收集 rest
+> 限制（CAD 真机任何参数均返回空）。已改为 `(factor &rest rest)`（min=1，
+> CAD 收集「剩余参数」），真机 `(t21-product 2 3 4)` → 24。optional+rest 组合
+> 的测试意图由 `t21-greet`（纯 optional）+ `t21-first-arg`（纯 rest）保留。
+
 ## P2（延展）
 
 | 项 | 说明 | 状态 |
@@ -194,18 +200,43 @@ t19_variadic / t21_variadic_extra 有 17 个单测（`test_variadic_args.py`）+
 | C1 | `vla-`/`vlax-` ActiveX 调用 | ✅ 已补测（roundtrip + cad_verify t22） |
 | C2 | `command` 交互调用 | ✅ 已补测（roundtrip + cad_verify t23） |
 | C3 | 多 CAD 版本（ZWCAD/ZRX）兼容矩阵 | 未执行 |
-| C4 | DCL/ODCL 对话框 | 未执行 |
+| C4 | DCL/ODCL 对话框 | ✅ 已补测（roundtrip，纯测试） |
+
+### C4 DCL/ODCL 对话框（已完成，纯测试）
+
+DCL 对话框函数（`load_dialog`/`new_dialog`/`action_tile`/`start_dialog`/
+`done_dialog`/`unload_dialog`/`set_tile`/`get_tile`/`mode_tile`/`dimx_tile`/
+`dimy_tile`）作为普通内建（USUBR）调用编译，无需特殊编译器逻辑。新增
+`test_dcl_dialog_roundtrip`：6 组形态（对话框生命周期、action_tile 回调绑定、
+控件读写、mode_tile、尺寸查询、完整流程含 done_dialog 状态码）全 roundtrip +
+validate PASS。无代码改动（DCL 函数早已在内建调用路径）。
 
 ### C1 `vla-`/`vlax-` ActiveX（已完成）
 
-`vla-`/`vlax-` 属性和方法作为普通内建调用（USUBR）编译，无需特殊编译器逻辑。
-新增：
+`vla-`/`vlax-` 属性和方法作为普通内建调用（USUBR）编译。**2026-08-08 真机
+验证暴露两个编译器缺陷并修复**（`t22_activex` 原编译产物在 CAD 返回空）：
+
+1. **vla- 符号名保留大小写**：CAD 对 `vla-get-<Method>` 等方法符号保留
+   **原始大小写**且方法名首字母大写（ActiveX 方法名大小写敏感）——
+   源码 `vla-get-count` → 符号槽 `vla-get-Count`（`vlax-` 前缀保持小写）。
+   此前 `_enc_sym` 统一大写导致 CAD 无法匹配 ActiveX 方法。修复：
+   `cad_symbols.normalize_vla_name` + `codegen` 同名函数 + `resource_builder._enc_sym`
+   对 vla-/vlax- 前缀保留大小写。
+2. **值位置 `T` 符号槽**：`(if c T nil)` 的大写 `T` 此前被 `add()` 过滤且
+   codegen 内联 `PUSH_T`，导致 T 符号槽缺失、nsyms 少 1、后续符号槽整体偏移。
+   CAD 对值位置 `T`/`t` 均注册符号槽并用 `PUSH_VALUE` 引用（t18 小写 `t`
+   碰巧走符号引用路径通过，t22 大写 `T` 触发）。修复：`add()` 对 `t`/`T`
+   大小写不敏感注册（nil 恒内联），codegen stub 格式下 `T` 走 `PUSH_VALUE`。
+
+**现状**：`t22_activex` 编译产物与 CAD golden（`tests/cad/t22_activex_cad.fas`）
+seg0+sec2+nsyms **逐字节一致**（锁入 `test_t_series_byte_identity`），CAD 真机
+24/24 用例全过。新增：
 - `test_activex_vla_vlax_roundtrip`：8 组形态（`vla-get-*`/`vla-put-*`/`vla-Add*`、
   `vlax-get/put-property`、`vlax-invoke-method`、`vlax-variant-value`、
   `vlax-get-acad-object`）全 roundtrip + validate PASS。
 - `tests/cad/t22_activex.lsp` + `scripts/cad_verify.py` 真机用例：只读结构断言
-  （ActiveDoc 存在 + 文档计数 > 0），不用具体图元名，无破坏性。待 CAD 会话
-  运行确认。
+  （ActiveDoc 存在 + 文档计数 > 0），不用具体图元名，无破坏性。**CAD 真机确认**
+  （2026-08-08）：`(t22-acad-doc)` 返回 VLA 对象、`has-doc`=T、`pos-count`=T。
 
 ### C2 `command` 交互调用（已完成）
 
@@ -215,4 +246,4 @@ t19_variadic / t21_variadic_extra 有 17 个单测（`test_variadic_args.py`）+
   多语句、`(if ...)` 实参、`nil` 结尾）全 roundtrip + validate PASS。
 - `tests/cad/t23_command.lsp` + `scripts/cad_verify.py` 真机用例：`command-s`
   画圆 → `entlast` 断言为 CIRCLE → 擦除，全程包在 UNDO 组内自清理，不留新
-  实体。待 CAD 会话运行确认。
+  实体。**CAD 真机确认**（2026-08-08）：`(t23-created-circle-p)` = T。

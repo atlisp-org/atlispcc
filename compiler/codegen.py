@@ -22,17 +22,32 @@ from compiler.ast_nodes import (
 )
 from asm.opcodes import (
     NAME_TO_OPCODE,
-    encode_op_noarg,
-    encode_op_u16,
-    encode_op_u8,
-    encode_op_s32,
     encode_usubr,
     encode_usubr3,
     encode_func,
     encode_func3,
-    encode_defun,
+    encode_op_u16,
+    encode_op_u8,
+    encode_op_s32,
+    encode_op_noarg,
     encode_real,
+    encode_defun,
 )
+
+
+def normalize_vla_name(name):
+    """规范化 vla- 前缀的 ActiveX 方法符号名（与 cad_symbols 保持一致）。
+
+    CAD 对 ``vla-get-<Method>`` 等方法符号保留原始大小写且方法名首字母大写
+    （t22_activex golden 实测），``vlax-`` 前缀保持小写。非 vla-/vlax- 不变。
+    """
+    for prefix in ("vla-get-", "vla-put-", "vla-call-", "vla-add-", "vla-insert-"):
+        if name.lower().startswith(prefix):
+            method = name[len(prefix):]
+            if method and method[0].islower():
+                return prefix + method[0].upper() + method[1:]
+            return name
+    return name
 from compiler.symbol_table import SymbolTable
 
 PUSH_T = NAME_TO_OPCODE["PUSH_T"]  # 0x02
@@ -263,11 +278,18 @@ class CodeGenerator:
         if _tail:
             self._in_tail_context = True
         if isinstance(node, Symbol):
-            name = node.name
-            if name == "T":
-                buf.emit(encode_op_noarg(PUSH_T))
-            elif name == "nil":
+            name = normalize_vla_name(node.name)
+            if name.lower() == "nil":
                 buf.emit(encode_op_noarg(PUSH_NIL))
+            elif name.lower() == "t":
+                if self.stub_format:
+                    # CAD 对值位置的 `T`/`t` 注册符号槽并用 PUSH_VALUE 引用
+                    # （t18 小写 t、t22 大写 T golden 实测），非 PUSH_T 内联。
+                    # 仅 `(and ...)` 短路尾 / cond else 键等由各自发射点处理。
+                    idx = self.symtab.get_or_add(name)
+                    buf.emit(encode_op_u16(PUSH_VALUE, idx))
+                else:
+                    buf.emit(encode_op_noarg(PUSH_T))
             elif self.stub_format:
                 if name in self.current_func_args:
                     if len(self._defined_funcs) <= 1:
@@ -437,7 +459,7 @@ class CodeGenerator:
             buf.emit(encode_op_noarg(PUSH_T))
             buf.emit(encode_op_noarg(EXIT_IF_NOT_ZERO))
             return
-        idx = self.symtab.get_or_add(name)
+        idx = self.symtab.get_or_add(normalize_vla_name(name))
         if (
             self.stub_format
             and not self._module_mode

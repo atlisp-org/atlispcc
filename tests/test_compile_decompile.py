@@ -871,3 +871,49 @@ def test_command_vlcmdf_roundtrip():
         assert ok, f'Validation failed for {src}: {errs}'
         for m in markers:
             assert m in result, f'{m} lost for {src} -> {result}'
+
+
+def test_dcl_dialog_roundtrip():
+    """C4：DCL/ODCL 对话框函数 compile→decompile→validate 回归。
+
+    load_dialog/new_dialog/action_tile/start_dialog/done_dialog/unload_dialog/
+    set_tile/get_tile/mode_tile/dimx_tile/dimy_tile 等 DCL 函数是普通内建
+    （USUBR）调用，参数正常求值（对话框名/控件名/回调 Lisp 字符串/数值）。
+    验证对话框生命周期（加载→创建→回调→启动→卸载）完整往返且 validate
+    PASS。无 CAD golden，纯 roundtrip（真机需 CAD 会话 + DCL 文件）。
+    """
+    cases = [
+        # 对话框生命周期：load_dialog → new_dialog → start_dialog → unload_dialog
+        ("(defun run (dcl) (setq id (load_dialog dcl))"
+         " (if (new_dialog \"test\" id)"
+         "   (progn (start_dialog) (unload_dialog id) T)"
+         "   (progn (unload_dialog id) nil)))",
+         ["load_dialog", "new_dialog", "start_dialog", "unload_dialog"]),
+        # 回调绑定：action_tile 绑定 Lisp 字符串回调（含 done_dialog）
+        ("(defun cb (dcl) (action_tile \"accept\" \"(done_dialog 1)\"))",
+         ["action_tile", "\"accept\"", "done_dialog"]),
+        # 控件读写：set_tile / get_tile / mode_tile
+        ("(defun ctl (key val) (set_tile key val) (get_tile key))",
+         ["set_tile", "get_tile"]),
+        ("(defun mode (key m) (mode_tile key m))", ["mode_tile"]),
+        # 尺寸查询：dimx_tile / dimy_tile（返回数值）
+        ("(defun size (key) (list (dimx_tile key) (dimy_tile key)))",
+         ["dimx_tile", "dimy_tile"]),
+        # 完整流程：标题 + 错误提示（done_dialog 传状态码）
+        ("(defun dlg (dcl) (new_dialog \"dlg\" dcl)"
+         " (set_tile \"title\" \"hello\")"
+         " (action_tile \"ok\" \"(done_dialog 1)\")"
+         " (action_tile \"cancel\" \"(done_dialog 0)\")"
+         " (setq st (start_dialog))"
+         " (unload_dialog dcl)"
+         " st)",
+         ["new_dialog", "set_tile", "action_tile", "done_dialog",
+          "start_dialog", "unload_dialog"]),
+    ]
+    for src, markers in cases:
+        result = compile_and_decompile(src)
+        ok, errs = _validate(result)
+        assert ok, f'Validation failed for {src}: {errs}'
+        low = result.lower()
+        for m in markers:
+            assert m in low, f'{m} lost for {src} -> {result}'

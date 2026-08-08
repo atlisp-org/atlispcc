@@ -189,8 +189,17 @@ class ResourceBuilder:
         return str(s).encode(self.encoding, errors="replace")
 
     def _enc_sym(self, s: str) -> bytes:
-        """编码符号名：CAD 符号统一大写（AutoLISP 大小写不敏感）。"""
-        return str(s).upper().encode(self.encoding, errors="replace")
+        """编码符号名：CAD 符号统一大写（AutoLISP 大小写不敏感）。
+
+        例外：vla-/vlax- 前缀的 ActiveX 方法符号保留原始大小写（方法名
+        大小写敏感，t22_activex golden 实测 `vla-get-Count`/`vlax-get-acad-object`
+        保留源码大小写）。vla- 方法名首字母大写已由 cad_symbols/codegen
+        统一规范化，此处仅需保留当前大小写（不再 .upper()）。
+        """
+        s = str(s)
+        if s.lower().startswith(("vla-get-", "vla-put-", "vla-call-", "vla-add-", "vla-insert-", "vlax-")):
+            return s.encode(self.encoding, errors="replace")
+        return s.upper().encode(self.encoding, errors="replace")
 
     def _push_single_symbol(self, name: str):
         self.data.append(0x5B)

@@ -122,18 +122,18 @@ make clean       # 清理构建产物与缓存
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 292 用例 + 1 skip 占位）：
+**测试文件在 `tests/` 目录下**（pytest 风格，共 307 用例 + 1 skip 占位）：
 - `test_parser.py` — AST 解析器（19 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
-- `test_cli.py` — CLI 路径（20 用例：compile/-O/--analyze/validate/link/vlx/dispatch + validate 补强规则 + 源码编码检测）
-- `test_compile_decompile.py` — 编译-反编译往返（59 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归）
-- `test_compiler_output.py` — FAS 输出正确性（27 用例，含 7 对 CAD golden 逐字节比对 + 18 项 t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
+- `test_cli.py` — CLI 路径（22 用例：compile/-O/--analyze/validate/link/vlx/dispatch + validate 补强规则 + 源码编码检测）
+- `test_compile_decompile.py` — 编译-反编译往返（68 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
+- `test_compiler_output.py` — FAS 输出正确性（56 用例，含 7 对 CAD golden 逐字节比对 + t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（10 用例，含重名冲突警告）
 - `test_assembler.py` — 反汇编/汇编往返（8 用例）
-- `test_disasm.py` — 反汇编健壮性（8 用例，含未处理操作码降级）
+- `test_disasm.py` — 反汇编健壮性（9 用例，含未处理操作码降级）
 - `test_resource_stream.py` — 资源码解析/资源段构建（24 用例：符号/字符串块、GVARINIT、DEFCODE、build_mvar_tables、资源码 vs 操作码区分）
 - `test_packages.py` — CL 风格包系统（4 用例）
 - `test_vlx_builder.py` — VLX 容器（3 用例）
@@ -180,7 +180,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 
 - **CLI 与裸管线的顶层表达式差异**：`compiler.cli.cmd_compile`（CLI）把顶层表达式（defun 之外的 `setq`/`princ` 等）编译进 seg1 **模块代码**（CAD 标准），而 `tests/test_compile_decompile.py` 内的裸内存管线（`SymbolTable→Codegen→ResourceBuilder→FasWriter`）把它们留在 seg0 字节码。两者反编译结果不同——CLI 管线的顶层 `(princ "Loading...")` 反编译为 `nil`。写往返测试时二选一保持一致，**不要**把两个管线的 `compile_and_decompile` 混用。
 - **黄金比对（golden）fixture 必须是 CAD 重新编译的产物**：`D:/atlisp-test/cad_t*.fas`（7月31）版本戳是 `;A7/31/26`，当前编译器输出 `;A8/4/26`，整文件比对必然失败（即使 seg0 字节一致）。`tests/cad/` 内 `*_cad.fas`（8月3-4 重新在 CAD 编译）可用作 byte-identity golden。
-- **t-series golden 覆盖现状**：源文件与 golden 均自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，2026-08-04/05 CAD `vlisp-compile` 生成，共 18 份）。**18/18 已 byte-identity**（`test_t_series_byte_identity`；t16_foreach/t17_repeat 于 2026-08-06 转正——codegen 实现 CAD stub 的 foreach/repeat 协议；CAD 真机功能验证见 `scripts/cad_verify.py`）。
+- **t-series golden 覆盖现状**：源文件与 golden 均自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，2026-08-04/05 CAD `vlisp-compile` 生成，共 18 份）。**18/18 已 byte-identity**（`test_t_series_byte_identity`；t16_foreach/t17_repeat 于 2026-08-06 转正——codegen 实现 CAD stub 的 foreach/repeat 协议；CAD 真机功能验证见 `scripts/cad_verify.py`）。**另含 `t22_activex_cad.fas`**（2026-08-08 CAD 生成，vla-/vlax- ActiveX，锁入同一回归）。
 
 ## 文档
 
@@ -222,6 +222,24 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - **真机验证清单扩展至 22 项**（2026-08-07）：新增 t21_variadic_extra
   （`tests/cad/t21_variadic_extra.lsp`：单函数 `&optional` 缺省、`&rest` 收集、
   optional+rest 组合、纯 `&optional`），与 t19 同属真机功能验证（无 CAD golden）。
+- **真机验证清单扩展至 24 项**（2026-08-08）：新增 t22_activex（`vla-`/`vlax-`
+  ActiveX 只读断言）、t23_command（`command-s` 画圆→断言→擦除），**CAD 真机
+  24/24 全过**。
+  - **t22 修复**（2026-08-08，真机暴露的编译 bug）：
+    - vla- 符号名**保留大小写**（`vla-get-count`→符号槽 `vla-get-Count`，
+      ActiveX 方法名大小写敏感；`vlax-` 保持小写）。`cad_symbols.normalize_vla_name`
+      + codegen 同名 + `resource_builder._enc_sym` 对 vla-/vlax- 前缀不 `.upper()`。
+    - 值位置 `T`/`t` 符号槽（`(if c T nil)` 的大写 T 此前被过滤+内联 PUSH_T，
+      缺 T 槽致 nsyms 少 1、后续符号槽偏移）。`add()` 对 t/T 大小写不敏感注册，
+      codegen stub 下 `T` 走 `PUSH_VALUE` 引用（nil 仍内联）。
+    - `_patch_usubr_idx`：USUBR/FUNC 目标符号槽末尾（超出 gvar 表，fg 仅 nsyms
+      项）时按 `gvar 槽 = nsyms` 编址（操作数 = nsyms-1，t22 实测
+      vlax-get-acad-object 操作数 11）。
+    - **byte-identity**：t22 编译产物与 CAD golden `tests/cad/t22_activex_cad.fas`
+      seg0+sec2+nsyms 逐字节一致（锁入 `test_t_series_byte_identity`）。
+  - **t21 修正**（2026-08-08）：`t21-product` 原为 `(&optional factor &rest rest)`
+    （min=0），触发 §3.5 CAD 硬性不收集 rest 限制。改为 `(factor &rest rest)`
+    （min=1），CAD 真机 `(t21-product 2 3 4)` → 24。
 - i18n 混合模式拆件 p01-p07 全部 byte-identity（`tests/cad/i18n_split/`，seg0+seg1+nsyms
   对齐 CAD golden，2026-08-06）✅
   - p04-p07 关键修复：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）；

@@ -278,13 +278,60 @@ def validate_unused(forms: List[Node]) -> List[str]:
     return warnings
 
 
+#: 经 command/command-s/vl-cmdf/vl-cmd-s 转发的危险系统命令（warn 级）。
+DANGEROUS_COMMANDS = frozenset((
+    'shell', 's', 'dos', 'del', 'erase', 'rename', 'ren', 'copy', 'xcopy',
+    'mkdir', 'md', 'rmdir', 'rd', 'type', 'vbastmt', 'vbaman', 'script',
+    '_.shell', '_.dos', '_.del', '_.erase', '_.vbastmt',
+))
+
+#: command/command-s 等交互命令调用入口。
+COMMAND_CALLERS = frozenset(('command', 'command-s', 'vl-cmdf', 'vl-cmd-s'))
+
+
+def validate_command(forms: List[Node]) -> List[str]:
+    """Warn about dangerous system commands passed to command/command-s.
+
+    atlisp-lint 规则子集（安全类）：CAD 中 ``(command "_.SHELL" ...)`` /
+    ``(command-s "_.DEL" ...)`` 等可执行 OS 命令，属危险操作。仅 warn，
+    不阻断 validate 返回码。
+    """
+    warnings: List[str] = []
+
+    def walk(node: Node) -> None:
+        value = node.value
+        if node.kind != 'list' or not value:
+            return
+        head = value[0].value if value else None
+        if isinstance(head, str) and head.lower() in COMMAND_CALLERS:
+            for arg in value[1:]:
+                if arg.kind == 'string':
+                    cmd = str(arg.value).strip().lstrip('_').lstrip('.').lower()
+                    if cmd in DANGEROUS_COMMANDS:
+                        warnings.append(
+                            f'line {node.line}: warning: dangerous command '
+                            f'"{arg.value}" in {head}: {form_text(node)}'
+                        )
+                        break
+        for child in value:
+            walk(child)
+
+    for form in forms:
+        walk(form)
+    return warnings
+
+
 def validate_file(path: Path) -> bool:
     from core.fas_core import decode_source_text
     text = decode_source_text(path.read_bytes())
     tokens, token_errors = tokenize(text)
     forms, parse_errors = parse_tokens(tokens)
     errors = token_errors + validate_balance(tokens) + parse_errors + validate_ast(forms)
-    warnings = validate_danger(forms) + validate_unused(forms)
+    warnings = (
+        validate_danger(forms)
+        + validate_unused(forms)
+        + validate_command(forms)
+    )
     if errors:
         print(f'[FAIL] {path}')
         for error in errors:

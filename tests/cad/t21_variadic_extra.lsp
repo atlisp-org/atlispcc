@@ -6,7 +6,7 @@
 (defun t21-sum-rest (first &rest rest)
   (apply '+ (cons first rest)))
 
-(defun t21-product (&optional factor &rest rest)
+(defun t21-product (factor &rest rest)
   (if factor
     (* factor (apply '* rest))
     factor))

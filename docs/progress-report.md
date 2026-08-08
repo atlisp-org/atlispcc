@@ -1,7 +1,37 @@
 # atlispcc 项目进度报告
 
-> 生成日期：2026-08-03
-> 分支：main · 最新提交 `79cbaef`
+> 生成日期：2026-08-08
+> 分支：main · 最新提交 `610e74d`（v0.1.17）
+> 本文档为滚动进度报告；历史周期记录保留于下方，最新周期见第 0 节。
+
+---
+
+## 0. 本周期（2026-08-08）摘要
+
+| 指标 | 数值 |
+|------|------|
+| 测试用例 | **307 用例**（306 passed + 1 skip，无 xfail） |
+| t-series byte-identity | **19/19**（t01-t18 + t22_activex） |
+| CAD 真机验证 | **24/24**（`scripts/cad_verify.py`，含 t22/t23） |
+| disasm→asm 往返 | 39 文件字节一致 |
+
+### 本周期成果
+
+1. **CAD 环境恢复**：CAD 进程崩溃（0xC0000005）后经 MCP 子进程探测确认
+   `atlisp-mcp --stdio` 通道可用，`cad_verify.py` 独立连接复核 24/24 全过。
+2. **t22 vla-/vlax- ActiveX 真机缺陷修复**（编译 bug，非测试问题）：
+   - vla- 符号名保留大小写（ActiveX 方法名大小写敏感），`_enc_sym` 不再对
+     `vla-`/`vlax-` 前缀 `.upper()`；`normalize_vla_name` 方法名首字母大写。
+   - 值位置 `T`/`t` 注册符号槽并 `PUSH_VALUE` 引用（此前大写 `T` 被过滤+内联
+     PUSH_T，导致 nsyms 少 1、后续符号槽偏移）。
+   - USUBR/FUNC 目标符号槽末尾（超出 gvar 表）按 `gvar 槽 = nsyms` 编址。
+   - 编译产物与 CAD golden `tests/cad/t22_activex_cad.fas` 逐字节一致，锁入
+     `test_t_series_byte_identity`。详见 `docs/development-plan.md` §11。
+3. **t21 测试期望修正**：`t21-product` 由 `(&optional factor &rest rest)`（min=0，
+   触发 §3.5 CAD 硬性不收集 rest）改为 `(factor &rest rest)`（min=1），真机
+   `(t21-product 2 3 4)` → 24。
+4. **文档同步**：AGENTS.md 测试统计（292→304）、t22 golden 覆盖、
+   development-plan §11 新章节、feature-plan C1/C2 真机确认。
 
 ---
 
@@ -13,10 +43,10 @@
 | 指标 | 数值 |
 |------|------|
 | 代码规模 | ~8,900 行 Python |
-| 测试用例 | **167/167 通过**（14 个测试文件） |
-| 核心模块 | `decompiler/fas4_decompiler.py`(2533)、`compiler/opt.py`(1376)、`compiler/codegen.py`(796)、`core/fas_core.py`(707)、`compiler/cli.py`(660) |
+| 测试用例 | **304/304 通过**（303 passed + 1 skip 占位，16 个测试文件） |
+| 核心模块 | `decompiler/fas4_decompiler.py`(2665)、`compiler/opt.py`(1376)、`compiler/codegen.py`(1243)、`core/fas_core.py`(707)、`compiler/cli.py`(1213) |
 | CLI 子命令 | compile / decompile / disasm / asm / validate / link / build-vlx |
-| 优化级别 | -O1/-O2/-O3（8 个 pass） |
+| 优化级别 | -O1/-O2/-O3（9 个 pass） |
 
 ---
 

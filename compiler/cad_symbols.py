@@ -27,6 +27,28 @@ from compiler.ast_nodes import (
 CONST_MARK = '__const__'
 
 
+def normalize_vla_name(name):
+    """规范化 vla- 前缀的 ActiveX 方法符号名（AutoCAD 24.1s 实测）。
+
+    CAD 对 ``vla-get-<Method>`` / ``vla-put-<Method>`` 等 ActiveX 方法符号
+    保留**原始大小写**（方法名大小写敏感，ActiveX 接口方法区分大小写），
+    且方法名部分首字母大写（t22_activex 实测：源码 ``vla-get-count`` →
+    符号槽 ``vla-get-Count``、``vla-get-Documents`` 保持、``vla-get-ModelSpace``
+    保持、``vla-get-ActiveDocument`` 保持）。``vlax-`` 前缀的 VLISP 扩展
+    函数保持小写（``vlax-get-acad-object`` 原样）。非 vla-/vlax- 符号不变。
+
+    仅当符号以 ``vla-get-`` / ``vla-put-`` / ``vla-`` 开头时规范化方法名
+    首字母大写；其余（含 ``vlax-``）原样返回。
+    """
+    for prefix in ("vla-get-", "vla-put-", "vla-call-", "vla-add-", "vla-insert-"):
+        if name.lower().startswith(prefix):
+            method = name[len(prefix):]
+            if method and method[0].islower():
+                return prefix + method[0].upper() + method[1:]
+            return name
+    return name
+
+
 def strip_docstring(body):
     """CAD 忽略 defun 后第一个裸字符串（docstring）。
 
@@ -132,12 +154,14 @@ class CadSymbolCollector:
             if force or not any(is_const_entry(n) and n[1] == structure for n in self.names):
                 self.names.append(name)
             return
-        if name in ('T', 'nil'):
+        name = normalize_vla_name(name)
+        if name.lower() in ('t', 'nil'):
             # T/nil 为内建常量（PUSH_T/PUSH_NIL 内联编码），默认不占符号槽。
-            # 但 cond 的 else 子句键（`(t ...)`/`(T ...)`）在 CAD 中会注册一个
-            # 真实符号槽（t05_cond golden `SYMBOL T` 实测），以 force=True 强制
-            # 注册；否则 codegen `get_or_add("T")` 晚于 derive 注册，造成槽位错位。
-            if not force:
+            # 但 CAD 对 `(if c T nil)` / `(cond (c ... T))` 等**值位置**的 T
+            # 会注册真实符号槽并用 PUSH_VALUE 引用（t18 小写 t、t22 大写 T
+            # golden 实测，大小写不敏感）；纯 `(and ...)` 短路与 cond else 键
+            # 仍内联/强制。仅 nil 恒不占槽（PUSH_NIL 内联）。
+            if not force and name.lower() == 'nil':
                 return
         if force or name not in self.names:
             self.names.append(name)

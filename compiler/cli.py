@@ -300,6 +300,15 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             if sym and sym in gvar_map:
                 new_idx = gvar_map[sym] - 1 - offset
                 out += bytes([0x35, argc & 0xFF, new_idx & 0xFF])
+            elif sym and 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
+                # 符号槽末尾（超出 gvar 表，fg 仅 nsyms 项）的符号：CAD 按
+                # gvar 槽 = nsyms 编址（t22 实测 vlax-get-acad-object 操作数 11 =
+                # nsyms-1，符号槽末尾注册），USUBR 操作数 = nsyms - 1。
+                new_idx = nsyms - 1 - offset
+                if 0 <= new_idx <= 0xFF:
+                    out += bytes([0x35, argc & 0xFF, new_idx & 0xFF])
+                else:
+                    out += seg0[inst.offset : inst.offset + inst.size]
             else:
                 out += seg0[inst.offset : inst.offset + inst.size]
             continue
@@ -311,6 +320,13 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             if sym and sym in gvar_map:
                 new_idx = gvar_map[sym] - 1 - offset
                 out += bytes([0x51, argc & 0xFF, new_idx & 0xFF])
+            elif sym and 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
+                # 同 USUBR：符号槽末尾（超出 gvar 表）的 FUNC 目标 gvar 槽 = nsyms。
+                new_idx = nsyms - 1 - offset
+                if 0 <= new_idx <= 0xFF:
+                    out += bytes([0x51, argc & 0xFF, new_idx & 0xFF])
+                else:
+                    out += seg0[inst.offset : inst.offset + inst.size]
             else:
                 out += seg0[inst.offset : inst.offset + inst.size]
             continue
