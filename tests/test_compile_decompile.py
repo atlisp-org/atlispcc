@@ -108,24 +108,31 @@ def test_exit_compile_decompile():
 
 
 def test_int32_signed_roundtrip():
-    """超范围/负整数字面量按有符号 32 位往返。
+    """32 位有符号整数语义（fix 文档）。
 
-    seg0 PUSH_INT32 须按 <i（有符号）解码（core/fas_core 同约定）；
-    旧反编译器用 <I 把 -9999 误渲染为 4294957297，导致反编译产物无法
-    再次编译（codegen struct.error）。codegen 侧对超范围字面量按 32 位
-    补码回绕，与 CAD 一致。
+    1) seg0 PUSH_INT32 须按 <i（有符号）解码（core/fas_core 同约定）；
+       旧反编译器用 <I 把 -9999 误渲染为 4294957297，导致反编译产物无法
+       再次编译（codegen struct.error）。
+    2) 源码若出现超出 [-2^31, 2^31-1] 范围的整数字面量，AutoLISP 按截断
+       实数处理（值原样保留），而非按补码回绕成负数。
     """
-    # 4294957297 = 0xFFFFD8F1 = signed -9999
+    # 在范围内：负数/近边界整数按 int32 往返
+    for src, out in [
+        ('(defun g () -9999)', '-9999'),
+        ('(defun g () 2147483647)', '2147483647'),
+        ('(defun g () -2147483648)', '-2147483648'),
+    ]:
+        result = compile_and_decompile(src)
+        assert out in result, f'int32 往返失败 {src!r}: {result!r}'
+        ok, errs = _validate(result)
+        assert ok, f'Validation failed: {errs}'
+
+    # 超出范围（4294957297 > 2147483647）：按截断实数保留原值，不错误回绕成 -9999
     src = '(defun f () 4294957297)'
     result = compile_and_decompile(src)
-    assert '-9999' in result, f'PUSH_INT32 应按有符号渲染, got: {result!r}'
+    assert '4294957297' in result, f'超范围整数应按实数保留原值, got: {result!r}'
+    assert '-9999' not in result, f'超范围整数不得按补码回绕成负数: {result!r}'
     ok, errs = _validate(result)
-    assert ok, f'Validation failed: {errs}'
-
-    src2 = '(defun g () -9999)'
-    result2 = compile_and_decompile(src2)
-    assert '-9999' in result2, f'负整数字面量往返失败: {result2!r}'
-    ok, errs = _validate(result2)
     assert ok, f'Validation failed: {errs}'
 
 

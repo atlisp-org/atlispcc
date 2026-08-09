@@ -479,7 +479,7 @@ class ResourceBuilder:
             val = int(entry_val)
             out += res_int8(val) if -128 <= val <= 127 else res_int32(val)
         elif entry_type == "REAL":
-            out += res_real_str(f"{entry_val:g}")
+            out += res_real_str(f"{entry_val:.15g}")
 
     def _const_bytes(self, structure) -> bytes:
         """把 CAD 常量结构序列化为资源流记录（CAD '(lambda ...) 实测）。
@@ -503,7 +503,7 @@ class ResourceBuilder:
             val = int(structure[1])
             out += res_int8(val) if -128 <= val <= 127 else res_int32(val)
         elif kind == "REAL":
-            out += res_real_str(f"{structure[1]:g}")
+            out += res_real_str(f"{structure[1]:.15g}")
         elif kind == "STRING":
             encoded = self._enc(structure[1])
             out += b"\x55\x01\x00" + res_u16(len(encoded)) + encoded

@@ -35,16 +35,9 @@ from asm.opcodes import (
 )
 
 
-def _signed_int32(val: int) -> int:
-    """把任意 32 位整数文本规格化为有符号范围（-2^31..2^31-1）。
-
-    旧反编译器曾以 <I（无符号）渲染 PUSH_INT32，把 -9999 写成 4294957297；
-    源码若含此类超范围字面量，按 CAD 的 32 位补码语义回绕（4294957297 → -9999）。
-    """
-    val &= 0xFFFFFFFF
-    if val >= 0x80000000:
-        val -= 0x100000000
-    return val
+#: AutoLISP 32 位有符号整数范围（fix 文档：超出该范围的值按截断实数处理）
+_INT32_MIN = -2147483648
+_INT32_MAX = 2147483647
 
 
 def normalize_vla_name(name):
@@ -324,11 +317,20 @@ class CodeGenerator:
                 buf.emit(encode_op_u16(PUSH_VALUE, idx))
 
         elif isinstance(node, Integer):
-            val = _signed_int32(node.value)
-            if -128 <= val <= 127:
-                buf.emit(encode_op_u8(PUSH_INT8, val & 0xFF))
+            val = node.value
+            if _INT32_MIN <= val <= _INT32_MAX:
+                if -128 <= val <= 127:
+                    buf.emit(encode_op_u8(PUSH_INT8, val & 0xFF))
+                else:
+                    buf.emit(struct.pack("<Bi", PUSH_INT32, val))
             else:
-                buf.emit(struct.pack("<Bi", PUSH_INT32, val))
+                # 超出 32 位有符号整数范围（fix 文档）：AutoLISP 读入/返回截断实数，
+                # 而非按补码回绕成负数——值原样保留。
+                if self.stub_format:
+                    idx = self.symtab.add_real(float(val))
+                    buf.emit(encode_op_u16(PUSH_G, idx))
+                else:
+                    buf.emit(encode_real(float(val)))
 
         elif isinstance(node, Real):
             if self.stub_format:
@@ -955,11 +957,14 @@ class CodeGenerator:
                     idx = self.symtab.get_or_add(name)
                 buf.emit(encode_op_u16(PUSH_G, idx))
         elif isinstance(node, Integer):
-            val = _signed_int32(node.value)
-            if -128 <= val <= 127:
-                buf.emit(encode_op_u8(PUSH_INT8, val & 0xFF))
+            val = node.value
+            if _INT32_MIN <= val <= _INT32_MAX:
+                if -128 <= val <= 127:
+                    buf.emit(encode_op_u8(PUSH_INT8, val & 0xFF))
+                else:
+                    buf.emit(struct.pack("<Bi", PUSH_INT32, val))
             else:
-                buf.emit(struct.pack("<Bi", PUSH_INT32, val))
+                buf.emit(encode_real(float(val)))
         elif isinstance(node, Real):
             buf.emit(encode_real(node.value))
         elif isinstance(node, ListExpr):

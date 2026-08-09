@@ -98,7 +98,9 @@ def encode_eval(argc: int, flag: int = 0) -> bytes:
 
 
 def encode_real(value: float) -> bytes:
-    s = f'{value:g}'.encode('ascii')
+    # .15g：足够精确保存 double，同时小数值（3.14159/0.5 等）与 :g 输出一致，
+    # 避免大整数转实数时被 :g 缩写成科学计数法（4294957297 → 4.29496e+09）。
+    s = f'{value:.15g}'.encode('ascii')
     return bytes([0x3b]) + s + b'\x00'
 
 
