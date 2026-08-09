@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import argparse
 import struct
 
@@ -742,7 +743,12 @@ def _collect_kwote_lambda_args(node):
 
 
 def cmd_compile(
-    source: str, output: str = "", opt_level: int = 0, show_analysis: bool = False, encoding: str = "ansi"
+    source: str,
+    output: str = "",
+    opt_level: int = 0,
+    show_analysis: bool = False,
+    encoding: str = "ansi",
+    report_json: str = "",
 ) -> str:
     if os.path.exists(source):
         from core.fas_core import decode_source_text
@@ -759,36 +765,42 @@ def cmd_compile(
 
     package_table = parser_obj.packages
 
-    if show_analysis:
+    need_stats = show_analysis or bool(report_json)
+    stats = None
+    stats2 = None
+
+    if need_stats:
         stats = analyze(program)
-        print("=== Compilation Analysis ===")
-        print(f'  Functions:               {stats["functions"]}')
-        print(f'  Top-level forms:         {stats["top_level_forms"]}')
-        print(f'  Total instructions:      {stats["total_instructions"]}')
-        print(f'  Constants (estimate):    {stats["constants_estimate"]}')
-        print(f'  Symbol table entries:    {stats["symbol_table_entries"]}')
-        print(f'  Function offsets:        {stats["function_offsets"]}')
-        print(f'  Locals (total):          {stats["locals"]}')
-        print(f'  Tail-recursive:          {stats["tail_recursive_functions"]}')
-        print(f'  External/builtin calls:  {len(stats["builtin_calls"])}')
-        for fd in stats["functions_detail"]:
-            tr = " [tail-recursive]" if fd["tail_recursive"] else ""
-        print(
-            f'    {fd["name"]}: {fd["instructions"]} instr, '
-            f'{fd["args"]} args, {fd["locals"]} locals, '
-            f'calls {fd["calls"]}{tr}'
-        )
-        print()
+        if show_analysis:
+            print("=== Compilation Analysis ===")
+            print(f'  Functions:               {stats["functions"]}')
+            print(f'  Top-level forms:         {stats["top_level_forms"]}')
+            print(f'  Total instructions:      {stats["total_instructions"]}')
+            print(f'  Constants (estimate):    {stats["constants_estimate"]}')
+            print(f'  Symbol table entries:    {stats["symbol_table_entries"]}')
+            print(f'  Function offsets:        {stats["function_offsets"]}')
+            print(f'  Locals (total):          {stats["locals"]}')
+            print(f'  Tail-recursive:          {stats["tail_recursive_functions"]}')
+            print(f'  External/builtin calls:  {len(stats["builtin_calls"])}')
+            for fd in stats["functions_detail"]:
+                tr = " [tail-recursive]" if fd["tail_recursive"] else ""
+            print(
+                f'    {fd["name"]}: {fd["instructions"]} instr, '
+                f'{fd["args"]} args, {fd["locals"]} locals, '
+                f'calls {fd["calls"]}{tr}'
+            )
+            print()
 
     if opt_level:
         program = optimize(program, level=opt_level)
-        if show_analysis:
+        if need_stats:
             stats2 = analyze(program)
-            print(f"=== After O{opt_level} Optimization ===")
-            print(f'  Functions:          {stats2["functions"]} (was {stats["functions"]})')
-            print(f'  Instructions:       {stats2["total_instructions"]} (was {stats["total_instructions"]})')
-            print(f'  Tail-recursive:     {stats2["tail_recursive_functions"]}')
-            print()
+            if show_analysis:
+                print(f"=== After O{opt_level} Optimization ===")
+                print(f'  Functions:          {stats2["functions"]} (was {stats["functions"]})')
+                print(f'  Instructions:       {stats2["total_instructions"]} (was {stats["total_instructions"]})')
+                print(f'  Tail-recursive:     {stats2["tail_recursive_functions"]}')
+                print()
 
     symtab = SymbolTable(package_table=package_table)
     defun_forms = [f for f in program.forms if isinstance(f, Defun)]
@@ -1014,6 +1026,51 @@ def cmd_compile(
     writer = FasWriter(symtab)
     writer.write(output, seg0, seg1, sec2_items=sec2_items, nsyms=fas_nsyms, compact=True)
     print(f"Compiled to {output}")
+
+    if report_json:
+        report = {
+            "tool": "atlispcc",
+            "command": "compile",
+            "source": source,
+            "output": output,
+            "opt_level": opt_level,
+            "encoding": encoding,
+            "analysis": {
+                "functions": stats["functions"],
+                "top_level_forms": stats["top_level_forms"],
+                "total_instructions": stats["total_instructions"],
+                "constants_estimate": stats["constants_estimate"],
+                "symbol_table_entries": stats["symbol_table_entries"],
+                "symbol_slots": stats["symbol_slots"],
+                "function_offsets": stats["function_offsets"],
+                "locals": stats["locals"],
+                "tail_recursive_functions": stats["tail_recursive_functions"],
+                "builtin_calls": sorted(stats["builtin_calls"]),
+                "functions_detail": stats["functions_detail"],
+            },
+            "optimized": None,
+            "product": {
+                "nsyms": fas_nsyms,
+                "codegen_nsyms": codegen_nsyms,
+                "module_reg_count": module_reg_count,
+                "top_level_count": top_level_count,
+                "sec2_items": sec2_items,
+                "seg0_size": len(seg0),
+                "seg1_size": len(seg1),
+            },
+        }
+        if stats2 is not None:
+            report["optimized"] = {
+                "functions": stats2["functions"],
+                "total_instructions": stats2["total_instructions"],
+                "tail_recursive_functions": stats2["tail_recursive_functions"],
+                "symbol_table_entries": stats2["symbol_table_entries"],
+                "functions_detail": stats2["functions_detail"],
+            }
+        with open(report_json, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        print(f"Report written to {report_json}")
+
     return output
 
 
@@ -1083,6 +1140,176 @@ def cmd_validate(source: str) -> int:
     return 0 if ok else 1
 
 
+def cmd_analyze(
+    source: str,
+    format: str = "text",
+    output: str = "",
+    no_cc: bool = False,
+) -> int:
+    """源码/FAS 调用图与依赖分析。
+
+    format: text | dot | mermaid | json
+    """
+    from compiler.dep_analysis import build_from_lsp, build_from_fas
+    from compiler.dep_analysis import format_text, format_dot, format_mermaid
+
+    if source.lower().endswith(".fas") or source.lower().endswith(".zelx"):
+        graph = build_from_fas(source)
+    else:
+        if os.path.exists(source):
+            from core.fas_core import decode_source_text
+
+            with open(source, "rb") as f:
+                source_code = decode_source_text(f.read())
+        else:
+            source_code = source
+        parser_obj = Parser(source_code)
+        try:
+            program = parser_obj.parse()
+        except ParseError as e:
+            print(f"Parse error: {e}", file=sys.stderr)
+            return 1
+        graph = build_from_lsp(program)
+
+    # `--no-cc`：不把 c:*/*error* 显式提升为 root（仍保留顶层表达式 root）。
+    if no_cc:
+        roots = {r for r in graph["roots"] if r.startswith("c:") or r == "*error*"}
+        for node in graph["nodes"]:
+            if node["name"] in roots:
+                node["root"] = False
+        graph["roots"] = sorted(r for r in graph["roots"] if r not in roots)
+
+    if format == "json":
+        import json as _json
+
+        text = _json.dumps(graph, indent=2, ensure_ascii=False)
+    elif format == "dot":
+        text = format_dot(graph)
+    elif format == "mermaid":
+        text = format_mermaid(graph)
+    else:
+        text = format_text(graph)
+
+    if output:
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(text)
+    else:
+        print(text)
+    return 0
+
+
+def cmd_info(source: str, json_out: bool = False) -> dict:
+    """FAS/ZELX 快速概览 — 文件头/段规模/函数目录/符号/字符串，不触发完整反编译。
+
+    实现复用 core/fas_core.parse_fas4（与 tools/fas-analyzer.py 同源），
+    .zelx 输入走 tools.zelx_info.parse_zelx 解密载荷。
+    """
+    from core.fas_core import parse_fas4
+    from core.fas_core import parse_resource_stream, build_mvar_tables, build_function_catalog
+
+    if source.lower().endswith(".zelx"):
+        from tools.zelx_info import parse_zelx
+
+        z = parse_zelx(source)
+        import collections
+        import math
+
+        entropy = sum(
+            (-v / len(z["payload"])) * math.log2(v / len(z["payload"]))
+            for v in collections.Counter(z["payload"]).values()
+        )
+        info = {
+            "file": source,
+            "format": "zelx",
+            "size": z["size"],
+            "zelx": {
+                "X": z["X"],
+                "Y": z["Y"],
+                "Z": z["Z"],
+                "sub": list(z["sub"]),
+                "payload_size": z["seg2len"],
+                "key_len": z["key_len"],
+                "payload_entropy": round(entropy, 3),
+            },
+        }
+        if not json_out:
+            print(f"file size      : {z['size']}")
+            print(f"ZAS header X   : {z['X']}  Y: {z['Y']}  Z(seg1 len): {z['Z']}")
+            print(f"seg2 sub-hdr   : [len={z['sub'][0]}][{z['sub'][1]}][{z['sub'][2]}]")
+            print(f"payload len    : {z['seg2len']}")
+            print(f"key len        : {z['key_len']}")
+            print(f"payload entropy: {entropy:.3f}")
+        return info
+
+    parsed = parse_fas4(source)
+    nsyms = parsed["nsyms"]
+    bytecode = parsed["bytecode"]
+    seg0_total = len(bytecode)
+    seg1_enc = parsed["res_data_encrypted"]
+    seg1_dec = parsed["res_data_decrypted"]
+    key = parsed["key"]
+    res_items = parsed["res_items"]
+    trailer = parsed["trailer"]
+
+    # 格式类型：紧凑 stub / 自包含。沿用 fas-analyzer 的启发式。
+    fmt = "compact-stub"
+    if seg1_dec:
+        resource_items, symbols, strings = parse_resource_stream(seg1_dec)
+        resource_gvars, function_gvars = build_mvar_tables(seg1_dec, nsyms)
+        catalog = build_function_catalog(resource_gvars, function_gvars)
+    else:
+        resource_items, symbols, strings = [], [], []
+        catalog = []
+
+    info = {
+        "file": source,
+        "size": os.path.getsize(source),
+        "format": fmt,
+        "nsyms": nsyms,
+        "seg0_size": seg0_total,
+        "seg1_size": len(seg1_enc),
+        "seg1_decrypted_size": len(seg1_dec),
+        "items": res_items,
+        "key_size": len(key) if key else 0,
+        "func_count": len(catalog),
+        "catalog": catalog,
+        "symbol_count": len(symbols),
+        "string_count": len(strings),
+        "trailer": trailer,
+    }
+    if not json_out:
+        print(f"=== FAS4 概览 ===")
+        print(f"文件      : {source}")
+        print(f"大小      : {os.path.getsize(source)} bytes")
+        print(f"格式      : {fmt}")
+        print(f"nsyms     : {nsyms}")
+        print(f"Seg0      : {seg0_total} bytes")
+        print(f"Seg1      : {len(seg1_enc)} bytes (encrypted) / {len(seg1_dec)} bytes (decrypted)")
+        print(f"items     : {res_items}")
+        print(f"XOR key   : {len(key) if key else 0} bytes")
+        if trailer:
+            print(f"尾部      : {trailer[:60]}")
+        if catalog:
+            print(f"\n函数目录  : {len(catalog)} 条目")
+            for name, off in catalog[:15]:
+                print(f"  {name:30s} @ {off}")
+            if len(catalog) > 15:
+                print(f"  ... ({len(catalog) - 15} more)")
+        if symbol_count := info["symbol_count"]:
+            print(f"\n符号      : {symbol_count}")
+            for s in symbols[:20]:
+                print(f"  {s}")
+            if symbol_count > 20:
+                print(f"  ... ({symbol_count - 20} more)")
+        if strings:
+            print(f"\n字符串    : {len(strings)}")
+            for s in strings[:10]:
+                print(f"  {s!r}")
+            if len(strings) > 10:
+                print(f"  ... ({len(strings) - 10} more)")
+    return info
+
+
 def cmd_link(inputs: list, output: str, verbose: bool = False, encoding: str = "ansi") -> str:
     return link_fas(inputs, output, verbose, encoding=encoding)
 
@@ -1107,6 +1334,11 @@ def main():
     )
     p_compile.add_argument("--analyze", action="store_true", help="show compilation analysis report")
     p_compile.add_argument(
+        "--report",
+        default="",
+        help="write a structured compilation report (JSON) to the given path",
+    )
+    p_compile.add_argument(
         "--encoding",
         default="ansi",
         help="string/symbol encoding for FAS output "
@@ -1117,6 +1349,44 @@ def main():
     p_decompile = sub.add_parser("decompile", aliases=["d"], help="Decompile .fas → .lsp")
     p_decompile.add_argument("source", help="input .fas file")
     p_decompile.add_argument("output", nargs="?", default="", help="output .lsp file (optional)")
+
+    # info: quick overview without full decompile
+    p_info = sub.add_parser("info", help="Quick overview of a .fas/.zelx file (header, segments, function catalog)")
+    p_info.add_argument("source", help="input .fas or .zelx file")
+    p_info.add_argument("--json", action="store_true", help="print machine-readable JSON instead of text")
+
+    # analyze: call-graph / dependency analysis (.lsp or .fas)
+    p_analyze = sub.add_parser("analyze", help="Call graph / dependency analysis of a .lsp or .fas file")
+    p_analyze.add_argument("source", help="input .lsp or .fas file")
+    p_analyze.add_argument(
+        "--format",
+        "-f",
+        choices=["text", "dot", "mermaid", "json"],
+        default="text",
+        help="output format (default: text)",
+    )
+    p_analyze.add_argument("-o", "--output", default="", help="write result to file instead of stdout")
+    p_analyze.add_argument("--no-cc", action="store_true", help="do not treat c:* / *error* as entry roots")
+
+    # roundtrip: compile → decompile → validate → compare smoke test
+    p_roundtrip = sub.add_parser(
+        "roundtrip",
+        help="Smoke-test: compile .lsp → FAS → decompile → validate → compare",
+    )
+    p_roundtrip.add_argument("source", help="input .lsp file")
+    p_roundtrip.add_argument(
+        "-O",
+        "--opt",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3],
+        help="optimization level for the compile step (default: 0)",
+    )
+    p_roundtrip.add_argument(
+        "--keep",
+        action="store_true",
+        help="keep intermediate .fas and decompiled .lsp in a temp dir and print their paths",
+    )
 
     # validate
     p_validate = sub.add_parser("validate", aliases=["v"], help="Validate .lsp syntax")
@@ -1170,12 +1440,33 @@ def main():
         return 0
 
     if args.command in ("compile", "c"):
-        cmd_compile(args.source, args.output, opt_level=args.O, show_analysis=args.analyze, encoding=args.encoding)
+        cmd_compile(
+            args.source,
+            args.output,
+            opt_level=args.O,
+            show_analysis=args.analyze,
+            encoding=args.encoding,
+            report_json=args.report,
+        )
         return 0
 
     if args.command in ("decompile", "d"):
         cmd_decompile(args.source, args.output)
         return 0
+
+    if args.command == "info":
+        info = cmd_info(args.source, json_out=args.json)
+        if args.json:
+            print(json.dumps(info, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "analyze":
+        return cmd_analyze(args.source, format=args.format, output=args.output, no_cc=args.no_cc)
+
+    if args.command == "roundtrip":
+        from compiler.roundtrip import run_roundtrip
+
+        return run_roundtrip(args.source, opt_level=args.opt, keep=args.keep)
 
     if args.command in ("disasm", "disassemble"):
         cmd_disassemble(args.source, args.output)

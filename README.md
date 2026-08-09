@@ -41,6 +41,9 @@ atlispcc disasm <input.fas> [output.lasm]                        # 反汇编 FAS
  atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]   # 构建 VLX 容器
  atlispcc zelx <input.lsp|input.fas> [output.zelx]                # 构建 ZWCAD ZELX
  atlispcc unzelx <input.zelx> [output.fas]                        # ZELX 恢复为 FAS
+ atlispcc info <input.fas|input.zelx> [--json]                    # 快速概览：头/段/函数目录
+ atlispcc analyze [-f text|dot|mermaid|json] [-o OUT] [--no-cc] <lsp|fas>  # 调用图/依赖分析
+ atlispcc roundtrip <input.lsp> [-O {0,1,2,3}] [--keep]           # 往返冒烟测试
 ```
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
@@ -88,6 +91,18 @@ atlispcc compile --analyze -O3 input.lsp output.fas
 - 每个函数的参数数、局部变量、调用关系
 - 开启优化时输出优化前后对比
 
+#### 编译报告（--report）
+
+把编译统计与产物信息导出为 JSON（供 CI / 工具链消费）：
+
+```sh
+atlispcc compile -O2 input.lsp output.fas --report report.json
+```
+
+报告字段：`source`/`output`/`opt_level`/`encoding`、`analysis`（同 `--analyze`
+统计）、开启优化时的 `optimized` 快照、`product`（`nsyms`、`codegen_nsyms`、
+模块注册数、顶层表达式数、seg0/seg1 大小、seg1 items 数）。
+
 ### decompile — 反编译 FAS → Lisp
 
 ```sh
@@ -108,6 +123,58 @@ python -m tools.validate output.lsp
 验证器检查：括号平衡、顶层形式为 defun、C: 命令无必需参数、符号名合法性、常见结构问题（if 参数不足、setq 参数为奇数、空 progn 等）。
 
 验证通过输出：`[PASS] <文件名>`。失败则列出每条错误。
+
+### roundtrip — 往返冒烟测试
+
+对单个 `.lsp` 一键自检：`compile → decompile → validate → compare`。
+
+```sh
+# 默认 O0
+atlispcc roundtrip app.lsp
+# 指定优化级别
+atlispcc roundtrip app.lsp -O2
+# 保留中间 .fas 与反编译 .lsp（打印路径）
+atlispcc roundtrip app.lsp -O2 --keep
+```
+
+- **管线**：有意使用「裸内存管线」（与测试套件 `compile_and_decompile` 同款）——顶层
+  表达式（defun 外的 `setq`/`princ`）保留在 seg0 字节码，反编译可还原字符串；CLI
+  compile 管线把它们编进 seg1 模块代码，顶层 `princ` 反编译会退化为 `nil`。
+- 输出报告 defuns/strings 原始与反编译数量及缺失/多余项，字符串逐条列出。
+- 退出码：0=PASS，1=FAIL（比对差异、校验失败或编译/反编译异常均归 1）。
+- 注意 `-O3` 的 `RemoveDeadFuncs` 会删除未被引用且非命令的函数，这类函数
+  反编译后自然消失（属于有意的死代码消除，非 bug）。追求逐函数完整还原时
+  用 `-O0`/`-O2`。
+
+### info — 快速概览
+
+不触发完整反编译，直接读取 `.fas`/`.zelx` 头部与资源段规模：
+
+```sh
+atlispcc info tests/cad/t01_math_cad.fas
+atlispcc info tests/cad/i18n-cad.fas --json
+```
+
+FAS 输出：格式（`named-fas4`/compact）、`nsyms`、seg0/seg1 大小、资源段
+解密大小与条目数、XOR 密钥长度、函数目录（catalog）、符号/字符串数、尾部标记。
+ZELX 输出：`.zelx` 四段（X/Y/Z/sub）大小、payload 大小与密钥长度、payload 熵。
+
+### analyze — 调用图 / 依赖分析
+
+统一分析 `.lsp` 源码或 `.fas` 字节码的调用依赖，输出四种格式：
+
+```sh
+atlispcc analyze app.lsp                      # text 摘要
+atlispcc analyze app.lsp -f dot  -o app.dot   # Graphviz
+atlispcc analyze app.lsp -f mermaid
+atlispcc analyze app.fas  -f json             # 结构化图数据
+atlispcc analyze app.lsp --no-cc              # 不把 c:*/*error* 当入口
+```
+
+输出模型：**nodes**（函数 + 出/入度 + root/unused）、**edges**（程序内调用边）、
+**roots**（`c:*`/`*error*` 或顶层表达式调用的函数）、**externals**（内建/外部引用）、
+**unused**（无入边且非 root）。`.fas` 通过字节码扫描 USUBR/FUNC 操作数解析被调名，
+DEFCODE 注册的公开函数自动提升为 root 避免误报 unused。
 
 ### disasm — 反汇编 FAS → .lasm
 

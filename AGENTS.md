@@ -4,7 +4,7 @@
 
 **atlispcc** = **A**uto**L**ISP **C**ompiler **C**ollection，FAS4 字节码编译器套件：`.lsp` ↔ `.fas`（兼容 AutoLISP 的 CAD 平台）。
 
-`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持九个子命令：
+`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持十二个子命令：
 
 ```
 atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]    # 编译 Lisp → FAS
@@ -16,6 +16,9 @@ atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]    # 多文件链接
 atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]  # VLX 容器
 atlispcc zelx <input.lsp|input.fas> [output.zelx]          # ZWCAD ZELX（逆向 LispConverter）
 atlispcc unzelx <input.zelx> [output.fas]                  # 从 .zelx 恢复 .fas
+atlispcc info <input.fas|input.zelx> [--json]              # 快速概览（头/段/函数目录）
+atlispcc analyze [-f text|dot|mermaid|json] [-o OUT] [--no-cc] <lsp|fas>  # 调用图/依赖分析
+atlispcc roundtrip <input.lsp> [-O {0,1,2,3}] [--keep]     # 编译往返冒烟自检
 ```
 
 子命令别名：`compile→c`、`decompile→d`、`validate→v`、`disasm→disassemble`、`asm→assemble`。
@@ -61,7 +64,9 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | `compiler/resource_builder.py` | 常量/符号/函数索引 → 资源段 |
 | `compiler/fas_writer.py` | 指令流 → FAS4 二进制 |
 | `compiler/opt.py` | 优化器：9 个 pass 跨 O1-O3 级别 |
-| `compiler/analyzer.py` | 编译分析与统计（--analyze） |
+| `compiler/analyzer.py` | 编译分析与统计（--analyze/--report） |
+| `compiler/dep_analysis.py` | 调用图/依赖分析图模型与 text/dot/mermaid 格式（analyze） |
+| `compiler/roundtrip.py` | 编译往返冒烟（裸内存管线，roundtrip） |
 | `asm/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
 | `asm/opcodes.py` | 操作码定义与编码函数（codegen/linker/汇编共用） |
 | `compiler/linker.py` | 多文件 FAS 链接器 |
@@ -122,14 +127,14 @@ make clean       # 清理构建产物与缓存
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 310 用例 + 1 skip 占位）：
+**测试文件在 `tests/` 目录下**（pytest 风格，共 340 用例 + 1 skip 占位）：
 - `test_parser.py` — AST 解析器（19 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
-- `test_cli.py` — CLI 路径（22 用例：compile/-O/--analyze/validate/link/vlx/dispatch + validate 补强规则 + 源码编码检测）
-- `test_compile_decompile.py` — 编译-反编译往返（68 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
-- `test_compiler_output.py` — FAS 输出正确性（56 用例，含 7 对 CAD golden 逐字节比对 + t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
+- `test_cli.py` — CLI 路径（26 用例：compile/-O/--analyze/--report/validate/link/vlx/info/analyze/dispatch + validate 补强规则 + 源码编码检测）
+- `test_compile_decompile.py` — 编译-反编译往返（71 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
+- `test_compiler_output.py` — FAS 输出正确性（60 用例，含 7 对 CAD golden 逐字节比对 + t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（13 用例，含重名冲突警告 + 3 份 CAD golden byte-identity）
 - `test_assembler.py` — 反汇编/汇编往返（8 用例）
@@ -139,6 +144,7 @@ make clean       # 清理构建产物与缓存
 - `test_vlx_builder.py` — VLX 容器（3 用例）
 - `test_variadic_args.py` — &optional/&rest 编译（17 用例，含多函数参数名恢复）
 - `test_zelx.py` — ZWCAD ZELX 构建/解析（5 用例）
+- `test_diagnostics.py` — 诊断类新功能（20 用例：analyze 调用图 .lsp/.fas + dot/mermaid/text 输出 + roundtrip 往返冒烟 PASS/FAIL 与 CLI 退出码）
 
   一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。
 

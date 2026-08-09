@@ -1027,4 +1027,106 @@ CAD 限制（CAD 对 `b4=01, min=0` 硬性不收集 rest，真机任何参数均
 - `tests/test_compile_decompile.py`（新语义回归）、`tests/test_fidelity_*.py`
   （若单一可加）
 - `scripts/benchmark.py`（decompile 大样本）
+
+---
+
+# 13. 工具链新功能（S4，2026-08-09）✅ 已完成
+
+> S3 反编译精细度收尾完成后，S4「工具链新功能」重新开启并落地。范围：
+> `compile --report`（编译报告导出）、`atlispcc info`（快速概览）、
+> `atlispcc analyze`（调用图/依赖分析）、`atlispcc roundtrip`（往返冒烟）。
+> **边界**：全部为 CLI/独立模块层新增，不动 compiler 核心 codegen/资源段
+> （t-series byte-identity 18/18、CAD golden 保持逐字节一致）。
+
+## 13.1 已交付
+
+| 子命令 | 文件 | 说明 |
+|---|---|---|
+| `compile --report <json>` | `compiler/cli.py` `cmd_compile` | 编译统计 + 产物信息导出 JSON（analysis/optimized/product） |
+| `info` | `compiler/cli.py` `cmd_info` | .fas/.zelx 头部/段规模/函数目录/符号/字符串概览，`--json` 输出 |
+| `analyze` | `compiler/dep_analysis.py` | 调用图图模型 + text/dot/mermaid/json 四格式；.lsp（Parser）与 .fas（字节码 USUBR/FUNC 扫描）双输入 |
+| `roundtrip` | `compiler/roundtrip.py` | 编译→反编译→validate→compare 冒烟；裸内存管线（顶层表达式保留在 seg0） |
+
+### 关键决策
+
+- **roundtrip 用「裸内存管线」**（`tests/test_compile_decompile.py`
+  `compile_and_decompile` 同款）：CLI compile 把顶层表达式编入 seg1 模块代码，
+  反编译后顶层 `(princ "...")` 退化为 nil 导致字符串比对误报。roundtrip 定位
+  代码生成回归自检，产物发布仍走 `atlispcc compile`。
+- **analyze 同时支持 .lsp 与 .fas**：.fas 侧经 `Disassembler` + `ControlFlowAnalyzer`
+  扫描 USUBR/FUNC 操作数（符号槽索引）解析被调名；`extract_stub_function_names`
+  提供 DEFCODE 真实函数名；DEFCODE 注册的公开函数自动提升为 root，避免
+  单入口文件被误标 UNUSED。`--no-cc` 可关闭 c:*/*error* 的 root 提升。
+- **info 不触发完整反编译**：直接读 FAS4 头部 + 资源段解密统计；zelx 侧复用
+  `tools/zelx_info.py`，输出四段规模与 payload 熵。
+
+## 13.2 验收
+
+- [x] `pytest` 全绿（**340 passed / 1 skipped**，新增 `tests/test_diagnostics.py`
+  20 用例 + `test_cli.py` 4 用例：compile report JSON、info fas/zelx/json、
+  analyze 图模型与格式、roundtrip PASS/FAIL 与 CLI 退出码）
+- [x] t-series byte-identity 18/18 不回归（compiler 核心零改动）
+- [x] 手动验证：`info` 对 `t01_math_cad.fas`（nsyms=5）、`i18n-cad.fas`
+  （catalog 8 函数）、`samples/zelx-reversing/asetch.zelx`（四段 + payload）
+  输出正确；`analyze` 对 t01/t03/t10/fun-cad 图模型合理（fib 自边、单入口
+  无 unused）；`roundtrip` 对 t01/t10/t13/t16/t19/t20/t22 O2 全 PASS
+- [x] `tools/compare_lsp.py` 重构出 `compare_texts()` 可复用比对函数，
+  原 CLI 打印行为保持（defuns/strings/symbols 三段 + 缺失清单）
+
+## 13.3 涉及文件
+
+- `compiler/cli.py`：`cmd_compile`（report_json）、`cmd_info`、`cmd_analyze`、
+  `roundtrip` 子命令 dispatch
+- `compiler/dep_analysis.py`（新增）、`compiler/roundtrip.py`（新增）
+- `tools/compare_lsp.py`（重构，`compare_texts` 可复用）
+- `tests/test_diagnostics.py`（新增 20 用例）、`tests/test_cli.py`（+4 用例）
+- 文档：`README.md`（子命令清单 + 三节详解）、`AGENTS.md`（CLI 清单/测试表/
+  关键文件表）
 - 文档：`docs/development-plan.md` §10/§12、`docs/feature-plan.md`、`AGENTS.md`
+
+---
+
+# 14. 裸管线往返名字稳定缺口（已知限制记录，2026-08-09）
+
+> 反编译验证（2026-08-09）中发现并核实：**仅影响裸内存往返测试管线**，
+> 不属 decompiler bug，CAD/正式 CLI 产物路径不受影响。本条为已知限制登记 +
+> 潜在修复方向，非既定期限任务。
+
+## 14.1 现象
+
+对 CAD golden 首轮反编译正确还原参数/局部名（如 `t11_localvars_cad.fas`
+→ `(defun sum-to-n (n / result i)` + `(_al-bind-alist '(result i))`）。但把
+反编译产物经**裸内存管线**（`tests/test_compile_decompile.py` 的
+`SymbolTable→Codegen→ResourceBuilder→FasWriter`）再编译、再反编译时，名字
+丢失：
+
+| 样本 | 首轮反编译 | 二次反编译（裸管线产物） |
+|---|---|---|
+| `t09_funcall_cad.fas` | `(defun sum-of-squares (a b)` | `(defun sum-of-squares (a square)` |
+| `t11_localvars_cad.fas` | `(defun sum-to-one (n / result i)` | `(defun sum-to-one (n / local_1 local_2)` |
+| `t14_command_cad.fas` | `(defun c:add (/ a b)` | `(defun c:add ()` |
+| `t17_repeat_cad.fas` | `(defun repeat-count (n)` | `(defun repeat-count (n / local_1)` |
+
+## 14.2 根因
+
+裸内存管线存储符号槽/参数槽的方式与 CAD 编译器资源段不同（无 CAD seg1
+模块注册、`_al-bind-alist` 协议顺序、USUBR 槽排序等），反编译器名字恢复
+启发式（`_extract_signature`/`_stub_tail_arg_names`/`_localize_assigned_
+globals`）面向 CAD 格式设计，对裸管线产物无法匹配 → 参数/局部名退化为
+`local_N` 或误取内层函数名。CLI/链接器等**正式产物路径**（走 seg1 模块
+资源）不受影响，首轮反编译名字正确。
+
+## 14.3 修复方向（未排期）
+
+把裸管线 `compile_and_decompile` 改为亦输出 CAD 风格资源槽（stub 类似
+`resource_builder` seg1 模块注册 + `_al-bind-alist` 协议），使手动往返名字
+稳定。成本：裸管线与 CLI 管线的已知差异（AGENTS.md「测试中的关键陷阱」）
+需一并拉齐，涉及 `tests/test_compile_decompile.py` 大量既有断言。价值：
+仅替代 path（roundtrip/测试）名字可读性，正式产物路径已正确——当前定为
+**不做**。
+
+## 14.4 验证基线（已确认无回归）
+
+- `pytest` 104 通过（disasm/resource/编译往返/汇编）；full-suite 基线不变
+- 全部 CAD golden 首轮反编译名字正确（区别于 §14.1 的二次反编译差异）
+- corrupt/截断输入 CLI 优雅退出（`Not a valid FAS4 file`，exit 1），无崩溃

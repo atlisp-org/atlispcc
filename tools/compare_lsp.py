@@ -91,15 +91,17 @@ def render_value(value: str) -> str:
     return value.replace('\\', '\\\\').replace('\r', '\\r').replace('\n', '\\n')
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description='Compare original and decompiled LSP files.')
-    parser.add_argument('original', type=Path)
-    parser.add_argument('decompiled', type=Path)
-    args = parser.parse_args()
+def compare_texts(original: str, decompiled: str) -> dict:
+    """结构化比对两个 Lisp 文本，返回差异报告（供 CLI 与 roundtrip 共用）。
 
-    original = args.original.read_text(encoding='utf-8')
-    decompiled = args.decompiled.read_text(encoding='utf-8')
-
+    返回 dict:
+     - original_strings / decompiled_strings: 提取的字符串字面量
+     - missing_strings / extra_strings:       差集
+     - original_defuns / decompiled_defuns
+     - missing_defuns / extra_defuns
+     - missing_symbols / extra_symbols: 符号差集
+     - ok: 无缺失字符串与缺失 defun 时为 True（extra 不判定失败）
+    """
     original_strings = extract_strings(original)
     decompiled_strings = extract_strings(decompiled)
     original_defuns = extract_defuns(original)
@@ -116,6 +118,47 @@ def main() -> int:
     decompiled_symbol_set = set(decompiled_symbols)
     missing_symbols = sorted(original_symbol_set - decompiled_symbol_set)
     extra_symbols = sorted(decompiled_symbol_set - original_symbol_set)
+
+    return {
+        'original_strings': original_strings,
+        'decompiled_strings': decompiled_strings,
+        'missing_strings': missing_strings,
+        'extra_strings': extra_strings,
+        'original_defuns': original_defuns,
+        'decompiled_defuns': decompiled_defuns,
+        'missing_defuns': missing_defuns,
+        'extra_defuns': extra_defuns,
+        'original_symbols': original_symbol_set,
+        'decompiled_symbols': decompiled_symbol_set,
+        'missing_symbols': missing_symbols,
+        'extra_symbols': extra_symbols,
+        'ok': not missing_strings and not missing_defuns,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description='Compare original and decompiled LSP files.')
+    parser.add_argument('original', type=Path)
+    parser.add_argument('decompiled', type=Path)
+    args = parser.parse_args()
+
+    original = args.original.read_text(encoding='utf-8')
+    decompiled = args.decompiled.read_text(encoding='utf-8')
+
+    r = compare_texts(original, decompiled)
+    original_strings = r['original_strings']
+    decompiled_strings = r['decompiled_strings']
+    original_defuns = r['original_defuns']
+    decompiled_defuns = r['decompiled_defuns']
+    original_symbol_set = r['original_symbols']
+    decompiled_symbol_set = r['decompiled_symbols']
+
+    missing_strings = r['missing_strings']
+    extra_strings = r['extra_strings']
+    missing_defuns = r['missing_defuns']
+    extra_defuns = r['extra_defuns']
+    missing_symbols = r['missing_symbols']
+    extra_symbols = r['extra_symbols']
 
     print(f'Original:   {args.original}')
     print(f'Decompiled: {args.decompiled}')

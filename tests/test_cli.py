@@ -39,6 +39,31 @@ def test_compile_analyze_flag():
             os.unlink(out)
 
 
+def test_compile_report_json():
+    """--report 写出结构化 JSON：分析 + 优化对比 + 产物统计。"""
+    import json as _json
+
+    out = _tmp('rep.fas')
+    rep = _tmp('rep.json')
+    try:
+        cmd_compile('(defun add (a b) (+ a b))', out, opt_level=2, report_json=rep)
+        assert os.path.exists(out)
+        assert os.path.exists(rep)
+        with open(rep, encoding='utf-8') as f:
+            data = _json.load(f)
+        assert data['command'] == 'compile'
+        assert data['opt_level'] == 2
+        assert data['analysis']['functions'] == 1
+        assert data['analysis']['functions_detail'][0]['name'] == 'add'
+        assert data['optimized'] is not None
+        assert data['product']['nsyms'] > 0
+        assert data['product']['seg0_size'] > 0
+    finally:
+        for p in (out, rep):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
 def test_compile_default_output():
     """Default output name replaces .lsp with .fas."""
     src_path = _tmp('in.lsp')
@@ -259,3 +284,38 @@ def test_main_link_dispatch(monkeypatch):
         for p in (f1, f2, out):
             if os.path.exists(p):
                 os.unlink(p)
+
+
+def test_cmd_info_fas():
+    """info 对 CAD 自包含样本报出函数目录与段规模。"""
+    from compiler.cli import cmd_info
+
+    info = cmd_info('tests/cad/i18n-cad.fas', json_out=True)
+    assert info['format'] == 'compact-stub'
+    assert info['nsyms'] > 0
+    assert info['seg0_size'] > 0
+    assert info['seg1_size'] > 0
+    assert info['func_count'] >= 1
+    assert any('CODEPAGE2LANG' in name for name, _ in info['catalog'])
+
+
+def test_cmd_info_zelx():
+    """info 对 .zelx 容器读取 ZAS 头与载荷规模。"""
+    from compiler.cli import cmd_info
+
+    info = cmd_info('samples/zelx-reversing/asetq.zelx', json_out=True)
+    assert info['format'] == 'zelx'
+    assert info['zelx']['payload_size'] > 0
+    assert info['zelx']['X'] > 0
+
+
+def test_cmd_info_cli_json_dispatch(monkeypatch, capsys):
+    """CLI `atlispcc info --json <fas>` 输出合法 JSON 且 rc=0。"""
+    import json as _json
+
+    monkeypatch.setattr(sys, 'argv', ['atlispcc', 'info', '--json', 'tests/cad/i18n-cad.fas'])
+    rc = main()
+    assert rc == 0
+    out = capsys.readouterr().out
+    data = _json.loads(out)
+    assert data['file'].endswith('i18n-cad.fas')
