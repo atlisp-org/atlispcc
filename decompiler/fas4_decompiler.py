@@ -402,7 +402,9 @@ class Disassembler:
                 name, fmt = entry
                 inst = Instruction(offset=i, opcode=op, op_name=name)
                 if fmt == "4":
-                    val = struct.unpack("<I", bytecode[i + 1 : i + 5])[0] if i + 4 < len(bytecode) else 0
+                    # PUSH_INT32：AutoLISP 整数为有符号 32 位，按 <i 解码
+                    # （core/fas_core 与资源流解码均一致；<I 会把 -9999 误显为 4294957297）
+                    val = struct.unpack("<i", bytecode[i + 1 : i + 5])[0] if i + 4 < len(bytecode) else 0
                     inst.operands = [val]
                     inst.size = 5
                 elif fmt == "s4":

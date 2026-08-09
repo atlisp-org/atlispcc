@@ -114,7 +114,7 @@ def encode_instruction(name: str, operands: List[Any]) -> bytes:
     elif fmt == '2':
         return encode_op_u16(op, int(operands[0]))
     elif fmt == '4':
-        return encode_op_u32(op, int(operands[0]))
+        return encode_op_s32(op, int(operands[0]))
     elif fmt == 's4':
         return encode_op_s32(op, int(operands[0]))
     elif fmt == 'bb':

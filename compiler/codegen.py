@@ -35,6 +35,18 @@ from asm.opcodes import (
 )
 
 
+def _signed_int32(val: int) -> int:
+    """把任意 32 位整数文本规格化为有符号范围（-2^31..2^31-1）。
+
+    旧反编译器曾以 <I（无符号）渲染 PUSH_INT32，把 -9999 写成 4294957297；
+    源码若含此类超范围字面量，按 CAD 的 32 位补码语义回绕（4294957297 → -9999）。
+    """
+    val &= 0xFFFFFFFF
+    if val >= 0x80000000:
+        val -= 0x100000000
+    return val
+
+
 def normalize_vla_name(name):
     """规范化 vla- 前缀的 ActiveX 方法符号名（与 cad_symbols 保持一致）。
 
@@ -312,7 +324,7 @@ class CodeGenerator:
                 buf.emit(encode_op_u16(PUSH_VALUE, idx))
 
         elif isinstance(node, Integer):
-            val = node.value
+            val = _signed_int32(node.value)
             if -128 <= val <= 127:
                 buf.emit(encode_op_u8(PUSH_INT8, val & 0xFF))
             else:
@@ -943,7 +955,7 @@ class CodeGenerator:
                     idx = self.symtab.get_or_add(name)
                 buf.emit(encode_op_u16(PUSH_G, idx))
         elif isinstance(node, Integer):
-            val = node.value
+            val = _signed_int32(node.value)
             if -128 <= val <= 127:
                 buf.emit(encode_op_u8(PUSH_INT8, val & 0xFF))
             else:

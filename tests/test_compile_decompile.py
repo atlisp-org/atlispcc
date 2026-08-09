@@ -107,6 +107,28 @@ def test_exit_compile_decompile():
     assert ok, f'Validation failed: {errs}'
 
 
+def test_int32_signed_roundtrip():
+    """超范围/负整数字面量按有符号 32 位往返。
+
+    seg0 PUSH_INT32 须按 <i（有符号）解码（core/fas_core 同约定）；
+    旧反编译器用 <I 把 -9999 误渲染为 4294957297，导致反编译产物无法
+    再次编译（codegen struct.error）。codegen 侧对超范围字面量按 32 位
+    补码回绕，与 CAD 一致。
+    """
+    # 4294957297 = 0xFFFFD8F1 = signed -9999
+    src = '(defun f () 4294957297)'
+    result = compile_and_decompile(src)
+    assert '-9999' in result, f'PUSH_INT32 应按有符号渲染, got: {result!r}'
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+    src2 = '(defun g () -9999)'
+    result2 = compile_and_decompile(src2)
+    assert '-9999' in result2, f'负整数字面量往返失败: {result2!r}'
+    ok, errs = _validate(result2)
+    assert ok, f'Validation failed: {errs}'
+
+
 def test_hash_quote_roundtrip():
     src = "(defun f (l) (mapcar #'1+ l))"
     result = compile_and_decompile(src)

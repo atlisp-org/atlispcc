@@ -132,7 +132,7 @@ def _encode_with_opcode(opcode: int, name: str, operands: List, short_subr: bool
     elif fmt == "2":
         return encode_op_u16(opcode, int(operands[0]))
     elif fmt == "4":
-        return encode_op_u32(opcode, int(operands[0]))
+        return encode_op_s32(opcode, int(operands[0]))
     elif fmt == "s4":
         return encode_op_s32(opcode, int(operands[0]))
     elif fmt == "bb":
