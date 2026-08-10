@@ -16,7 +16,7 @@
 .end_symbols
 
 .function F, 0
-  0x0000: DEFUN [257], 1
+  0x0000: DEFUN 1, 1, 1, 0
   0x0005: PUSH_G [4]
   0x0008: GET_LOCAL_WIDE 0
   0x000b: INIT_ARGS 3
@@ -29,7 +29,7 @@
 .end_function
 
 .function G, 1
-  0x001a: DEFUN [257], 1
+  0x001a: DEFUN 1, 1, 1, 0
   0x001f: PUSH_G *
   0x0022: GET_LOCAL_WIDE 0
   0x0025: INIT_ARGS 3

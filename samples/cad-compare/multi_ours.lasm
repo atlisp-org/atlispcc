@@ -24,7 +24,7 @@
 .end_symbols
 
 .function ADD, 0
-  0x0000: DEFUN [514], 2
+  0x0000: DEFUN 2, 2, 2, 0
   0x0005: PUSH_G -
   0x0008: GET_LOCAL_WIDE 0
   0x000b: PUSH_G <=
@@ -40,7 +40,7 @@
 .end_function
 
 .function c:fn1, 1
-  0x0025: DEFUN [514], 2
+  0x0025: DEFUN 2, 2, 2, 0
   0x002a: PUSH_G -
   0x002d: GET_LOCAL_WIDE 0
   0x0030: PUSH_G <=
@@ -56,7 +56,7 @@
 .end_function
 
 .function c:fn2, 2
-  0x004a: DEFUN [514], 2
+  0x004a: DEFUN 2, 2, 2, 0
   0x004f: PUSH_G -
   0x0052: GET_LOCAL_WIDE 0
   0x0055: PUSH_G <=
@@ -72,7 +72,7 @@
 .end_function
 
 .function c:fn3, 3
-  0x006f: DEFUN [257], 1
+  0x006f: DEFUN 1, 1, 1, 0
   0x0074: PUSH_G [5]
   0x0077: GET_LOCAL_WIDE 0
   0x007a: INIT_ARGS 3

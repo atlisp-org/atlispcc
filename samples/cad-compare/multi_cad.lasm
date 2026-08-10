@@ -24,7 +24,7 @@
 .end_symbols
 
 .function ADD, 0
-  0x0000: DEFUN [514], 2
+  0x0000: DEFUN 2, 2, 2, 0
   0x0005: PUSH_G -
   0x0008: GET_LOCAL_WIDE 0
   0x000b: PUSH_G *
@@ -40,7 +40,7 @@
 .end_function
 
 .function SUB, 1
-  0x0023: DEFUN [514], 2
+  0x0023: DEFUN 2, 2, 2, 0
   0x0028: PUSH_G -
   0x002b: GET_LOCAL_WIDE 0
   0x002e: PUSH_G *
@@ -56,7 +56,7 @@
 .end_function
 
 .function MUL, 2
-  0x0046: DEFUN [514], 2
+  0x0046: DEFUN 2, 2, 2, 0
   0x004b: PUSH_G -
   0x004e: GET_LOCAL_WIDE 0
   0x0051: PUSH_G *
@@ -72,7 +72,7 @@
 .end_function
 
 .function FACT, 3
-  0x0069: DEFUN [257], 1
+  0x0069: DEFUN 1, 1, 1, 0
   0x006e: PUSH_G [3]
   0x0071: GET_LOCAL_WIDE 0
   0x0074: INIT_ARGS 3

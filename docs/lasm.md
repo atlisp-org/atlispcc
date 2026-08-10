@@ -134,9 +134,16 @@
 
 | 指令 | 操作数 1 | 操作数 2 |
 |------|---------|---------|
-| `DEFUN` | 符号（gvar 引用） | 偏移 |
+| `DEFUN`（自包含） | 符号（gvar 引用） | 偏移 |
+| `DEFUN`（紧凑 stub） | 4 个原始字节（argc 编码） | — |
 | `FUNC` / `USUBR` | argc | 符号索引 |
 | `PUSH_VALUE` / `PUSH_G` / `PUSH_G_ALT` / `SETQ_G` | 符号索引 | 附加字节 |
+
+紧凑 stub 的 `DEFUN` 头是 argc 编码 `14 <argc>x3 <mode>`（foreach/repeat 为
+`14 <argc+1> <argc> <argc> 00`），反汇编按 4 个原始字节输出
+（如 `DEFUN 1, 1, 1, 0`、`DEFUN 2, 1, 1, 0`），汇编时逐字节写回；
+自包含格式的 `DEFUN` 头是 gvar 编码 `14 <gv:2> <off:2>`，输出为符号 + 偏移。
+两种写法汇编器均可识别（旧式紧凑 `DEFUN <符号>, <偏移>` 亦兼容）。
 
 ```
 0x0005: PUSH_VALUE f2, 0      ; f2 = 符号槽 0
@@ -165,7 +172,7 @@
 | `PUSH_VALUE [0]` | `03`（单字节） | `03 <idx:2>`（3 字节） |
 | `PUSH_VALUE [i>0]` | `03 <idx:2>`（3 字节） | 同左 |
 | `CLEAR_ARGS` | `19 <argc:2> 00`（3 字节） | `19 <argc:2>`（3 字节） |
-| `DEFUN` | `14 <argc>x3 <mode>`（argc 编码） | `14 <gv:2> <off:2>`（gvar 编码） |
+| `DEFUN` | `14 <argc>x3 <mode>`（argc 编码，.lasm 显示 4 字节） | `14 <gv:2> <off:2>`（gvar 编码） |
 
 汇编器依据 `.format` 指令选择编码；缺省按指令特征自动判定。
 

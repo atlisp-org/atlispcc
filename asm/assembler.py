@@ -51,7 +51,8 @@ def _detect_compact(fas) -> bool:
         return c3 < c6
 
     def _defuns_argc(insts):
-        # 紧凑 stub 的 DEFUN 头为 argc 编码 `14 <argc> <argc> <argc> 0`
+        # 紧凑 stub 的 DEFUN 头为 argc 编码 `14 <argc> <argc> <argc> 0`；
+        # foreach/repeat 函数为 `14 <argc+1> <argc> <argc> 0`（b1=argc+1，t16/t17 实测）。
         offsets = [i.offset for i in insts if i.op_name == "DEFUN"]
         if not offsets:
             return None
@@ -60,7 +61,7 @@ def _detect_compact(fas) -> bool:
                 continue
             a, b_, c, d = bc[off + 1], bc[off + 2], bc[off + 3], bc[off + 4]
             if d == 0:
-                if a != c:
+                if not (a == b_ == c or (b_ == c and a == c + 1)):
                     return False
             elif d == 1:
                 if not (a == b_ == c):
@@ -132,18 +133,22 @@ def _is_plain_symbol(name: str) -> bool:
     return not any(c in forbidden for c in name)
 
 
-def _fmt_inst(inst, symbols: List[str], sym_types: Optional[List[str]] = None) -> str:
+def _fmt_inst(inst, symbols: List[str], sym_types: Optional[List[str]] = None, compact: bool = False) -> str:
     """Format one instruction as a .lasm line."""
     prefix = f"  0x{inst.offset:04x}:"
     name = _disasm_op_name(inst.opcode)
     ops = list(inst.operands)
 
-    # DEFUN packs 4 bytes → gv(u16), offset(u16)
-    if name == "DEFUN" and len(ops) >= 4:
+    # DEFUN：紧凑 stub 为 argc 编码 `14 <argc>x3 <mode>`，4 个字节操作数
+    # 原样输出（DEFUN 1, 1, 1, 0）；自包含为 gvar 编码 `14 <gv:2> <off:2>`，
+    # 打包成符号 + 偏移（DEFUN f2, 0）。
+    if name in ("DEFUN", "DEFUN_ALT") and len(ops) >= 4:
+        if compact:
+            return f"{prefix} {name} {ops[0]}, {ops[1]}, {ops[2]}, {ops[3]}"
         gv = ops[0] | (ops[1] << 8)
         off = ops[2] | (ops[3] << 8)
         sym = _resolve_sym(symbols, gv)
-        return f"{prefix} DEFUN {sym}, {off}"
+        return f"{prefix} {name} {sym}, {off}"
     # FUNC/USUBR: second operand is a symbol index
     if name in ("FUNC", "USUBR") and len(ops) >= 2:
         sym = _resolve_sym_safe(symbols, ops[1], sym_types)
@@ -217,7 +222,7 @@ def disassemble_fas(fas_path: str) -> str:
         fname = func.name if func.name and func.name != "c:init" else "__init__"
         lines.append(f".function {fname}, {func.sym_idx}")
         for inst in func.instructions:
-            lines.append(_fmt_inst(inst, symbols, sym_types))
+            lines.append(_fmt_inst(inst, symbols, sym_types, compact=compact))
         lines.append(".end_function")
         lines.append("")
 
@@ -553,6 +558,12 @@ def _asm_instr(line: str, symtab: SymbolTable, symbols: List[str], compact: bool
         return encode_op_u16(NAME_TO_OPCODE["GET_LOCAL_WIDE"], int(operands[0]) if operands else 0)
 
     if compact:
+        if mnemonic in ("DEFUN", "DEFUN_ALT") and len(operands) == 4:
+            # 紧凑 stub DEFUN 头为 argc 编码 `14 <argc>x3 <mode>`：
+            # 4 个操作数直接作为原始字节写回（DEFUN 1, 1, 1, 0）。
+            return bytes([0x14 if mnemonic == "DEFUN" else 0x15]) + bytes(
+                int(o) & 0xFF for o in operands
+            )
         if mnemonic == "USUBR" and operands:
             return encode_usubr3(int(operands[0]), int(operands[1]) if len(operands) > 1 else 0)
         if mnemonic == "FUNC" and operands:
