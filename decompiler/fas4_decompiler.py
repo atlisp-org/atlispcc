@@ -2611,7 +2611,7 @@ class LispGenerator:
                 # （dotted `(cons 1 . 2)` 合成产物），破坏既有符号回退。
                 candidate = self.gvar_table[idx]
                 deref = self._deref_deferred_constant(candidate)
-                if deref is not candidate:
+                if deref is not None and deref is not candidate:
                     result = deref
                     return result
             if 0 <= idx < len(self.symbol_slots):
@@ -2643,11 +2643,24 @@ class LispGenerator:
         return self._extract_symbol_text(value)
 
     def _gvar_symbol_gvar(self, idx: int) -> Optional[str]:
-        """stub 格式 USUBR 索引 = gvar 槽 - 1，调用名取自 gvar 表 idx+1。"""
+        """stub 格式 USUBR 索引 = gvar 槽 - 1，调用名取自 gvar 表 idx+1。
+
+        CAD golden 的 gvar 表足够长（[None, deferred, 符号槽...]），idx+1 命中
+        符号；CLI 单函数紧凑 stub 的 gvar 表只有 [None, deferred]（len=2），
+        idx+1 越界或命中非符号槽（如列表字面量 `(1 2)` 遮蔽 `+`），此时回落
+        资源注册顺序 symbol_slots[idx]。CAD 路径的 idx+1 必命中符号，不触发
+        该 fallback，因此不影响既有一致性。
+        """
         if self.is_stub_format:
             j = idx + 1
             if 0 <= j < len(self.gvar_table):
-                return self._extract_symbol_text(self.gvar_table[j])
+                sym = self._extract_symbol_text(self.gvar_table[j])
+                if sym:
+                    return sym
+            if 0 <= idx < len(self.symbol_slots):
+                sym = self._extract_symbol_text(self.symbol_slots[idx])
+                if sym:
+                    return sym
         return self._gvar_symbol(idx)
 
     def _code_gvar_symbol(self, idx: int) -> Optional[str]:
