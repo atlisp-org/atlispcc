@@ -12,9 +12,9 @@
 .end_symbols
 
 .function A, 0
-  0x0000: DEFUN A, 0
-  0x0005: PUSH_G "abc"
-  0x0008: USUBR 1, ALERT
-  0x000b: NIL
-  0x000c: PUSH_VALUE [0]
+  0x0000: 14 00 00 00 00    DEFUN 0, 0, 0, 0
+  0x0005: 09 02 00          PUSH_G "abc"
+  0x0008: 35 01 01          USUBR 1, ALERT
+  0x000b: 00                NIL
+  0x000c: 03                PUSH_VALUE [0]
 .end_function

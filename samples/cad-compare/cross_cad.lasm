@@ -16,27 +16,27 @@
 .end_symbols
 
 .function F, 0
-  0x0000: DEFUN 1, 1, 1, 0
-  0x0005: PUSH_G [4]
-  0x0008: GET_LOCAL_WIDE 0
-  0x000b: INIT_ARGS 3
-  0x000e: PUSH_VALUE [4]
-  0x0011: USUBR 1, Y
-  0x0014: NIL
-  0x0015: PUSH_VALUE [0]
-  0x0016: CLEAR_ARGS 1
-  0x0019: END_DEFUN
+  0x0000: 14 01 01 01 00    DEFUN 1, 1, 1, 0
+  0x0005: 09 04 00          PUSH_G [4]
+  0x0008: 5c 00 00          GET_LOCAL_WIDE 0
+  0x000b: 18 03 00          INIT_ARGS 3
+  0x000e: 03 04 00          PUSH_VALUE [4]
+  0x0011: 35 01 03          USUBR 1, Y
+  0x0014: 00                NIL
+  0x0015: 03                PUSH_VALUE [0]
+  0x0016: 19 01 00          CLEAR_ARGS 1
+  0x0019: 16                END_DEFUN
 .end_function
 
 .function G, 1
-  0x001a: DEFUN 1, 1, 1, 0
-  0x001f: PUSH_G *
-  0x0022: GET_LOCAL_WIDE 0
-  0x0025: INIT_ARGS 3
-  0x0028: PUSH_VALUE *
-  0x002b: PUSH_VALUE *
-  0x002e: USUBR 2, [1]
-  0x0031: NIL
-  0x0032: PUSH_VALUE [0]
-  0x0033: CLEAR_ARGS 1
+  0x001a: 14 01 01 01 00    DEFUN 1, 1, 1, 0
+  0x001f: 09 02 00          PUSH_G *
+  0x0022: 5c 00 00          GET_LOCAL_WIDE 0
+  0x0025: 18 03 00          INIT_ARGS 3
+  0x0028: 03 02 00          PUSH_VALUE *
+  0x002b: 03 02 00          PUSH_VALUE *
+  0x002e: 35 02 01          USUBR 2, [1]
+  0x0031: 00                NIL
+  0x0032: 03                PUSH_VALUE [0]
+  0x0033: 19 01 00          CLEAR_ARGS 1
 .end_function

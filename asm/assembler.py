@@ -61,7 +61,9 @@ def _detect_compact(fas) -> bool:
                 continue
             a, b_, c, d = bc[off + 1], bc[off + 2], bc[off + 3], bc[off + 4]
             if d == 0:
-                if not (a == b_ == c or (b_ == c and a == c + 1)):
+                # 普通紧凑：`14 <argc>x3`；foreach/repeat：`14 <argc+1> <argc> <argc>`
+                # （b1=argc+1，t16/t17 实测；foreach/repeat 必有参数，argc>=1）。
+                if not (a == b_ == c or (b_ == c and c >= 1 and a == c + 1)):
                     return False
             elif d == 1:
                 if not (a == b_ == c):
@@ -133,42 +135,64 @@ def _is_plain_symbol(name: str) -> bool:
     return not any(c in forbidden for c in name)
 
 
-def _fmt_inst(inst, symbols: List[str], sym_types: Optional[List[str]] = None, compact: bool = False) -> str:
-    """Format one instruction as a .lasm line."""
+def _fmt_inst(
+    inst,
+    symbols: List[str],
+    sym_types: Optional[List[str]] = None,
+    compact: bool = False,
+    bytecode: Optional[bytes] = None,
+) -> str:
+    """Format one instruction as a .lasm line.
+
+    反汇编在助记符前附带该指令的原始十六进制字节列
+    （``0x0000: 14 01 01 01 00  DEFUN 1, 1, 1, 0``），便于对照字节码。
+    汇编时 ``_asm_instr`` 会剥离该列，故 disasm→asm 往返仍逐字节一致；
+    手工编写的 .lasm 可不含该列。
+    """
     prefix = f"  0x{inst.offset:04x}:"
     name = _disasm_op_name(inst.opcode)
     ops = list(inst.operands)
+
+    hex_col = ""
+    if bytecode is not None:
+        raw = bytecode[inst.offset : inst.offset + inst.size]
+        hex_col = " ".join(f"{b:02x}" for b in raw)
+
+    def _line(body: str) -> str:
+        if hex_col:
+            return f"{prefix} {hex_col:<17} {body}"
+        return f"{prefix} {body}"
 
     # DEFUN：紧凑 stub 为 argc 编码 `14 <argc>x3 <mode>`，4 个字节操作数
     # 原样输出（DEFUN 1, 1, 1, 0）；自包含为 gvar 编码 `14 <gv:2> <off:2>`，
     # 打包成符号 + 偏移（DEFUN f2, 0）。
     if name in ("DEFUN", "DEFUN_ALT") and len(ops) >= 4:
         if compact:
-            return f"{prefix} {name} {ops[0]}, {ops[1]}, {ops[2]}, {ops[3]}"
+            return _line(f"{name} {ops[0]}, {ops[1]}, {ops[2]}, {ops[3]}")
         gv = ops[0] | (ops[1] << 8)
         off = ops[2] | (ops[3] << 8)
         sym = _resolve_sym(symbols, gv)
-        return f"{prefix} {name} {sym}, {off}"
+        return _line(f"{name} {sym}, {off}")
     # FUNC/USUBR: second operand is a symbol index
     if name in ("FUNC", "USUBR") and len(ops) >= 2:
         sym = _resolve_sym_safe(symbols, ops[1], sym_types)
         rest = [str(ops[0]), sym]
         if len(ops) > 2:
             rest.extend(str(o) for o in ops[2:])
-        return f'{prefix} {name} {", ".join(rest)}'
+        return _line(f'{name} {", ".join(rest)}')
     # PUSH_VALUE/PUSH_G/SETQ_G/PUSH_G_ALT: first operand is a symbol index
     if name in ("PUSH_VALUE", "PUSH_G", "PUSH_G_ALT", "SETQ_G") and ops:
         sym_info = _resolve_sym_safe(symbols, ops[0], sym_types)
         rest = [sym_info]
         rest.extend(str(o) for o in ops[1:3])
-        return f'{prefix} {name} {", ".join(rest)}'
+        return _line(f'{name} {", ".join(rest)}')
     # GET_LOCAL/SET_LOCAL/CLEAR_LOCAL: operand is a local slot index (integer)
     if name in ("GET_LOCAL", "GET_LOCAL_WIDE", "SET_LOCAL", "CLEAR_LOCAL") and ops:
-        return f"{prefix} {name} {ops[0]}"
+        return _line(f"{name} {ops[0]}")
 
     if not ops:
-        return f"{prefix} {name}"
-    return f'{prefix} {name} {", ".join(str(o) for o in ops)}'
+        return _line(name)
+    return _line(f'{name} {", ".join(str(o) for o in ops)}')
 
 
 def disassemble_fas(fas_path: str) -> str:
@@ -222,7 +246,7 @@ def disassemble_fas(fas_path: str) -> str:
         fname = func.name if func.name and func.name != "c:init" else "__init__"
         lines.append(f".function {fname}, {func.sym_idx}")
         for inst in func.instructions:
-            lines.append(_fmt_inst(inst, symbols, sym_types, compact=compact))
+            lines.append(_fmt_inst(inst, symbols, sym_types, compact=compact, bytecode=fas.bytecode))
         lines.append(".end_function")
         lines.append("")
 
@@ -239,7 +263,7 @@ def _detect_format(functions: List[Tuple[str, int, List[str]]]) -> str:
     """
     for _name, _idx, body in functions:
         for line in body:
-            content = _ADDR_PREFIX.sub("", line).split(";", 1)[0].strip()
+            content = _strip_hex_bytes(_ADDR_PREFIX.sub("", line)).split(";", 1)[0].strip()
             if not content:
                 continue
             mnem = content.split()[0].upper()
@@ -475,6 +499,16 @@ def _assemble_compact(output_path: str, symbols_list: List[str], symbol_types: L
 
 _INSTR_RE = re.compile(r"(\w+)(.*)")
 _ADDR_PREFIX = re.compile(r"^0x[0-9a-fA-F]+:")
+# 反汇编行首的原始字节列（`14 01 01 01 00  DEFUN ...`），汇编时剥离。
+# 助记符如 DEC/BETA/CAR 首两字符虽可恰为十六进制位，但后随字符非空白，
+# 故不会误剥离无字节列的手工 .lasm。
+_HEX_BYTES_RE = re.compile(r"^(?:[0-9a-fA-F]{2}\s+)+")
+
+
+def _strip_hex_bytes(content: str) -> str:
+    """去掉行首十六进制字节列，返回剩余指令文本（含助记符）。"""
+    content = content.strip()
+    return _HEX_BYTES_RE.sub("", content, count=1).strip()
 
 
 def _strip_comment(line: str) -> str:
@@ -539,7 +573,7 @@ def _asm_instr(line: str, symtab: SymbolTable, symbols: List[str], compact: bool
     - USUBR/FUNC 为 3 字节（``35 <argc> <idx8>`` / ``51 <argc> <idx8>``）
     - PUSH_VALUE[0] 为单字节 ``03``；idx>0 仍为 ``03 <u16>``
     """
-    content = _ADDR_PREFIX.sub("", line).strip()
+    content = _strip_hex_bytes(_ADDR_PREFIX.sub("", line))
     if not content:
         return None
 

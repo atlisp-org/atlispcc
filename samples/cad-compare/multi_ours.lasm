@@ -17,84 +17,98 @@
   9: SYMBOL A
   10: SYMBOL B
   11: SYMBOL +
-  12: SYMBOL FACT
-  13: SYMBOL MUL
-  14: SYMBOL SUB
+  12: SYMBOL C:FN3
+  13: SYMBOL C:FN2
+  14: SYMBOL C:FN1
   15: SYMBOL ADD
 .end_symbols
 
 .function ADD, 0
-  0x0000: DEFUN 2, 2, 2, 0
-  0x0005: PUSH_G -
-  0x0008: GET_LOCAL_WIDE 0
-  0x000b: PUSH_G <=
-  0x000e: GET_LOCAL_WIDE 1
-  0x0011: INIT_ARGS 5
-  0x0014: PUSH_VALUE -
-  0x0017: PUSH_VALUE <=
-  0x001a: USUBR 2, +
-  0x001d: NIL
-  0x001e: PUSH_VALUE [2]
-  0x0021: CLEAR_ARGS 2
-  0x0024: END_DEFUN
+  0x0000: 14 02 02 02 00    DEFUN 2, 2, 2, 0
+  0x0005: 09 06 00          PUSH_G -
+  0x0008: 5c 00 00          GET_LOCAL_WIDE 0
+  0x000b: 09 07 00          PUSH_G <=
+  0x000e: 5c 01 00          GET_LOCAL_WIDE 1
+  0x0011: 18 05 00          INIT_ARGS 5
+  0x0014: 03 06 00          PUSH_VALUE -
+  0x0017: 03 07 00          PUSH_VALUE <=
+  0x001a: 35 02 0b          USUBR 2, +
+  0x001d: 00                NIL
+  0x001e: 03                PUSH_VALUE [0]
+  0x001f: 02                PUSH_T
+  0x0020: 00                NIL
+  0x0021: 19 02 00          CLEAR_ARGS 2
+  0x0024: 16                END_DEFUN
 .end_function
 
-.function c:fn1, 1
-  0x0025: DEFUN 2, 2, 2, 0
-  0x002a: PUSH_G -
-  0x002d: GET_LOCAL_WIDE 0
-  0x0030: PUSH_G <=
-  0x0033: GET_LOCAL_WIDE 1
-  0x0036: INIT_ARGS 5
-  0x0039: PUSH_VALUE -
-  0x003c: PUSH_VALUE <=
-  0x003f: USUBR 2, [3]
-  0x0042: NIL
-  0x0043: PUSH_VALUE [2]
-  0x0046: CLEAR_ARGS 2
-  0x0049: END_DEFUN
+.function C:FN1, 1
+  0x0025: 14 02 02 02 00    DEFUN 2, 2, 2, 0
+  0x002a: 09 06 00          PUSH_G -
+  0x002d: 5c 00 00          GET_LOCAL_WIDE 0
+  0x0030: 09 07 00          PUSH_G <=
+  0x0033: 5c 01 00          GET_LOCAL_WIDE 1
+  0x0036: 18 05 00          INIT_ARGS 5
+  0x0039: 03 06 00          PUSH_VALUE -
+  0x003c: 03 07 00          PUSH_VALUE <=
+  0x003f: 35 02 03          USUBR 2, [3]
+  0x0042: 00                NIL
+  0x0043: 03                PUSH_VALUE [0]
+  0x0044: 02                PUSH_T
+  0x0045: 00                NIL
+  0x0046: 19 02 00          CLEAR_ARGS 2
+  0x0049: 16                END_DEFUN
 .end_function
 
-.function c:fn2, 2
-  0x004a: DEFUN 2, 2, 2, 0
-  0x004f: PUSH_G -
-  0x0052: GET_LOCAL_WIDE 0
-  0x0055: PUSH_G <=
-  0x0058: GET_LOCAL_WIDE 1
-  0x005b: INIT_ARGS 5
-  0x005e: PUSH_VALUE -
-  0x0061: PUSH_VALUE <=
-  0x0064: USUBR 2, [1]
-  0x0067: NIL
-  0x0068: PUSH_VALUE [2]
-  0x006b: CLEAR_ARGS 2
-  0x006e: END_DEFUN
+.function C:FN2, 2
+  0x004a: 14 02 02 02 00    DEFUN 2, 2, 2, 0
+  0x004f: 09 06 00          PUSH_G -
+  0x0052: 5c 00 00          GET_LOCAL_WIDE 0
+  0x0055: 09 07 00          PUSH_G <=
+  0x0058: 5c 01 00          GET_LOCAL_WIDE 1
+  0x005b: 18 05 00          INIT_ARGS 5
+  0x005e: 03 06 00          PUSH_VALUE -
+  0x0061: 03 07 00          PUSH_VALUE <=
+  0x0064: 35 02 01          USUBR 2, MUL
+  0x0067: 00                NIL
+  0x0068: 03                PUSH_VALUE [0]
+  0x0069: 02                PUSH_T
+  0x006a: 00                NIL
+  0x006b: 19 02 00          CLEAR_ARGS 2
+  0x006e: 16                END_DEFUN
 .end_function
 
-.function c:fn3, 3
-  0x006f: DEFUN 1, 1, 1, 0
-  0x0074: PUSH_G [5]
-  0x0077: GET_LOCAL_WIDE 0
-  0x007a: INIT_ARGS 3
-  0x007d: PUSH_VALUE [5]
-  0x0080: PUSH_INT8 1
-  0x0082: USUBR 2, *
-  0x0085: NIL
-  0x0086: PUSH_VALUE [2]
-  0x0089: JMP32_IFNOT 7
-  0x008e: PUSH_INT8 1
-  0x0090: JUMP 23
-  0x0095: PUSH_VALUE [5]
-  0x0098: PUSH_VALUE [5]
-  0x009b: PUSH_INT8 1
-  0x009d: USUBR 2, [3]
-  0x00a0: NIL
-  0x00a1: PUSH_VALUE [2]
-  0x00a4: USUBR 1, [2]
-  0x00a7: NIL
-  0x00a8: PUSH_VALUE [2]
-  0x00ab: USUBR 2, [1]
-  0x00ae: NIL
-  0x00af: PUSH_VALUE [2]
-  0x00b2: CLEAR_ARGS 1
+.function C:FN3, 3
+  0x006f: 14 01 01 01 00    DEFUN 1, 1, 1, 0
+  0x0074: 09 05 00          PUSH_G [5]
+  0x0077: 5c 00 00          GET_LOCAL_WIDE 0
+  0x007a: 18 03 00          INIT_ARGS 3
+  0x007d: 03 05 00          PUSH_VALUE [5]
+  0x0080: 32 01             PUSH_INT8 1
+  0x0082: 35 02 04          USUBR 2, *
+  0x0085: 00                NIL
+  0x0086: 03                PUSH_VALUE [0]
+  0x0087: 02                PUSH_T
+  0x0088: 00                NIL
+  0x0089: 67 07 00 00 00    JMP32_IFNOT 7
+  0x008e: 32 01             PUSH_INT8 1
+  0x0090: 57 17 00 00 00    JUMP 23
+  0x0095: 03 05 00          PUSH_VALUE [5]
+  0x0098: 03 05 00          PUSH_VALUE [5]
+  0x009b: 32 01             PUSH_INT8 1
+  0x009d: 35 02 03          USUBR 2, [3]
+  0x00a0: 00                NIL
+  0x00a1: 03                PUSH_VALUE [0]
+  0x00a2: 02                PUSH_T
+  0x00a3: 00                NIL
+  0x00a4: 35 01 02          USUBR 1, SUB
+  0x00a7: 00                NIL
+  0x00a8: 03                PUSH_VALUE [0]
+  0x00a9: 02                PUSH_T
+  0x00aa: 00                NIL
+  0x00ab: 35 02 01          USUBR 2, MUL
+  0x00ae: 00                NIL
+  0x00af: 03                PUSH_VALUE [0]
+  0x00b0: 02                PUSH_T
+  0x00b1: 00                NIL
+  0x00b2: 19 01 00          CLEAR_ARGS 1
 .end_function

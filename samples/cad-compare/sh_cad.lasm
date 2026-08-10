@@ -16,32 +16,32 @@
 .end_symbols
 
 .function F1, 0
-  0x0000: DEFUN 2, 2, 2, 0
-  0x0005: PUSH_G B
-  0x0008: GET_LOCAL_WIDE 0
-  0x000b: PUSH_G +
-  0x000e: GET_LOCAL_WIDE 1
-  0x0011: INIT_ARGS 5
-  0x0014: PUSH_VALUE B
-  0x0017: PUSH_VALUE +
-  0x001a: USUBR 2, *
-  0x001d: NIL
-  0x001e: PUSH_VALUE [0]
-  0x001f: CLEAR_ARGS 2
-  0x0022: END_DEFUN
+  0x0000: 14 02 02 02 00    DEFUN 2, 2, 2, 0
+  0x0005: 09 04 00          PUSH_G B
+  0x0008: 5c 00 00          GET_LOCAL_WIDE 0
+  0x000b: 09 03 00          PUSH_G +
+  0x000e: 5c 01 00          GET_LOCAL_WIDE 1
+  0x0011: 18 05 00          INIT_ARGS 5
+  0x0014: 03 04 00          PUSH_VALUE B
+  0x0017: 03 03 00          PUSH_VALUE +
+  0x001a: 35 02 02          USUBR 2, *
+  0x001d: 00                NIL
+  0x001e: 03                PUSH_VALUE [0]
+  0x001f: 19 02 00          CLEAR_ARGS 2
+  0x0022: 16                END_DEFUN
 .end_function
 
 .function F2, 1
-  0x0023: DEFUN 2, 2, 2, 0
-  0x0028: PUSH_G B
-  0x002b: GET_LOCAL_WIDE 0
-  0x002e: PUSH_G +
-  0x0031: GET_LOCAL_WIDE 1
-  0x0034: INIT_ARGS 5
-  0x0037: PUSH_VALUE B
-  0x003a: PUSH_VALUE +
-  0x003d: USUBR 2, [1]
-  0x0040: NIL
-  0x0041: PUSH_VALUE [0]
-  0x0042: CLEAR_ARGS 2
+  0x0023: 14 02 02 02 00    DEFUN 2, 2, 2, 0
+  0x0028: 09 04 00          PUSH_G B
+  0x002b: 5c 00 00          GET_LOCAL_WIDE 0
+  0x002e: 09 03 00          PUSH_G +
+  0x0031: 5c 01 00          GET_LOCAL_WIDE 1
+  0x0034: 18 05 00          INIT_ARGS 5
+  0x0037: 03 04 00          PUSH_VALUE B
+  0x003a: 03 03 00          PUSH_VALUE +
+  0x003d: 35 02 01          USUBR 2, [1]
+  0x0040: 00                NIL
+  0x0041: 03                PUSH_VALUE [0]
+  0x0042: 19 02 00          CLEAR_ARGS 2
 .end_function
