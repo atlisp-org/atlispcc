@@ -127,19 +127,19 @@ make clean       # 清理构建产物与缓存
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 344 用例 + 1 skip 占位）：
-- `test_parser.py` — AST 解析器（19 用例）
+**测试文件在 `tests/` 目录下**（pytest 风格，共 348 用例 + 1 skip 占位）：
+- `test_parser.py` — AST 解析器（21 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
-- `test_cli.py` — CLI 路径（26 用例：compile/-O/--analyze/--report/validate/link/vlx/info/analyze/dispatch + validate 补强规则 + 源码编码检测）
-- `test_compile_decompile.py` — 编译-反编译往返（71 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
+- `test_cli.py` — CLI 路径（28 用例：compile/-O/--analyze/--report/validate/link/vlx/info/analyze/dispatch + validate 补强规则 + 源码编码检测 + 顶层 progn/条件 defun/atlisp_u 综合包编译）
+- `test_compile_decompile.py` — 编译-反编译往返（73 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
 - `test_compiler_output.py` — FAS 输出正确性（60 用例，含 7 对 CAD golden 逐字节比对 + t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（13 用例，含重名冲突警告 + 3 份 CAD golden byte-identity）
 - `test_assembler.py` — 反汇编/汇编往返（8 用例）
 - `test_disasm.py` — 反汇编健壮性（9 用例，含未处理操作码降级）
-- `test_resource_stream.py` — 资源码解析/资源段构建（24 用例：符号/字符串块、GVARINIT、DEFCODE、build_mvar_tables、资源码 vs 操作码区分）
+- `test_resource_stream.py` — 资源码解析/资源段构建（25 用例：符号/字符串块、GVARINIT、DEFCODE、build_mvar_tables、资源码 vs 操作码区分）
 - `test_packages.py` — CL 风格包系统（4 用例）
 - `test_vlx_builder.py` — VLX 容器（3 用例）
 - `test_variadic_args.py` — &optional/&rest 编译（17 用例，含多函数参数名恢复）
@@ -250,6 +250,18 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   - **t21 修正**（2026-08-08）：`t21-product` 原为 `(&optional factor &rest rest)`
     （min=0），触发 §3.5 CAD 硬性不收集 rest 限制。改为 `(factor &rest rest)`
     （min=1），CAD 真机 `(t21-product 2 3 4)` → 24。
+- **@lisp 综合包编译**（2026-08-11）：`tests/atlisp_u.lsp`（502 函数 + 221 顶层
+  语句 + 80 kwote 回调）编译产物在 CAD 真机**模块代码完整执行、功能全部可用**
+  （`@::safe-eval`/`define-config-typed`/`@::compat1` 等正常）。关键修复：
+  - 顶层 `(progn ...)` 展开、条件/嵌套 defun → `(setq f '(lambda ...))`、
+    多 kwote 改写（含 Cond 分支与嵌套递归）
+  - **commands + 顶层混合** gvar 槽重映射（`compiler/_gvar_map.py` 解析 seg1
+    模块注册段；`_offset_slots` 二次生成模块代码按实际槽位修正符号引用）
+  - **大文件 USUBR/FUNC 宽格式**：符号槽 >255 用 5 字节 USUBR
+    （`35 argc idx16 flags=3`）、6 字节 FUNC（`51 argc idx16 flags=1 00`），
+    小文件保持 3 字节（golden 逐字节不变）
+  - `top_level_count` 由收集器 `module_reg_count` 推导（避免顶层表达式引用
+    函数体符号时的高估）
 - i18n 混合模式拆件 p01-p07 全部 byte-identity（`tests/cad/i18n_split/`，seg0+seg1+nsyms
   对齐 CAD golden，2026-08-06）✅
   - p04-p07 关键修复：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）；

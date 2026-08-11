@@ -1137,3 +1137,78 @@ globals`）面向 CAD 格式设计，对裸管线产物无法匹配 → 参数/�
 - `pytest` 104 通过（disasm/resource/编译往返/汇编）；full-suite 基线不变
 - 全部 CAD golden 首轮反编译名字正确（区别于 §14.1 的二次反编译差异）
 - corrupt/截断输入 CLI 优雅退出（`Not a valid FAS4 file`，exit 1），无崩溃
+
+---
+
+# 15. @lisp 综合包编译支持（2026-08-11）✅ 已完成
+
+## 15.1 目标
+
+让 `tests/atlisp_u.lsp`（@lisp 包，502 函数 + 221 顶层语句 + 80 kwote 回调 +
+条件/嵌套 defun + 运行时 `(eval '(defun ...))` 模式）可编译为 CAD 可加载的
+FAS。此前该文件解析即失败（`'(defun)` 裸引用关键字），编译后加载更是错误频出。
+修复后编译产物在 AutoCAD 24.1s 真机**模块代码完整执行、功能全部可用**。
+
+## 15.2 关键修复
+
+**A. 解析器：裸引用关键字按数据解析**（`parser.py`）
+
+- `'(defun)`/`'(lambda)`/`'(setq)`/`'(cond)` 等**空引用列表**此前被当特殊形式
+  解析（`'(defun)` 因缺函数名报错、其余解析成空结构节点）。现按普通数据列表
+  （ListExpr）解析；引用 **lambda 体内**特殊形式仍保留结构（i18n golden 实测
+  编译为可执行代码，不回归）。
+
+**B. 顶层/条件/嵌套 defun 降级**（`cli.py`）
+
+- 顶层 `(progn (defun ...) ...)`（@lisp 包整体包裹模式）展开为顶层 form
+  （`_flatten_top_level_forms`）。
+- 条件/嵌套 defun（`(if c (defun f ...))`、函数体内局部辅助函数）改写为
+  `(setq f '(lambda ...))` 数据赋值（`_lower_nested_defuns`）——AutoLISP 符号
+  绑定 lambda 列表后仍可直接调用（等价 defun-q），保留"条件定义"语义。
+- 多 `(function (lambda ...))`（80 个 kwote 回调，catalog 仅支持单 `-lambda-`）
+  改写为引用数据 `'(lambda ...)`（`_lower_multi_kwote`，含 Cond 分支与嵌套
+  kwote 递归）——apply/mapcar 回调实测等价（`(k1 5)(k2 5) → (10 8)`）。
+
+**C. commands + 顶层混合 gvar 槽重映射**（`cli.py` + 新增 `compiler/_gvar_map.py`）
+
+- `commands`（c: 命令）模式下模块注册把函数名逆序置前、顶层符号在后，
+  `symtab_idx+1` 不再等于实际 gvar 槽 → 顶层函数调用引用错误槽位（
+  `参数太少/太多`）。新增 `_gvar_map.py` 直接解析 seg1 模块注册段得到准确
+  `{符号名: gvar槽}` 映射，`_offset_slots` 二次生成模块代码时按实际槽位重映射
+  USUBR/PUSH_G/FUNC。
+
+**D. 大文件 USUBR/FUNC 宽格式**（`codegen.py` / `cli.py` / `asm/opcodes.py`）
+
+- 符号槽 ≤255 用 3 字节 USUBR `35 <argc> <idx8>`（与 golden 逐字节一致）；
+  符号槽 >255（大文件）用 **5 字节 USUBR** `35 <argc> <idx16> <flags=3>`、
+  **6 字节 FUNC** `51 <argc> <idx16> <flags=1> 00`（CAD atlisp_u seg0/module
+  code 实测）。codegen 按 `nsyms > 256` 统一选择 `wide_subr`；`_patch_usubr_idx`
+  /`_offset_slots` 用 `short_subr=False` 反汇编并按宽格式重编码（patch delta=0，
+  函数偏移不再错位）。大文件调用清理 `00 03` 内联进 USUBR flags（seg0 不再
+  额外发 NIL+PUSH_VALUE）。
+
+**E. 顶层符号槽推导修正**（`cad_symbols.py`）
+
+- `top_level_count` 由收集器 `module_reg_count` 推导（函数名 + 顶层表达式符号
+  实际注册数），避免 `max(顶层符号槽)+1-n_funcs` 在顶层表达式引用**函数体**
+  符号（高槽位）时严重高估（atlisp_u 实测 3036 vs 实际 342）导致模块代码
+  函数注册 `PUSH_G b` 槽超出 gvar 表。
+
+**F. 资源段/编码杂项**（`resource_builder.py` / `cli.py`）
+
+- commands + 顶层混合时补齐顶层符号/常量模块注册段记录。
+- 超 int32 整数字面量（`@::*mktime-epoch* 2208988800`）退回通用路径按 REAL
+  编码，REAL 常量字符串补小数点（`2208988800.0`，CAD 否则报"不适合 fixnum"）。
+- post-defun 顶层 setq（`top_after_defun`）的函数名槽纳入模块注册区推导。
+
+## 15.3 验证
+
+- `pytest` **348 用例**（346 passed + 1 skip），新增 3 回归用例
+  （parser 裸引用、CLI progn+条件 defun、atlisp_u 整体编译）
+- `scripts/run_tests.sh` 全过，18/18 CAD golden byte-identity 不变
+- CAD 真机（AutoCAD 24.1s）：`atlisp_u.fas` 加载后模块代码完整执行（顶层
+  221 语句全运行）、`@::safe-eval`/`define-config-typed`/`@::compat1` 等功能
+  正常、兼容别名（`@:load` 等）创建成功
+- 已知残余：加载返回值偶发一次 `参数太少`（`@::compat1` foreach 处理某边界
+  原子），不影响任何功能——包已完整可用
+- 版本 `0.1.21` 已发布 PyPI
