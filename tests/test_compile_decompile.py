@@ -626,6 +626,20 @@ def test_t12_golden_global_setq_not_localized():
     assert "'(1 2 3)" in result
 
 
+def test_star_error_roundtrip():
+    """P0-A2/P1：`*error*` 错误处理函数编译/反编译/验证。
+
+    `*error*` 是 CAD 在错误时调用的特殊函数，作为独立 defun 编译；
+    反编译保留 `*error*` 名称与参数名。对应真机用例
+    `tests/cad/t24_star_error.lsp`（scripts/cad_verify.py）。
+    """
+    src = '(defun *error* (msg) (setq t24-error-msg msg) msg)'
+    result = compile_and_decompile(src)
+    assert '(defun *error* (msg' in result
+    ok, errs = _validate(result)
+    assert ok, f'Validation failed: {errs}'
+
+
 def test_t16_golden_foreach_arg_and_structure():
     """§10.4：t16 foreach 函数参数名 lst 恢复 + foreach 结构正确。"""
     golden = os.path.join(os.path.dirname(__file__), 'cad', 't16_foreach_cad.fas')

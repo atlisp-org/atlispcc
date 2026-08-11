@@ -4,13 +4,14 @@
 每个用例独立执行（编译 → 复制到 CAD → 加载 → 断言返回值），避免单个大脚本
 在 CAD 会话不稳定时整体中断（§3.7 安全策略）。
 
-覆盖 22 项：t01-t15 + t16_foreach/t17_repeat + t18 相互递归 +
+覆盖 24 项：t01-t15 + t16_foreach/t17_repeat + t18 相互递归 +
 t19_variadic（&optional/&rest）+ t20_kwote（`(function (lambda ...))` 内嵌
 函数）+ t21_variadic_extra（变参扩展：optional 缺省/rest 收集/组合）
-+ i18n（混合 defun+顶层+kwote，调 @::codepage2lang）。
++ i18n（混合 defun+顶层+kwote，调 @::codepage2lang）+ t22/t23 ActiveX/command
++ t24_star_error（`*error*` 错误处理函数）。
 
 用法:
-    python scripts/cad_verify.py           # 全量验证 22 项
+    python scripts/cad_verify.py           # 全量验证 24 项
     python scripts/cad_verify.py t01 t05   # 只验证指定项
 """
 import json
@@ -82,6 +83,12 @@ CASES = [
     # C2: command-s 交互执行真实 CAD 命令。创建圆 → 断言 entlast 为 CIRCLE →
     # 擦除，全部在 UNDO 组内自清理，不留新实体。
     ("t23_command", '(t23-created-circle-p)', True),
+    # C3: *error* 错误处理函数。直接调用编译好的 *error* 处理器（模拟 CAD 的
+    # 错误分发），断言消息被捕获——安全验证 *error* 编译产物运行正确，不触发
+    # 真实错误（避免破坏 CAD 会话，§3.7）。
+    ("t24_star_error",
+     '(list (t24-handler-test) t24-error-msg)',
+     ["handler-ran", "handler-ran"]),
 ]
 
 # 已知功能缺陷（混合模式，§8.C2 待修）：t10 的 get-version/hello 符号错位
