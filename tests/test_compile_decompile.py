@@ -611,7 +611,9 @@ def test_t12_golden_global_setq_not_localized():
     """§10.4：t12 全局 setq 目标不被误判为 `/ 局部变量`。
 
     `(defun test-quote () (setq lst '(a b c)))` 的 lst 是全局变量，函数
-    无 `/` 局部变量，不应输出 `/ lst`。
+    无 `/` 局部变量，不应输出 `/ lst`。同时验证 deferred 链式 quote 常量
+    解码：`(setq lst '(a b c))` 的链式 `(('CONS',22,31),('CONS',13,22),
+    ('CONS',0,13))`（module_id 槽）与 dotted `'(1 . 2)`。
     """
     golden = os.path.join(os.path.dirname(__file__), 'cad', 't12_quote_cad.fas')
     if not os.path.exists(golden):
@@ -619,6 +621,9 @@ def test_t12_golden_global_setq_not_localized():
     result = Fas4Decompiler().decompile(golden, None)
     assert '(defun test-quote ()' in result
     assert 'test-quote (/ lst' not in result
+    assert "(setq lst '(a b c))" in result, f'chain deferred quote lost: {result}'
+    assert "'(1 . 2)" in result, f'dotted quote misrendered: {result}'
+    assert "'(1 2 3)" in result
 
 
 def test_t16_golden_foreach_arg_and_structure():

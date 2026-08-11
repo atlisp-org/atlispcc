@@ -980,8 +980,14 @@ CAD 限制（CAD 对 `b4=01, min=0` 硬性不收集 rest，真机任何参数均
   （golden fixture `tests/cad/t11_localvars_cad.fas`）。`tests/cad/
   t11_localvars_cad_decompiled.lsp`（非测试引用的参考文件）已按当前输出重写。
   t12 的 quote 常量 `(setq lst 'a)`/`'(cons 1 2)` 属 deferred 常量链解码
-  （`_deref_deferred_constant` 仅处理单元素包裹），非 setq 顺序域，遗留与
-  `'(1 . 2)` 相同另出处理
+  （`_deref_deferred_constant` 仅处理单元素包裹），非 setq 顺序域。
+  **✅ 已解决（2026-08-11）**：根因是函数表 GVARINIT 的 **module_id 槽**
+  （`var_pos + st_init`）未被解析——`core/fas_core.py` 新增
+  `build_module_id_slots`（仅登记结构化 LIST/CONS module_id，原子型
+  SYMBOL/STRING 是符号槽重复不登记），反编译器 `_gvar_item` 越界查询该槽；
+  dotted 常量 `('CONS',1,2)` 由 `_render_data_item` 改渲染为 `(1 . 2)`。
+  回归：`test_module_id_slots_structured_only`、扩展
+  `test_t12_golden_global_setq_not_localized`（`'(a b c)` / `'(1 . 2)` / `'(1 2 3)`）。
 
 ### T6：`_render_block` 性能热点对齐
 

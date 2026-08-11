@@ -797,6 +797,33 @@ class LispGenerator:
             len(self.function_names_by_offset) > 1 or len(self.function_names_by_index) > 1
         )
 
+    def _stub_module_id_slots(self) -> Dict[int, Any]:
+        """stub 函数表 GVARINIT 的 module_id 槽 → 值映射。
+
+        CAD 的紧凑 stub 在函数表 GVARINIT（0x43，module_id 非 None）时把
+        module_id 值登记在 ``var_pos + st_init`` 槽。t12 的 `(A B C)` 常量
+        （`(setq lst '(a b c))`）即存于槽 5（nsyms=5，var_pos=0, st_init=5），
+        由 PUSH_G 4 经「槽 - 1」引用。
+
+        仅登记**结构化** module_id（LIST/CONS 等，非原子 SYMBOL/STRING）：
+        原子型（如单函数文件的字符串常量 'abc'、参数符号 A）是符号槽的重复
+        登记，若纳入会在 `_gvar_item` 的 mvar-1 分支抢先命中、破坏 symbol_slots
+        回退（t12 链式 `(a b c)` 是结构化常量需此槽；fun-cad 的 'abc' 走
+        symbol_slots）。返回 {槽: 值}。
+        """
+        cached = getattr(self, "_stub_module_id_slots_cache", None)
+        if cached is not None:
+            return cached
+        result: Dict[int, Any] = {}
+        try:
+            from core.fas_core import build_module_id_slots
+
+            result = build_module_id_slots(self.fas.sec2_data, self.fas.nsyms)
+        except Exception:
+            result = {}
+        self._stub_module_id_slots_cache = result
+        return result
+
     def _stub_extended_gvar(self) -> List[Any]:
         """stub 参数解析用的扩展 gvar 表：基础 gvar_table + symbol_slots 尾部
         未入表的参数/共享参数符号。
@@ -2614,6 +2641,13 @@ class LispGenerator:
                 if deref is not None and deref is not candidate:
                     result = deref
                     return result
+            # 函数表 GVARINIT 的 module_id 槽（var_pos+st_init）：结构化常量
+            # （t12 的 `(A B C)` 于槽 5，PUSH_G 4 经「槽 - 1」引用）。操作数
+            # idx 的 mvar-1 语义 = 槽 idx+1。仅在 gvar_table 越界（槽在 nsyms
+            # 之外、build_mvar_tables 表装不下）时查询，避免与表内 mvar-1
+            # 分支冲突。
+            if idx + 1 in self._stub_module_id_slots():
+                return self._stub_module_id_slots()[idx + 1]
             if 0 <= idx < len(self.symbol_slots):
                 return self.symbol_slots[idx]
             return None
@@ -2798,7 +2832,10 @@ class LispGenerator:
                 func_name = self._extract_symbol_text(value[1]) or self._extract_text(value[1]) or "fn"
                 return self._normalize_symbol(str(func_name), "fn", allow_command_prefix=True)
             if len(value) == 3 and value[0] == "CONS":
-                return f"(cons {self._render_data_item(value[1])} {self._render_data_item(value[2])})"
+                # 资源流的 CONS(0x2A) 构造的是 dotted pair 字面量 `(l . r)`
+                # （t12 `'(1 . 2)` 实测），非 `cons` 函数调用——函数调用走
+                # CALL 路径（USUBR cons）。渲染为 `(l . r)`。
+                return f"({self._render_data_item(value[1])} . {self._render_data_item(value[2])})"
             if len(value) == 5 and value[0] == "CALL":
                 func_name = self._extract_symbol_text(value[1]) or self._extract_text(value[1]) or f"gfun_{value[2]}"
                 args = [self._render_data_item(item) for item in value[4]]

@@ -265,6 +265,15 @@ compiler/资源段零改动，CAD byte-identity 18/18 不回归。完成项：
 | T6 | `_render_block` 性能热点 | 大样本 6.9s → 5.5s（`lru_cache` 缓存 `is_compact_stub`）；无残余热点 |
 | T7 | 回归与文档 | pytest 316 passed / 1 skipped；新增 4 项语义回归；新增 `docs/compilation-process.md` |
 
-**已知限制**（非本阶段范围）：t12 的 deferred 链式 quote 常量解码
+**已知限制**（非本阶段范围）：~~t12 的 deferred 链式 quote 常量解码
 （`(setq lst 'a)` 应为 `'(a b c)`、`'(cons 1 2)` 应为 `'(1 . 2)`）——
-`_deref_deferred_constant` 仅处理单元素包裹，多元素链式 tuple 未展开，另出处理。
+`_deref_deferred_constant` 仅处理单元素包裹，多元素链式 tuple 未展开，另出处理。~~
+
+**✅ 已解决（2026-08-11，P0-3）**：t12 deferred 链式 quote 常量解码已修复——
+根因是函数表 GVARINIT 的 **module_id 槽**（`var_pos + st_init`，结构化常量如
+`(A B C)`）未被解析。新增 `core.fas_core.build_module_id_slots`（仅登记结构化
+LIST/CONS module_id，原子型 SYMBOL/STRING 是符号槽重复不登记）+ 反编译器
+`_gvar_item` 越界查询该槽 → `(setq lst '(a b c))` 正确还原；dotted 常量
+`('CONS',1,2)` 由 `_render_data_item` 改渲染为 `(1 . 2)`（原误渲染 `(cons 1 2)`）。
+新增回归：`test_module_id_slots_structured_only` + 扩展
+`test_t12_golden_global_setq_not_localized`。

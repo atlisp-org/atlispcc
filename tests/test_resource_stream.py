@@ -19,6 +19,7 @@ import pytest
 from core.fas_core import (
     parse_resource_stream,
     build_mvar_tables,
+    build_module_id_slots,
     extract_symbol_names,
     parse_fas4,
 )
@@ -147,6 +148,30 @@ def test_mvar_tables_cons_list():
     stream = rb.build(func_offsets={}, module_code=b"", stub_format=True)
     rg, fg = build_mvar_tables(stream, 1)
     assert isinstance(rg, list)
+
+
+def test_module_id_slots_structured_only():
+    """build_module_id_slots 仅登记结构化 module_id（LIST/CONS）。
+
+    t12 的 `(a b c)` 链式 deferred 常量经函数表 GVARINIT module_id 登记在
+    var_pos+st_init 槽；原子型（SYMBOL/STRING）module_id 是符号槽重复，
+    不登记（否则 `_gvar_item` 的 mvar-1 分支抢先命中破坏 symbol_slots 回退）。
+    """
+    from decompiler.fas4_decompiler import Fas4Parser
+
+    p = Fas4Parser()
+    fas = p.parse(os.path.join(os.path.dirname(__file__), "cad", "t12_quote_cad.fas"))
+    slots = build_module_id_slots(fas.sec2_data, fas.nsyms)
+    # t12: nsyms=5, 函数表 GVARINIT var_pos=0 st_init=5 → module_id 槽 5
+    assert 5 in slots, f'expected structured module_id at slot 5, got {slots}'
+    value = slots[5]
+    assert isinstance(value, tuple) and len(value) == 3
+    assert [v[1] for v in value] == ["A", "B", "C"]
+
+    # 单函数文件：module_id 是字符串常量（原子型），不登记
+    fun = p.parse(os.path.join(os.path.dirname(__file__), "fun-cad.fas"))
+    fun_slots = build_module_id_slots(fun.sec2_data, fun.nsyms)
+    assert fun_slots == {}, f'atomic module_id should not be registered, got {fun_slots}'
 
 
 # ─── count_resource_records ──────────────────────────────────────────────────

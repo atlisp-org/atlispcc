@@ -559,6 +559,170 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
     return tables[0], tables[1]
 
 
+def build_module_id_slots(res_data: bytes, nsyms: int) -> dict:
+    """返回函数表 GVARINIT（module_id 非 None）的 module_id 槽映射。
+
+    CAD 紧凑 stub 的模块注册段：函数表 GVARINIT（0x43）弹出的 module_id
+    （栈顶值，非 None 时表为函数 gvar 表）登记在 ``var_pos + st_init`` 槽
+    （t12_quote 实测：`(A B C)` 常量存槽 5，PUSH_G 4 经「槽 - 1」引用之）。
+
+    仅返回**结构化** module_id（LIST/CONS/FUNC 等非原子）——原子型
+    （SYMBOL/STRING，如单函数文件的字符串常量、参数符号）是 symbol_slots
+    的重复登记，若纳入会在 `_gvar_item` 的 mvar-1 分支抢先命中、破坏
+    symbol_slots 回退。返回 {槽: 值}。
+    """
+    tables: dict = {0: [None] * nsyms, 1: [None] * nsyms}
+    stack: list = []
+    result: dict = {}
+
+    def table0(idx):
+        return tables[0][idx] if 0 <= idx < nsyms else None
+
+    def pop_default(default=None):
+        return stack.pop() if stack else default
+
+    def pop_many(count):
+        if count <= 0:
+            return []
+        if count > len(stack):
+            count = len(stack)
+        values = stack[-count:]
+        del stack[-count:]
+        return values
+
+    pos = 0
+    while pos < len(res_data):
+        op = res_data[pos]
+
+        if op in (0x00, 0x01):
+            stack.append(None)
+            pos += 1
+        elif op == 0x02:
+            stack.append(True)
+            pos += 1
+        elif op == 0x0A:
+            if stack:
+                stack.pop()
+            pos += 1
+        elif op == 0x0B:
+            if stack:
+                stack.append(stack[-1])
+            pos += 1
+        elif op in (0x14, 0x15):
+            if pos + 5 > len(res_data):
+                break
+            stack.append(("DEFHDR", tuple(res_data[pos + 1 : pos + 5])))
+            pos += 5
+        elif op in (0x03, 0x09):
+            if pos + 3 > len(res_data):
+                break
+            idx = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
+            stack.append(table0(idx))
+            pos += 3
+        elif op == 0x06:
+            if pos + 3 > len(res_data):
+                break
+            idx = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
+            if 0 <= idx < nsyms:
+                tables[0][idx] = pop_default()
+            pos += 3
+        elif op == 0x2A:
+            if len(stack) >= 2:
+                right = stack.pop()
+                left = stack.pop()
+                stack.append(("CONS", left, right))
+            pos += 1
+        elif op == 0x32:
+            if pos + 2 > len(res_data):
+                break
+            stack.append(struct.unpack("<b", res_data[pos + 1 : pos + 2])[0])
+            pos += 2
+        elif op == 0x33:
+            if pos + 5 > len(res_data):
+                break
+            stack.append(struct.unpack("<i", res_data[pos + 1 : pos + 5])[0])
+            pos += 5
+        elif op == 0x39:
+            if pos + 3 > len(res_data):
+                break
+            count = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
+            stack.append(tuple(pop_many(count)))
+            pos += 3
+        elif op == 0x43:
+            if pos + 5 > len(res_data):
+                break
+            var_pos = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
+            st_init = struct.unpack("<H", res_data[pos + 3 : pos + 5])[0]
+            module_id = stack.pop() if stack else None
+            table_idx = 0 if module_id is None else 1
+            if table_idx == 1:
+                mslot = var_pos + st_init
+                # 仅结构化 module_id（非原子 SYMBOL/STRING）登记：
+                # 原子型是符号槽重复，纳入会破坏 symbol_slots 回退。
+                is_atomic = isinstance(module_id, tuple) and len(module_id) == 2 and module_id[0] in ("SYMBOL", "STRING")
+                if module_id is not None and not is_atomic:
+                    result[mslot] = module_id
+            for idx in range(var_pos + st_init - 1, var_pos - 1, -1):
+                if not stack:
+                    break
+                value = stack.pop()
+                if 0 <= idx < nsyms:
+                    tables[table_idx][idx] = value
+            pos += 5
+        elif op in (0x56, 0x5B):
+            pos += 1
+            while pos < len(res_data):
+                end = res_data.find(b"\x00", pos)
+                if end < 0:
+                    break
+                sym = res_data[pos:end]
+                pos = end + 1
+                if not sym:
+                    break
+                stack.append(("SYMBOL", decode_fas_text(sym)))
+        elif op == 0x55:
+            pos += 1
+            if pos + 2 > len(res_data):
+                break
+            num_strings = struct.unpack("<H", res_data[pos : pos + 2])[0]
+            pos += 2
+            for _ in range(num_strings):
+                if pos + 2 > len(res_data):
+                    break
+                slen = struct.unpack("<H", res_data[pos : pos + 2])[0]
+                pos += 2
+                if pos + slen > len(res_data):
+                    break
+                s = res_data[pos : pos + slen]
+                pos += slen
+                stack.append(("STRING", decode_fas_text(s)))
+        elif op == 0x3A:
+            if len(stack) >= 3:
+                name = stack.pop()
+                start = stack.pop()
+                module = stack.pop()
+                stack.append(("FUNC", name, start, module))
+            pos += 1
+        elif op in (0x57, 0x67, 0x68, 0x69, 0x6A):
+            pos += 5
+        elif op in (0x05, 0x07, 0x0C, 0x0D, 0x0E, 0x1A, 0x1B, 0x37, 0x3C, 0x3D, 0x5C, 0x5D, 0x5E):
+            pos += 3
+        elif op in (0x1E, 0x1F):
+            pos += 2
+        elif op in (0x16, 0x1C, 0x20, 0x62, 0x63):
+            pos += 1
+        elif op == 0x3B:
+            end = res_data.find(b"\x00", pos + 1)
+            if end < 0:
+                break
+            stack.append(("REAL", decode_fas_text(res_data[pos + 1 : end])))
+            pos = end + 1
+        else:
+            pos += 1
+
+    return result
+
+
 def build_function_catalog(resource_gvars: list, function_gvars: list) -> list:
     """从两个 GVar 表中收集所有 FUNC 条目。
 
