@@ -453,6 +453,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - **P1 完成**：工具链健壮性修复落地；t-series byte-identity 回归（239 passed + 4 xfailed）；i18n roundtrip 用例通过；CI 绿
 - **P2 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过；多版本 CAD 兼容；大文件性能达标
 - **当前（2026-08-09）**：`pytest` **314 用例**（313 passed + 1 skip，无 xfail）；t-series byte-identity **18/18**（t01-t18，t22_activex 另锁入回归）；CAD 真机 **24/24**（`scripts/cad_verify.py`）；disasm→asm 往返 43 文件一致；性能基线见 `scripts/benchmark.py`
+- **当前（2026-08-11）**：`pytest` **344 用例**（343 passed + 1 skip，无 xfail）；t-series byte-identity **18/18** 不回归；**t12 链式 quote 常量解码修复**（`(setq lst '(a b c))` + dotted `'(1 . 2)`，见 §12T5）；**`*error*` 真机用例 t24_star_error**（cad_verify 覆盖 22→24 项）；zelx 15/15 样本 payload 复核一致；测试环境恢复（.venv 装 pytest，`PYTHON=.venv/bin/python` 可跑 `scripts/run_tests.sh`）
 
 ---
 
@@ -558,8 +559,8 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 | 任务 | 说明 |
 |------|------|
-| D1 复刻 ZWCAD 压缩重编码 | `zelx_build.py` 对小型/简单文件逐字节一致（15/15 样本）；复杂文件缺 ZWCAD 压缩重编码（模块代码重编码 + 符号重排）。对照 `docs/zelx-format.md` §5-§6 与 `tools/zelx_diff.py` 逆向 LispConverter.exe |
-| D2 ZELX 真实加载验证 | 现状标记"ZWCAD 能否加载需真实验证"；建立 ZWCAD 测试实例验证小型/复杂 zelx 加载 |
+| D1 复刻 ZWCAD 压缩重编码 | `zelx_build.py` 对小型/简单文件逐字节一致（15/15 样本，2026-08-11 复核：payload 解密后与官方 zelx 逐字节一致，含 asetq/astrcat/awhile/s3f/snest/sstr/szero/t1/tiny）；复杂文件缺 ZWCAD 压缩重编码（模块代码重编码 + 符号重排）。对照 `docs/zelx-format.md` §5-§6 与 `tools/zelx_diff.py` 逆向 LispConverter.exe。**阻塞**：复杂样本（base-whole/at-math/@lisp）与 ZWCAD/LispConverter 仅在 Windows 机器，本机（Linux，无 ZWCAD）无法产出/验证，需在 CAD 环境推进 |
+| D2 ZELX 真实加载验证 | 现状标记"ZWCAD 能否加载需真实验证"；建立 ZWCAD 测试实例验证小型/复杂 zelx 加载。**阻塞**：同 D1（需 ZWCAD 真机） |
 
 ### 8.E 执行顺序与验收
 

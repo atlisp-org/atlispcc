@@ -199,7 +199,7 @@ t19_variadic / t21_variadic_extra 有 17 个单测（`test_variadic_args.py`）+
 |---|---|---|
 | C1 | `vla-`/`vlax-` ActiveX 调用 | ✅ 已补测（roundtrip + cad_verify t22） |
 | C2 | `command` 交互调用 | ✅ 已补测（roundtrip + cad_verify t23） |
-| C3 | 多 CAD 版本（ZWCAD/ZRX）兼容矩阵 | 未执行 |
+| C3 | 多 CAD 版本（ZWCAD/ZRX）兼容矩阵 | 未执行（阻塞：需 ZWCAD/ZRX 真机，本机无） |
 | C4 | DCL/ODCL 对话框 | ✅ 已补测（roundtrip，纯测试） |
 
 ### C4 DCL/ODCL 对话框（已完成，纯测试）

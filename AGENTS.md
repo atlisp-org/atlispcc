@@ -127,7 +127,7 @@ make clean       # 清理构建产物与缓存
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 340 用例 + 1 skip 占位）：
+**测试文件在 `tests/` 目录下**（pytest 风格，共 344 用例 + 1 skip 占位）：
 - `test_parser.py` — AST 解析器（19 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
@@ -232,6 +232,9 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - **真机验证清单扩展至 24 项**（2026-08-08）：新增 t22_activex（`vla-`/`vlax-`
   ActiveX 只读断言）、t23_command（`command-s` 画圆→断言→擦除），**CAD 真机
   24/24 全过**。
+- **真机验证清单扩展至 25 项**（2026-08-11）：新增 t24_star_error（`*error*`
+  错误处理函数，直接调用编译产物模拟 CAD 错误分发，`tests/cad/t24_star_error.lsp`）。
+  `scripts/cad_verify.py` 覆盖 22→24→25 项（t24 真机待 CAD 复核）。
   - **t22 修复**（2026-08-08，真机暴露的编译 bug）：
     - vla- 符号名**保留大小写**（`vla-get-count`→符号槽 `vla-get-Count`，
       ActiveX 方法名大小写敏感；`vlax-` 保持小写）。`cad_symbols.normalize_vla_name`
