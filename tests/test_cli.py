@@ -319,3 +319,47 @@ def test_cmd_info_cli_json_dispatch(monkeypatch, capsys):
     out = capsys.readouterr().out
     data = _json.loads(out)
     assert data['file'].endswith('i18n-cad.fas')
+
+
+def test_compile_top_level_progn_and_conditional_defun():
+    """@lisp 包模式：顶层 `(progn ...)` 包裹 + 条件/嵌套 defun 可编译。
+
+    顶层 progn 展开提取 defun；`(if c (defun f ...))` 改写为
+    `(setq f '(lambda ...))`（AutoLISP 符号绑定 lambda 可调用，等价 defun-q）。
+    """
+    src = '''
+(progn
+  (defun add (a b) (+ a b))
+  (if (null add) (set 'add -))
+  (defun helper () (add 1 2)))
+(if (boundp 'extra)
+  (defun extra-fn (x) (* x 2)))
+(defun c:go () (extra-fn 3))
+'''
+    out = _tmp('progn_lower.fas')
+    try:
+        result = cmd_compile(src, out)
+        assert os.path.exists(result)
+        fas = Fas4Parser().parse(result)
+        assert len(fas.bytecode) > 0
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)
+
+
+def test_compile_atlisp_u_fixture():
+    """tests/atlisp_u.lsp（@lisp 综合包：顶层 progn + 条件/嵌套 defun +
+    引用数据特殊形式 + 超 int32 整数字面量）整体编译通过。"""
+    src = os.path.join('tests', 'atlisp_u.lsp')
+    if not os.path.exists(src):
+        pytest.skip('missing atlisp_u.lsp fixture')
+    out = _tmp('atlisp_u.fas')
+    try:
+        result = cmd_compile(src, out)
+        assert os.path.exists(result)
+        fas = Fas4Parser().parse(result)
+        assert len(fas.bytecode) > 0
+        assert fas.nsyms > 0
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)

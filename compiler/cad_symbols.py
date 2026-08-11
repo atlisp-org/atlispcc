@@ -135,6 +135,70 @@ def to_const(node):
         if any(i is None for i in items):
             return None
         return ('LIST', items)
+    if isinstance(node, Progn):
+        body = tuple(to_const(f) for f in node.forms)
+        if any(b is None for b in body):
+            return None
+        return ('LIST', (('SYMBOL', 'progn'),) + body)
+    if isinstance(node, Cond):
+        clauses = []
+        for c in node.clauses:
+            items = tuple(to_const(x) for x in c)
+            if any(i is None for i in items):
+                return None
+            clauses.append(('LIST', items))
+        return ('LIST', (('SYMBOL', 'cond'),) + tuple(clauses))
+    if isinstance(node, Setq):
+        # 引用数据里的 `(setq ...)`：`(SETQ T1 V1 T2 V2 ...)` 列表
+        items = [('SYMBOL', 'setq')]
+        for t, v in node.pairs:
+            tc = to_const(t)
+            vc = to_const(v) if v is not None else ('NIL',)
+            if tc is None or vc is None:
+                return None
+            items.append(tc)
+            items.append(vc)
+        return ('LIST', tuple(items))
+    if isinstance(node, WhileNode):
+        body = tuple(to_const(f) for f in node.body)
+        if any(b is None for b in body):
+            return None
+        c = to_const(node.cond)
+        if c is None:
+            return None
+        return ('LIST', (('SYMBOL', 'while'), c) + body)
+    if isinstance(node, ForeachNode):
+        body = tuple(to_const(f) for f in node.body)
+        if any(b is None for b in body):
+            return None
+        v = to_const(node.var)
+        lst = to_const(node.list_expr)
+        if v is None or lst is None:
+            return None
+        return ('LIST', (('SYMBOL', 'foreach'), v, lst) + body)
+    if isinstance(node, RepeatNode):
+        body = tuple(to_const(f) for f in node.body)
+        if any(b is None for b in body):
+            return None
+        c = to_const(node.count or Integer(0))
+        if c is None:
+            return None
+        return ('LIST', (('SYMBOL', 'repeat'), c) + body)
+    if isinstance(node, Defun):
+        # 引用数据里的 `(defun name (args) body...)`（如 install 里序列化的
+        # `'(progn (defun ...) ...)`）：整体作为列表常量
+        arg_items = [('SYMBOL', a) for a in node.args]
+        if node.optional:
+            arg_items += [('SYMBOL', '&optional')] + [('SYMBOL', a) for a in node.optional]
+        if node.rest:
+            arg_items += [('SYMBOL', '&rest'), ('SYMBOL', node.rest)]
+        if node.locals:
+            arg_items += [('SYMBOL', '/')] + [('SYMBOL', l) for l in node.locals]
+        body = tuple(to_const(b) for b in node.body)
+        if any(b is None for b in body):
+            return None
+        return ('LIST', (('SYMBOL', 'defun'), ('SYMBOL', node.name),
+                         ('LIST', tuple(arg_items))) + body)
     return None
 
 
@@ -173,6 +237,11 @@ class CadSymbolCollector:
         self._const_set = set()
         self.shared = set()
         self.func_names = set()
+        # 模块注册域符号数（_register_module 结束后立即记录）。该域 = 函数名 +
+        # 顶层表达式符号（entries 前 module_reg_count 项），`top_level_count`
+        # 应由它推导而非 `max(顶层符号槽)+1-n_funcs`——后者在顶层表达式引用
+        # 函数体符号（高槽位）时会严重高估（atlisp_u 实测 3036 vs 实际 342）。
+        self.module_reg_count = 0
 
     def add(self, name, force=False):
         if is_const_entry(name):
@@ -232,6 +301,7 @@ class CadSymbolCollector:
         #    `(set '_ @::_)` 的 `_` 排在模块注册最前（i18n-cad 实测）。
         #    纯函数文件（无顶层）退化为"函数名逆序"，与多函数实测一致。
         self._register_module(program)
+        self.module_reg_count = len(self.names)
 
         # 3. 函数体符号：按字节码引用序收集，逆序注册；唯一参数紧跟所属函数，
         #    共享参数注册在其源码序最先使用的函数之后。CAD 实测
@@ -328,6 +398,7 @@ class CadSymbolCollector:
         # 退化为：函数名字段为空 + 顶层 refs 全局逆序（setcmp/set5/setqa 实测）。
         if program and defuns:
             self._register_module(program)
+            self.module_reg_count = len(self.names)
         elif others:
             # 纯顶层文件：顶层 refs 按字节码引用序收集后全局逆序注册。
             refs = _SeenList()
@@ -335,6 +406,7 @@ class CadSymbolCollector:
                 self._collect_byteorder(form, refs, set())
             for name, force in reversed(refs):
                 self.add(name, force=force)
+            self.module_reg_count = len(self.names)
 
         # 3. 函数体符号：字节码引用序正序收集，逆序注册；参数最后（共享不特殊处理）。
         #    CAD 单函数参数槽逆序（实测 simple3/t13：`+ Z Y X`、`> C B A`——
@@ -743,4 +815,17 @@ def derive_symbol_names(program):
     字符串以 ``"value"`` 形式表示（含引号），符号为普通名字。
     """
     coll = CadSymbolCollector()
-    return coll.collect_program(program)
+    coll.collect_program(program)
+    return coll.names
+
+
+def module_reg_count(program) -> int:
+    """模块注册域符号数：函数名 + 顶层表达式符号。
+
+    模块注册区宽 = n_funcs + top_level_count。由收集器 _register_module
+    实际注册数推导，避免 `max(顶层符号槽)+1-n_funcs` 在顶层表达式引用
+    函数体符号时的高估（atlisp_u 实际 844 = 502 函数 + 342 顶层符号）。
+    """
+    coll = CadSymbolCollector()
+    coll.collect_program(program)
+    return coll.module_reg_count

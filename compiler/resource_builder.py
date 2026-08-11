@@ -31,6 +31,16 @@ def res_real_str(s: str) -> bytes:
     return bytes([0x3B]) + s.encode("utf-8") + b"\x00"
 
 
+def _real_fmt(v) -> str:
+    """实数常量字符串：CAD 资源流 `3B <ascii>` 按实数解析。`.15g` 对整数值
+    （如 2208988800.0）会输出 `2208988800`（无小数点），CAD 加载时当作整数
+    fixnum 报"不适合 fixnum"——须补 `.0` 使其成为合法实数表示。"""
+    s = f"{v:.15g}"
+    if not any(c in s for c in ".eE"):
+        s += ".0"
+    return s
+
+
 def res_gvar_init(var_pos: int, st_init: int) -> bytes:
     return bytes([0x43]) + res_u16(var_pos) + res_u16(st_init)
 
@@ -294,6 +304,7 @@ class ResourceBuilder:
             # CAD 模块注册：函数名（源码逆序）+ 顶层表达式符号，连续 SYMBOL 合并，
             # 遇 STRING 分块；PUSH_NIL + GVARINIT。
             module_entries = entries[: len(func_names_all) + top_level_count]
+            module_entries_count = len(module_entries)
             fn_bytes = bytearray()
             # 函数名（逆序）在前，其后是顶层符号（entries 顺序）。
             # 注意：cad_symbols 已把 entries 排为"源码逆序逐 form"（顶层与
@@ -308,7 +319,13 @@ class ResourceBuilder:
                     out += b"\x5b" + self._enc_sym(fname) + b"\x00\x00"
                     if i == 0:
                         out += b"\x56" + self._enc("vl-ACAD-defun") + b"\x00\x00"
-            for entry_type, entry_val in module_entries if not (commands and func_names_all) else ():
+                # 命令 + 顶层表达式混合：函数名已单独注册，跳过；其余顶层
+                # 符号/常量仍需登记（atlisp_u 实测），否则模块代码引用的
+                # gvar 槽无符号记录。GVARINIT 计数仍按完整 module_entries。
+                _cmd_names = {str(f).upper() for f in names}
+                module_entries = [e for e in module_entries
+                                  if not (e[0] == "SYMBOL" and str(e[1]).upper() in _cmd_names)]
+            for entry_type, entry_val in module_entries:
                 if entry_type == "SYMBOL":
                     fn_bytes += self._enc_sym(entry_val) + b"\x00"
                 elif entry_type == "STRING":
@@ -325,7 +342,7 @@ class ResourceBuilder:
             if fn_bytes:
                 out += b"\x5b" + bytes(fn_bytes) + b"\x00"
             out += b"\x01" * 2
-            out += res_gvar_init(0, len(module_entries) + 2 + commands) + b"\x0a"
+            out += res_gvar_init(0, module_entries_count + 2 + commands) + b"\x0a"
         else:
             self._push_entry(out, entries[0])
             out += b"\x01" * (entry_count - 1)
@@ -479,7 +496,7 @@ class ResourceBuilder:
             val = int(entry_val)
             out += res_int8(val) if -128 <= val <= 127 else res_int32(val)
         elif entry_type == "REAL":
-            out += res_real_str(f"{entry_val:.15g}")
+            out += res_real_str(_real_fmt(entry_val))
 
     def _const_bytes(self, structure) -> bytes:
         """把 CAD 常量结构序列化为资源流记录（CAD '(lambda ...) 实测）。
@@ -503,7 +520,7 @@ class ResourceBuilder:
             val = int(structure[1])
             out += res_int8(val) if -128 <= val <= 127 else res_int32(val)
         elif kind == "REAL":
-            out += res_real_str(f"{structure[1]:.15g}")
+            out += res_real_str(_real_fmt(structure[1]))
         elif kind == "STRING":
             encoded = self._enc(structure[1])
             out += b"\x55\x01\x00" + res_u16(len(encoded)) + encoded

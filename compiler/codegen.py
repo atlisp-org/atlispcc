@@ -168,6 +168,10 @@ class CodeGenerator:
         self.stub_format = stub_format
         # stub 格式参数绑定/读取：参数 i → nsyms-argc+i（最终经 _patch_usubr_idx 修正为 gvar_slot-1）
         self.nsyms = nsyms if nsyms >= 0 else len(symtab.entries)
+        # CAD 紧凑 stub 的 USUBR/FUNC：符号槽 ≤255 用 3 字节 `35 <argc> <idx8>`；
+        # 符号槽 >255（大文件，atlisp_u 实测）用 5 字节 `35 <argc> <idx16> <flags>`
+        # （CAD 大文件 seg0/module code 实测 idx 2537/1036）。按符号表规模统一选择。
+        self.wide_subr = stub_format and self.nsyms > 256
         self.local_slots: Dict[str, int] = {}
         self.next_slot = 0
         self.current_func_name: str = ""
@@ -198,15 +202,38 @@ class CodeGenerator:
         else:
             buf.emit(encode_usubr(argc, sym_idx))
 
+    def _emit_usubr(self, buf: BytecodeBuffer, argc: int, idx: int):
+        """stub USUBR：符号槽 ≤255 用 3 字节；>255（大文件）用 5 字节
+        `35 <argc> <idx16> <flags=3>`（CAD atlisp_u 实测）。"""
+        if self.wide_subr:
+            buf.emit(encode_usubr(argc, idx, flags=3))
+        else:
+            buf.emit(encode_usubr3(argc, idx))
+
+    def _emit_subr_cleanup(self, buf: BytecodeBuffer):
+        """调用后清理：小文件 `00 03`（NIL + PUSH_VALUE 0）；大文件 flags=3
+        已内联在 5 字节 USUBR 里，无需额外清理（CAD atlisp_u seg0/module code
+        实测 USUBR 后直接跟下一指令）。"""
+        if not self.wide_subr:
+            buf.emit(encode_op_noarg(0x00))
+            buf.emit(bytes([PUSH_VALUE]))
+
+    def _emit_func3(self, buf: BytecodeBuffer, argc: int, idx: int):
+        """stub FUNC：同 USUBR 的 3/5 字节选择。大文件 FUNC 6 字节
+        `51 <argc> <idx16> <flags=1> 00`（CAD atlisp_u 实测 flags=1）。"""
+        if self.wide_subr:
+            buf.emit(encode_func(argc, idx, flags=1))
+        else:
+            buf.emit(encode_func3(argc, idx))
+
     def _emit_arith(self, buf: BytecodeBuffer, op_name: str, args: List[Node]):
         if self.stub_format:
             with self._value_ctx():
                 for arg in args:
                     self._emit_expr(buf, arg)
             idx = self.symtab.get_or_add(op_name)
-            buf.emit(encode_usubr3(len(args), idx))
-            buf.emit(encode_op_noarg(0x00))
-            buf.emit(bytes([PUSH_VALUE]))
+            self._emit_usubr(buf, len(args), idx)
+            self._emit_subr_cleanup(buf)
             return
         fas_op = ARITH_OP_TO_FAS.get(op_name)
         if fas_op:
@@ -240,9 +267,8 @@ class CodeGenerator:
             with self._value_ctx():
                 self._emit_expr(buf, arg)
             idx = self.symtab.get_or_add(op_name)
-            buf.emit(encode_usubr3(1, idx))
-            buf.emit(encode_op_noarg(0x00))
-            buf.emit(bytes([PUSH_VALUE]))
+            self._emit_usubr(buf, 1, idx)
+            self._emit_subr_cleanup(buf)
             return
         fas_op = UNARY_OP_TO_FAS.get(op_name)
         if fas_op:
@@ -359,7 +385,7 @@ class CodeGenerator:
             if node.items and isinstance(node.items[0], LambdaNode):
                 self._emit_expr(buf, QuotedExpr(expr=self._lambda_list(node.items[0])))
                 self._emit_expr(buf, Call(name="list", args=node.items[1:]))
-                buf.emit(encode_func3(2, self.symtab.get_or_add("apply")))
+                self._emit_func3(buf, 2, self.symtab.get_or_add("apply"))
                 return
             if node.dotted is not None:
                 self._emit_expr(buf, node.dotted)
@@ -451,9 +477,8 @@ class CodeGenerator:
                 for arg in args:
                     self._emit_expr(buf, arg)
                 idx = self.symtab.get_or_add("list")
-                buf.emit(encode_usubr3(len(args), idx))
-                buf.emit(encode_op_noarg(0x00))
-                buf.emit(bytes([PUSH_VALUE]))
+                self._emit_usubr(buf, len(args), idx)
+                self._emit_subr_cleanup(buf)
                 return
             for arg in reversed(args):
                 self._emit_expr(buf, arg)
@@ -503,14 +528,13 @@ class CodeGenerator:
             for arg in args:
                 self._emit_expr(buf, arg)
         if self.stub_format:
-            buf.emit(encode_usubr3(len(args), idx))
+            self._emit_usubr(buf, len(args), idx)
             # CAD stub: 每次调用后 NIL + PUSH_VALUE[0]（结果清理/保留）
-            buf.emit(encode_op_noarg(0x00))
-            buf.emit(bytes([PUSH_VALUE]))
+            self._emit_subr_cleanup(buf)
         elif is_builtin:
-            buf.emit(encode_func3(len(args), idx))
+            self._emit_func3(buf, len(args), idx)
         else:
-            buf.emit(encode_usubr3(len(args), idx))
+            self._emit_usubr(buf, len(args), idx)
 
     def _emit_setq_expr(self, buf: BytecodeBuffer, target: Node, value: Node):
         if isinstance(target, Symbol):
@@ -995,6 +1019,59 @@ class CodeGenerator:
             for item in reversed(items):
                 self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
+        elif isinstance(node, IfNode):
+            items = [Symbol("if"), node.cond, node.then or Symbol("nil")]
+            if node.else_expr is not None:
+                items.append(node.else_expr)
+            for item in reversed(items):
+                self._emit_quoted(buf, item, skip_reg)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
+        elif isinstance(node, Progn):
+            items = [Symbol("progn")] + node.forms
+            for item in reversed(items):
+                self._emit_quoted(buf, item, skip_reg)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
+        elif isinstance(node, Cond):
+            items = [Symbol("cond")] + [ListExpr(items=list(c)) for c in node.clauses]
+            for item in reversed(items):
+                self._emit_quoted(buf, item, skip_reg)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
+        elif isinstance(node, Setq):
+            items = [Symbol("setq")]
+            for t, v in node.pairs:
+                items.append(t)
+                items.append(v if v is not None else Symbol("nil"))
+            for item in reversed(items):
+                self._emit_quoted(buf, item, skip_reg)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
+        elif isinstance(node, WhileNode):
+            items = [Symbol("while"), node.cond] + node.body
+            for item in reversed(items):
+                self._emit_quoted(buf, item, skip_reg)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
+        elif isinstance(node, ForeachNode):
+            items = [Symbol("foreach"), node.var, node.list_expr] + node.body
+            for item in reversed(items):
+                self._emit_quoted(buf, item, skip_reg)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
+        elif isinstance(node, RepeatNode):
+            items = [Symbol("repeat"), node.count or Integer(0)] + node.body
+            for item in reversed(items):
+                self._emit_quoted(buf, item, skip_reg)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
+        elif isinstance(node, Defun):
+            # 引用数据里的 `(defun name (args) body...)`：还原为数据列表
+            arg_items = [Symbol(a) for a in node.args]
+            if node.optional:
+                arg_items += [Symbol("&optional")] + [Symbol(a) for a in node.optional]
+            if node.rest:
+                arg_items += [Symbol("&rest"), Symbol(node.rest)]
+            if node.locals:
+                arg_items += [Symbol("/")] + [Symbol(l) for l in node.locals]
+            items = [Symbol("defun"), Symbol(node.name), ListExpr(items=arg_items)] + node.body
+            for item in reversed(items):
+                self._emit_quoted(buf, item, skip_reg)
+            buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         else:
             self._emit_expr(buf, node)
 
@@ -1046,9 +1123,14 @@ class CodeGenerator:
         self.current_func_args = saved_args
         self.current_func_name = saved_name
         buf.label(label_after)
-        self._nested_lambdas.append((nested_start, nested_end))
+        if not self._module_mode:
+            # 模块代码（seg1 顶层）里的 kwote 内嵌 `-lambda-` 不进 seg0 函数目录：
+            # `_nested_lambdas` 的偏移相对模块缓冲区，若混入会污染后续
+            # generate_function 的 catalog 偏移（atlisp_u 顶层 `(function
+            # (lambda ...))` 实测 89237 > seg0，触发 "Xsubr 偏移超出模块"）。
+            self._nested_lambdas.append((nested_start, nested_end))
         buf.emit(encode_op_u16(PUSH_G, lam_idx))
-        buf.emit(encode_func3(1, kwote_idx))
+        self._emit_func3(buf, 1, kwote_idx)
         buf.emit(encode_op_noarg(0x00))
         buf.emit(encode_op_noarg(PUSH_NIL))
         buf.emit(encode_op_noarg(0x00))
@@ -1108,7 +1190,7 @@ class CodeGenerator:
         al_idx = self.symtab.get_or_add("_al-bind-alist")
         if self.stub_format:
             buf.emit(encode_op_u16(PUSH_G, const_idx))
-            buf.emit(encode_func3(1, al_idx))
+            self._emit_func3(buf, 1, al_idx)
             buf.emit(encode_op_noarg(0x00))  # NIL
             buf.emit(encode_op_noarg(PUSH_NIL))  # PUSH_NIL
             buf.emit(encode_op_noarg(0x00))  # NIL

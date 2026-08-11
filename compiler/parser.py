@@ -75,6 +75,17 @@ class Parser:
         head = self.parse_form(quoted)
         if isinstance(head, Symbol):
             name = head.name
+            if quoted and self.peek()[0] == 'RPAREN' and name in (
+                'defun', 'defun-q', 'setq', 'if', 'while', 'foreach',
+                'repeat', 'progn', 'cond', 'defpackage', 'in-package',
+                'lambda', 'quote', 'function', 'set',
+            ):
+                # 裸引用关键字 `'(defun)`、`'(lambda)`、`'(setq)`、`'(cond)`
+                # 是普通数据列表（@::safe-form-p 白名单比对用），不按特殊形式
+                # 解析（否则 `'(defun)` 会因缺函数名报错、`'(lambda)`/`'(setq)`
+                # 会解析成空结构节点）。
+                self.expect('RPAREN')
+                return ListExpr(items=[head])
             if name == 'defun' or name == 'defun-q':
                 return self._parse_defun(name)
             elif name == 'setq':

@@ -9,7 +9,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from compiler.parser import Parser, ParseError
 from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
-from compiler.ast_nodes import Defun, Defpackage, InPackage, Setq
+from compiler.ast_nodes import (
+    Defun,
+    Defpackage,
+    InPackage,
+    Setq,
+    Progn,
+    IfNode,
+    WhileNode,
+    ForeachNode,
+    RepeatNode,
+    Cond,
+    Call,
+    LambdaNode,
+    ListExpr,
+    QuotedExpr,
+    Symbol,
+    Program,
+)
 from compiler.opt import optimize
 from compiler.resource_builder import (
     ResourceBuilder,
@@ -26,6 +43,240 @@ from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnal
 from tools.validate import validate_file
 
 ENCODE_POP = bytes([0x0A])
+
+
+def _flatten_top_level_forms(forms):
+    """展开顶层 `(progn ...)` 为其内部各 form。
+
+    AutoLISP 中顶层 progn 的 defun 与表达式等价于直接写在顶层（@lisp 包常
+    用 `(progn (defun ...) ...)` 整体包裹），编译时需先展开才能提取 defun。
+    仅展开顶层（递归处理嵌套顶层 progn），不触碰 defun 体内的 progn。
+    """
+    out = []
+    for f in forms:
+        if isinstance(f, Progn):
+            out.extend(_flatten_top_level_forms(f.forms))
+        else:
+            out.append(f)
+    return out
+
+
+def _lower_nested_defuns(forms):
+    """把非顶层位置的 defun（条件/嵌套函数定义）改写为 setq 引用的 lambda 数据。
+
+    形如 `(if c (defun f (args) body))`、`(if c (progn (defun f ...) ...))`
+    的运行时条件函数定义，编译器只支持顶层 defun。AutoLISP 中符号绑定
+    lambda 列表后仍可直接调用（等价 defun-q），故改写为
+    `(if c (setq f '(lambda (args) body)))`，保留"条件定义"语义，同时
+    复用成熟的引用常量机制（无嵌套 DEFUN/kwote 运行时注册问题）。
+    顶层 defun 保持函数定义不动。
+    """
+    from compiler.ast_nodes import Symbol as _Sym, Setq as _Setq
+    from compiler.ast_nodes import QuotedExpr as _Q, ListExpr as _L
+
+    def _as_lambda(f: Defun) -> _Q:
+        all_args = [Symbol(a) for a in f.args]
+        all_args += [Symbol(a) for a in f.optional]
+        if f.rest:
+            all_args += [Symbol("&rest"), Symbol(f.rest)]
+        if f.locals:
+            all_args += [Symbol("/")] + [Symbol(l) for l in f.locals]
+        return _Q(expr=_L(items=[Symbol("lambda"), _L(items=all_args)] + f.body))
+
+    def _rewrite(node):
+        if isinstance(node, Defun):
+            return _Setq(pairs=[(_Sym(node.name), _as_lambda(node))])
+        if isinstance(node, IfNode):
+            node.cond = _rewrite(node.cond)
+            node.then = _rewrite(node.then)
+            if node.else_expr is not None:
+                node.else_expr = _rewrite(node.else_expr)
+            return node
+        if isinstance(node, Progn):
+            node.forms = [_rewrite(f) for f in node.forms]
+            return node
+        if isinstance(node, Cond):
+            node.clauses = [tuple(_rewrite(x) for x in c) for c in node.clauses]
+            return node
+        if isinstance(node, Setq):
+            node.pairs = [
+                (_rewrite(t), None if v is None else _rewrite(v)) for t, v in node.pairs
+            ]
+            return node
+        if isinstance(node, Call):
+            node.args = [_rewrite(a) for a in node.args]
+            return node
+        if isinstance(node, WhileNode):
+            node.cond = _rewrite(node.cond)
+            node.body = [_rewrite(f) for f in node.body]
+            return node
+        if isinstance(node, ForeachNode):
+            node.list_expr = _rewrite(node.list_expr)
+            node.body = [_rewrite(f) for f in node.body]
+            return node
+        if isinstance(node, RepeatNode):
+            node.count = _rewrite(node.count)
+            node.body = [_rewrite(f) for f in node.body]
+            return node
+        if isinstance(node, ListExpr):
+            node.items = [_rewrite(f) for f in node.items]
+            return node
+        if isinstance(node, LambdaNode):
+            node.body = [_rewrite(f) for f in node.body]
+            return node
+        return node
+
+    out = []
+    for f in forms:
+        if isinstance(f, (Defpackage, InPackage)):
+            out.append(f)
+        elif isinstance(f, Defun):
+            # 顶层 defun 保持函数定义；其体内嵌套 defun（局部辅助函数模式）
+            # 同样改写为 setq 引用的 lambda 数据。
+            f.body = [_rewrite(b) for b in f.body]
+            out.append(f)
+        elif isinstance(f, QuotedExpr):
+            # 引用数据内的 `(defun ...)` 是数据（`'(defun)` 等），不改写
+            out.append(f)
+        else:
+            out.append(_rewrite(f))
+    return out
+
+
+def _count_kwote_lambdas(forms):
+    """统计程序中的 `(function (lambda ...))` 数量（kwote 机制每处需独立
+    `-lambda-` 槽；当前 catalog 仅支持 1 个，>1 时退回引用数据路径）。"""
+    from compiler.ast_nodes import LambdaNode as _Lam, QuotedExpr as _Q
+
+    n = [0]
+
+    def walk(node):
+        if isinstance(node, _Q) and node.kwote and isinstance(node.expr, _Lam):
+            n[0] += 1
+            return
+        if isinstance(node, Program):
+            for f in node.forms:
+                walk(f)
+        elif isinstance(node, (list, tuple)):
+            for x in node:
+                walk(x)
+        elif isinstance(node, ListExpr):
+            for x in node.items:
+                walk(x)
+        elif isinstance(node, Call):
+            for a in node.args:
+                walk(a)
+        elif isinstance(node, QuotedExpr):
+            walk(node.expr)
+        elif isinstance(node, Setq):
+            for t, v in node.pairs:
+                walk(t)
+                if v is not None:
+                    walk(v)
+        elif isinstance(node, Progn):
+            for f in node.forms:
+                walk(f)
+        elif isinstance(node, Cond):
+            for c in node.clauses:
+                for x in c:
+                    walk(x)
+        elif isinstance(node, IfNode):
+            walk(node.cond)
+            walk(node.then)
+            if node.else_expr is not None:
+                walk(node.else_expr)
+        elif isinstance(node, Defun):
+            for b in node.body:
+                walk(b)
+        elif isinstance(node, (WhileNode, ForeachNode, RepeatNode)):
+            for b in getattr(node, "body", []) or []:
+                walk(b)
+            # 循环的 条件/count/列表 表达式也可能含 kwote（@::panel-dcl-column
+            # 实测 `(repeat (- max-menus (length (vl-remove-if
+            # (function (lambda ...)) ...))) ...)` 的 kwote 在 count 中）。
+            if isinstance(node, WhileNode) and node.cond is not None:
+                walk(node.cond)
+            elif isinstance(node, RepeatNode) and node.count is not None:
+                walk(node.count)
+            elif isinstance(node, ForeachNode) and node.list_expr is not None:
+                walk(node.list_expr)
+        elif isinstance(node, LambdaNode):
+            for b in node.body:
+                walk(b)
+
+    walk(forms)
+    return n[0]
+
+
+def _lower_multi_kwote(forms):
+    """>1 个 `(function (lambda ...))` 时改写为引用数据 `'(lambda ...)`。
+
+    当前编译器的 kwote 机制只支持 1 个内嵌 `-lambda-` 函数（catalog 单槽）；
+    @lisp 包（atlisp_u）含 80 个 kwote 回调，多 `-lambda-` 目录缺失会导致
+    CAD 加载报 "函数错误"。AutoLISP 中符号绑定 lambda 列表可直接调用
+    （apply/mapcar 实测等价，t_data 验证），故改写为普通引用常量，复用成熟
+    的 to_const 路径。单 kwote 文件（i18n/t20）保持 kwote 机制不变。
+    """
+    if _count_kwote_lambdas(forms) <= 1:
+        return forms
+
+    def rewrite(node):
+        if isinstance(node, QuotedExpr) and node.kwote and isinstance(node.expr, LambdaNode):
+            # 转为引用数据后仍需递归处理 lambda 体内嵌套的 kwote（如
+            # `(mapcar (function (lambda (...) (length (vl-remove-if
+            # (function (lambda ...)) ...)))) ...)` 体内再套 kwote）。
+            lam = node.expr
+            lam.body = [rewrite(b) for b in lam.body]
+            return QuotedExpr(expr=lam, kwote=False)
+        if isinstance(node, Program):
+            node.forms = [rewrite(f) for f in node.forms]
+            return node
+        if isinstance(node, (list, tuple)):
+            return [rewrite(x) for x in node]
+        if isinstance(node, ListExpr):
+            node.items = [rewrite(x) for x in node.items]
+            return node
+        if isinstance(node, Call):
+            node.args = [rewrite(a) for a in node.args]
+            return node
+        if isinstance(node, QuotedExpr):
+            node.expr = rewrite(node.expr)
+            return node
+        if isinstance(node, Setq):
+            node.pairs = [
+                (rewrite(t), None if v is None else rewrite(v)) for t, v in node.pairs
+            ]
+            return node
+        if isinstance(node, Progn):
+            node.forms = [rewrite(f) for f in node.forms]
+            return node
+        if isinstance(node, Cond):
+            node.clauses = [tuple(rewrite(x) for x in c) for c in node.clauses]
+            return node
+        if isinstance(node, IfNode):
+            node.cond = rewrite(node.cond)
+            node.then = rewrite(node.then)
+            if node.else_expr is not None:
+                node.else_expr = rewrite(node.else_expr)
+            return node
+        if isinstance(node, Defun):
+            node.body = [rewrite(b) for b in node.body]
+            return node
+        if isinstance(node, (WhileNode, ForeachNode, RepeatNode)):
+            node.body = [rewrite(b) for b in node.body]
+            if isinstance(node, WhileNode) and node.cond is not None:
+                node.cond = rewrite(node.cond)
+            elif isinstance(node, RepeatNode) and node.count is not None:
+                node.count = rewrite(node.count)
+            elif isinstance(node, ForeachNode) and node.list_expr is not None:
+                node.list_expr = rewrite(node.list_expr)
+            return node
+        if isinstance(node, LambdaNode):
+            node.body = [rewrite(b) for b in node.body]
+            return node
+        return node
+
+    return [rewrite(f) for f in forms]
 
 
 def _collect_builtins_for_stub(symtab, node):
@@ -96,6 +347,18 @@ def _collect_builtins_for_stub(symtab, node):
             _collect_builtins_for_stub(symtab, expr)
 
 
+def _subr_bytes(opcode: int, argc: int, idx: int, flags: int = 3, wide: bool = False) -> bytes:
+    """stub USUBR/FUNC 编码：小文件 3 字节 `op <argc> <idx8>`；
+    大文件（idx>255）USUBR 5 字节 `35 <argc> <idx16> <flags=3>`、FUNC 6 字节
+    `51 <argc> <idx16> <flags=1> 00`（CAD atlisp_u 实测 USUBR flags=3、
+    FUNC flags=1 + 尾 0）。"""
+    if wide or idx > 255:
+        if opcode == 0x51:
+            return bytes([opcode, argc & 0xFF, idx & 0xFF, (idx >> 8) & 0xFF, flags & 0xFF, 0])
+        return bytes([opcode, argc & 0xFF, idx & 0xFF, (idx >> 8) & 0xFF, flags & 0xFF])
+    return bytes([opcode, argc & 0xFF, idx & 0xFF])
+
+
 def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: int = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
@@ -156,8 +419,11 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         return seg0
     from decompiler.fas4_decompiler import Disassembler
 
+    # 大文件（nsyms>256）：CAD 用 5 字节 USUBR/FUNC（idx16 + flags=3），
+    # 反汇编须用 short_subr=False；小文件保持 3 字节（与 golden 逐字节一致）。
+    wide = nsyms > 256
     try:
-        insts = Disassembler(short_subr=True).disassemble(seg0, nsyms, sym_count=len(symtab.entries))
+        insts = Disassembler(short_subr=not wide).disassemble(seg0, nsyms, sym_count=len(symtab.entries))
     except Exception:
         return seg0
 
@@ -297,17 +563,18 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     continue
         elif inst.op_name == "USUBR" and len(inst.operands) >= 2:
             argc, idx = inst.operands[0], inst.operands[1]
+            flags = inst.operands[2] if len(inst.operands) >= 3 else 3
             sym = sym_of(idx)
             if sym and sym in gvar_map:
                 new_idx = gvar_map[sym] - 1 - offset
-                out += bytes([0x35, argc & 0xFF, new_idx & 0xFF])
+                out += _subr_bytes(0x35, argc, new_idx, flags, wide=wide)
             elif sym and 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
                 # 符号槽末尾（超出 gvar 表，fg 仅 nsyms 项）的符号：CAD 按
                 # gvar 槽 = nsyms 编址（t22 实测 vlax-get-acad-object 操作数 11 =
                 # nsyms-1，符号槽末尾注册），USUBR 操作数 = nsyms - 1。
                 new_idx = nsyms - 1 - offset
-                if 0 <= new_idx <= 0xFF:
-                    out += bytes([0x35, argc & 0xFF, new_idx & 0xFF])
+                if 0 <= new_idx <= 0xFFFF:
+                    out += _subr_bytes(0x35, argc, new_idx, flags, wide=wide)
                 else:
                     out += seg0[inst.offset : inst.offset + inst.size]
             else:
@@ -317,15 +584,16 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             # FUNC 第二个操作数为符号引用（gvar 槽 - 1，同 USUBR）。i18n 实测
             # `_al-bind-alist` 调用 FUNC[1,84]（gvar 槽 86 → 84，kwote offset=1）。
             argc, idx = inst.operands[0], inst.operands[1]
+            flags = inst.operands[2] if len(inst.operands) >= 3 else 3
             sym = sym_of(idx)
             if sym and sym in gvar_map:
                 new_idx = gvar_map[sym] - 1 - offset
-                out += bytes([0x51, argc & 0xFF, new_idx & 0xFF])
+                out += _subr_bytes(0x51, argc, new_idx, flags, wide=wide)
             elif sym and 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
                 # 同 USUBR：符号槽末尾（超出 gvar 表）的 FUNC 目标 gvar 槽 = nsyms。
                 new_idx = nsyms - 1 - offset
-                if 0 <= new_idx <= 0xFF:
-                    out += bytes([0x51, argc & 0xFF, new_idx & 0xFF])
+                if 0 <= new_idx <= 0xFFFF:
+                    out += _subr_bytes(0x51, argc, new_idx, flags, wide=wide)
                 else:
                     out += seg0[inst.offset : inst.offset + inst.size]
             else:
@@ -345,6 +613,7 @@ def _build_cad_module_code(
     func_names: object = (),
     n_post_forms: int = 0,
     n_globals: int = 0,
+    gvar_map: object = None,
 ) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
@@ -393,6 +662,10 @@ def _build_cad_module_code(
         """
         from compiler.ast_nodes import Symbol, String as _Str, Integer as _Int
 
+        # gvar_map（二次生成）时：模块代码符号引用按资源流实际 gvar 槽重映射。
+        _gvar = gvar_map
+        _symtab = symtab if _gvar else None
+
         cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
         # 模块代码上下文：顶层 if-then 的 setq 需 DUP、无 else if 补 PUSH_NIL
         # （CAD 模块代码实测 `0b 06` / `01 0a`，i18n-cad）。
@@ -425,8 +698,11 @@ def _build_cad_module_code(
                         val = value.value
                         if -128 <= val <= 127:
                             pre += bytes([0x32, val & 0xFF])  # PUSH_INT8
+                        elif -2147483648 <= val <= 2147483647:
+                            pre += bytes([0x33]) + struct.pack("<i", val)  # PUSH_INT32
                         else:
-                            pre += struct.pack("<Bi", 0x33, val)  # PUSH_INT32
+                            # 超出 int32 范围：codegen 会按 REAL 编码，退回通用路径
+                            break
                         v_ok = True
                     else:
                         v_idx = _slot_of(symtab, value)
@@ -470,7 +746,7 @@ def _build_cad_module_code(
                     _setq_off = _i.offset
             if _setq_off is not None:
                 bc = bc[:_setq_off] + b"\x0b" + bc[_setq_off:]
-        return _offset_slots(bc, len(symtab.entries))
+        return _offset_slots(bc, len(symtab.entries), gvar_map=_gvar, symtab=_symtab)
 
     def _emit_stmts(forms, last_no_pop: bool):
         """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。"""
@@ -555,34 +831,68 @@ def _is_empty_quote(node) -> bool:
     return isinstance(node, QuotedExpr) and isinstance(node.expr, ListExpr) and not node.expr.items
 
 
-def _offset_slots(bc: bytes, n_sym: int) -> bytes:
+def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None) -> bytes:
     """把字节码中的符号槽引用 +1（CAD 模块代码用 gvar 槽 = 符号槽+1）。
 
     处理 PUSH_G(0x09)/PUSH_VALUE(0x03)/SETQ_G(0x06)/USUBR(0x35) 的符号槽。
     stub 的 PUSH_VALUE[0]（单字节 ``03``）与调用后清理序列 ``00 03`` 不偏移。
+
+    gvar_map 提供时（模块代码二次生成）：按资源流实际 gvar 槽重映射符号引用。
+    commands 混合模式（atlisp_u）下模块注册把函数名逆序置前、顶层符号在后，
+    ``symtab_idx+1`` 不再等于实际 gvar 槽，须用资源段 GVARINIT 重建的
+    ``{符号名大写: gvar槽}`` 修正（否则顶层函数调用 USUBR 引用错误槽位）。
     """
     from decompiler.fas4_decompiler import Disassembler
 
-    dis = Disassembler(short_subr=True)
+    # 大文件（nsyms>256）模块代码 USUBR 为 5 字节（idx16+flags），须用
+    # short_subr=False 反汇编并按 5 字节重编码（与 codegen wide_subr 一致）。
+    wide = n_sym > 256
+    dis = Disassembler(short_subr=not wide)
     try:
         insts = dis.disassemble(bc, n_sym, sym_count=n_sym)
     except Exception:
         return bc
+
+    def _slot_for(idx):
+        """symtab idx → 实际 gvar 槽（经 gvar_map）；查不到返回 None。"""
+        if gvar_map and symtab is not None and 0 <= idx < len(symtab.entries):
+            _t, _v = symtab.entries[idx]
+            if _t in ("SYMBOL", "STRING"):
+                return gvar_map.get(str(_v).upper())
+        return None
+
     out = bytearray()
     for inst in insts:
         name = inst.op_name
         raw = bc[inst.offset : inst.offset + inst.size]
         if name == "USUBR" and len(inst.operands) >= 2:
-            out += bytes([0x35, inst.operands[0] & 0xFF, (inst.operands[1] + 1) & 0xFF])
+            slot = _slot_for(inst.operands[1])
+            if slot is not None:
+                out += _subr_bytes(0x35, inst.operands[0], slot, flags=3, wide=wide)
+            else:
+                out += _subr_bytes(0x35, inst.operands[0], inst.operands[1] + 1, flags=3, wide=wide)
+        elif name == "FUNC" and len(inst.operands) >= 2:
+            slot = _slot_for(inst.operands[1])
+            if slot is not None:
+                out += _subr_bytes(0x51, inst.operands[0], slot, flags=1, wide=wide)
+            else:
+                out += _subr_bytes(0x51, inst.operands[0], inst.operands[1] + 1, flags=1, wide=wide)
         elif name in ("PUSH_G", "SETQ_G", "PUSH_G_ALT") and len(inst.operands) >= 1:
-            idx = inst.operands[0] + 1
-            out += bytes([raw[0]]) + struct.pack("<H", idx)
+            slot = _slot_for(inst.operands[0])
+            if slot is not None:
+                out += bytes([raw[0]]) + struct.pack("<H", slot)
+            else:
+                out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1)
         elif name == "PUSH_VALUE":
             # stub：PUSH_VALUE[0] 单字节 03；idx>0 为 3 字节。
             if len(inst.operands) == 1 and inst.operands[0] == 0 and inst.size == 1:
                 out += raw  # 单字节 PUSH_VALUE[0]（调用后清理），不偏移
             elif len(inst.operands) == 1:
-                out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1)
+                slot = _slot_for(inst.operands[0])
+                if slot is not None:
+                    out += bytes([raw[0]]) + struct.pack("<H", slot)
+                else:
+                    out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1)
             else:
                 out += raw
         else:
@@ -763,6 +1073,13 @@ def cmd_compile(
         print(f"Parse error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # 顶层 `(progn ...)`（@lisp 包整体包裹模式）展开后再提取 defun/顶层表达式
+    program.forms = _flatten_top_level_forms(program.forms)
+    # 条件/嵌套 defun（`(if c (defun f () ...))`）改写为 `(setq f '(lambda ...))`
+    program.forms = _lower_nested_defuns(program.forms)
+    # 多 `(function (lambda ...))`（>1）改写为引用数据 `'(lambda ...)`
+    program.forms = _lower_multi_kwote(program.forms)
+
     package_table = parser_obj.packages
 
     need_stats = show_analysis or bool(report_json)
@@ -849,13 +1166,27 @@ def cmd_compile(
             _top_slots.append(symtab.name_to_idx[s])
         elif f"__str_{s}__" in symtab.name_to_idx:
             _top_slots.append(symtab.name_to_idx[f"__str_{s}__"])
-    # CAD 按"最高顶层符号槽号 + 1"计模块注册区宽，const/defun 名等内部槽
-    # 一并覆盖（i18n ap03 实测 syscodepage const@idx2 使 @::*I18N* 槽到 idx9，
-    # count 应为 max+1 而非顶层去重符号数）。
-    if _top_slots:
-        top_level_count = max(_top_slots) + 1 - len(defun_forms)
+    # CAD 模块注册区宽 = 函数名数 + 顶层表达式符号数。由收集器 _register_module
+    # 实际注册数推导（module_reg_count = n_funcs + top_level_count）。
+    # 不能用 `max(顶层符号槽)+1-n_funcs`：顶层表达式若引用**函数体**符号
+    # （高槽位）会严重高估（atlisp_u 实测 3036 vs 实际 342），导致模块代码
+    # 函数注册 `PUSH_G b` 槽超出 gvar 表、CAD 不执行模块代码。
+    from compiler.cad_symbols import module_reg_count as _mrc
+
+    if defun_forms:
+        # 模块注册区 = n_funcs + top_level_count。由收集器 _register_module
+        # 实际注册数推导。不能用 `max(顶层符号槽)+1-n_funcs`：顶层表达式若
+        # 引用**函数体**符号（高槽位）会严重高估（atlisp_u 实测 3036 vs
+        # 实际 342），导致模块代码函数注册 `PUSH_G b` 槽超出 gvar 表、
+        # CAD 不执行模块代码。
+        top_level_count = max(0, _mrc(program) - len(defun_forms))
     else:
-        top_level_count = 0
+        # 纯顶层文件：无函数体符号污染，`max(顶层槽)+1` 与 golden 一致
+        # （setqa/setcmp/p01 实测）。
+        if _top_slots:
+            top_level_count = max(_top_slots) + 1
+        else:
+            top_level_count = 0
 
     codegen_nsyms = len(symtab.entries) - len(defun_forms) - top_level_count + 1
     codegen = CodeGenerator(symtab, stub_format=True, defined_funcs=[f.name for f in defun_forms], nsyms=codegen_nsyms)
@@ -996,6 +1327,30 @@ def cmd_compile(
         commands=n_cmds,
         nested_ends=nested_ends,
     )
+    # commands + 顶层混合模式：模块注册把函数名逆序置前、顶层符号在后，
+    # 模块代码符号引用（USUBR/PUSH_G）的 `symtab_idx+1` 不再等于实际 gvar 槽，
+    # 顶层函数调用会引用错误槽位（atlisp_u 实测 @::poll-wxid 应为 114 而非
+    # 248）。用第一轮 seg1 重建 gvar 表，重映射符号引用后二次生成模块代码。
+    if n_cmds and other_forms:
+        try:
+            from compiler._gvar_map import build_module_gvar_map
+
+            gvar_map = build_module_gvar_map(seg1)
+        except Exception:
+            gvar_map = None
+        if gvar_map:
+            module_code = _build_cad_module_code(
+                top_level_code,
+                symtab,
+                other_forms,
+                n_funcs=len(defun_forms),
+                top_level_count=top_level_count,
+                top_after_defun=_top_after_defun,
+                func_names=[f.name for f in defun_forms],
+                n_post_forms=_n_post_forms,
+                n_globals=_n_globals,
+                gvar_map=gvar_map,
+            )
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args, codegen_nsyms=codegen_nsyms)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(

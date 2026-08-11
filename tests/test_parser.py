@@ -213,3 +213,33 @@ def test_parse_quoted_dotted_data():
     assert inner.dotted is not None
     assert isinstance(inner.dotted, Symbol) and inner.dotted.name == 'b'
     assert len(inner.items) == 1 and inner.items[0].name == 'a'
+
+
+def test_parse_quoted_bare_special_forms_are_data():
+    """裸引用关键字 `'(defun)`/`'(lambda)`/`'(setq)`/`'(cond)` 是普通数据列表，
+    不按特殊形式解析（`'(defun)` 曾因缺函数名报错，其余曾解析为空结构节点）。"""
+    from compiler.ast_nodes import QuotedExpr, ListExpr, Symbol
+    for expr, kw in [("'(defun)", 'defun'), ("'(lambda)", 'lambda'),
+                     ("'(setq)", 'setq'), ("'(cond)", 'cond')]:
+        p = Parser("(defun f () (setq wl '(x)) (member fn %s))" % expr)
+        # 直接解析裸引用：`(defun f () (setq wl '(x)) ...)` 里的引用在语句中
+        q = Parser(expr).parse().forms[0]
+        assert isinstance(q, QuotedExpr)
+        inner = q.expr
+        assert isinstance(inner, ListExpr), f'{expr} -> {type(inner).__name__}'
+        assert len(inner.items) == 1
+        assert isinstance(inner.items[0], Symbol) and inner.items[0].name == kw
+
+
+def test_parse_quoted_lambda_body_keeps_special_forms():
+    """引用 lambda 体内特殊形式保留结构节点（编译为可执行代码，i18n load-mt
+    实测），不被当作数据列表展开。"""
+    from compiler.ast_nodes import QuotedExpr, LambdaNode, IfNode, Setq
+    p = Parser("(defun f (x) (function (lambda (y) (if (= x 1) (setq y 2)))))")
+    f = p.parse().forms[0]
+    q = f.body[0]
+    assert isinstance(q, QuotedExpr)
+    lam = q.expr
+    assert isinstance(lam, LambdaNode)
+    assert isinstance(lam.body[0], IfNode)
+    assert isinstance(lam.body[0].then, Setq)
