@@ -238,6 +238,7 @@ class ResourceBuilder:
         top_level_count: int = 0,
         commands: int = 0,
         nested_ends: Optional[Dict[int, int]] = None,
+        top_lambda_body_syms: object = None,
     ) -> bytes:
         """构建与 AutoCAD 编译器一致的 seg1 资源流。
 
@@ -260,7 +261,14 @@ class ResourceBuilder:
         # （源码逆序，字符串紧跟其符号）+ PUSH_NIL + GVARINIT(0,n+2) + POP
         # + NIL/LOCAL + GVARINIT(0,1) + POP + NIL + GVARINIT(n+2,0) + INIT_DONE
         # + 模块代码。不生成 DEFCODE。
-        if stub_format and not func_offsets:
+        # 含顶层 `(set/setq 'sym (lambda ...))` 时（func_offsets 仅 `-lambda-`
+        # 键，seg0 为内嵌 `-lambda-` 紧凑 stub），CAD 在末尾追加
+        # `-lambda-` DEFCODE 区：lambda 体常量 + `-lambda-` DEFCODE + 末尾槽
+        # GVARINIT，使 `-lambda-` 注册为可调用 SUBR（bootstrap/tlrep 实测）。
+        _only_lambda_keys = func_offsets and all(
+            ResourceBuilder._is_lambda_key(k) for k in func_offsets
+        )
+        if stub_format and (not func_offsets or _only_lambda_keys):
             out += b"\x14\x01\x01\x01\x00"
             mc_len = len(module_code)
             out += self._code_ref_bytes(mc_len)
@@ -285,6 +293,48 @@ class ResourceBuilder:
                 out += b"\x5b" + bytes(sym_buf) + b"\x00"
             out += b"\x01" * 2
             out += res_gvar_init(0, entry_count + 2) + b"\x0a"
+            if _only_lambda_keys:
+                # CAD 纯顶层 + `-lambda-`（tlrep 实测 offset 98-142）：
+                #   INT8 0; INT8 <total_size>; CONS; BUILD_LIST 1; SYMBOL <lambda体符号>
+                #   GET_LOCAL; GVARINIT(0,2); POP
+                #   GET_LOCAL; INT8 <seg0-offset>; SYMBOL -lambda-; DEFCODE
+                #   NIL; GVARINIT(<模块符号数>,1)
+                # `INT8 0; INT8 <total>; CONS` = (0 . total_size) 代码引用，
+                # BUILD_LIST 1 后接 lambda 体符号（模块注册最后符号 = 顶层
+                # 符号数 + 1 槽）。
+                # lambda 体符号 = entries 末尾的顶层表达式符号（CAD tlrep 为
+                # `@::*X*`）。seg0 stub 的 PUSH_VALUE 引用该槽。
+                _total = total_size if total_size else 1
+                # `INT8 0; INT8/INT32 <total>; CONS; BUILD_LIST 1`：
+                # (0 . total_size) 代码引用。total 可能超 127（大 lambda 体）。
+                if -128 <= _total <= 127:
+                    out += b"\x32\x00" + bytes([0x32, _total & 0xFF]) + b"\x2a\x39\x01\x00"
+                else:
+                    out += b"\x32\x00" + bytes([0x33]) + struct.pack("<i", _total) + b"\x2a\x39\x01\x00"
+                # lambda 体符号（CAD 用顶层 lambda 体引用的符号，tlrep/bootstrap
+                # 为 `@::*X*`/`@::*ACADVER*`）。由 cli 传入（top_lambda_body_syms）。
+                if top_lambda_body_syms:
+                    _last_sym = top_lambda_body_syms[0]
+                elif entries:
+                    _last_sym = self._entry_name(entries[-1])
+                else:
+                    _last_sym = "-lambda-"
+                out += b"\x5b" + self._enc_sym(_last_sym) + b"\x00\x00"
+                out += b"\x5c\x00\x00" + res_gvar_init(0, 2) + b"\x0a"
+                out += b"\x5c\x00\x00"
+                # -lambda- 的 seg0 offset（func_offsets 第一个键）
+                _lam_off = next(iter(func_offsets.values()))
+                if -128 <= _lam_off <= 127:
+                    out += b"\x32" + bytes([_lam_off & 0xFF])
+                else:
+                    out += res_int32(_lam_off)
+                out += b"\x5b" + self._enc("-lambda-") + b"\x00\x00" + b"\x3a"
+                # `-lambda-` 注册到末尾 gvar 槽 = entry_count+2（CAD 实测
+                # bootstrap GVARINIT(41,1)，与主 GVARINIT(0,41) 同值）。
+                out += b"\x01" + res_gvar_init(entry_count + 2, 1)
+                out += b"\x1c"
+                out += module_code
+                return bytes(out)
             out += b"\x01\x5c\x00\x00"
             out += res_gvar_init(0, 1) + b"\x0a"
             out += b"\x01" + res_gvar_init(entry_count + 2, 0)

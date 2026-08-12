@@ -703,6 +703,7 @@ def _build_cad_module_code(
     n_post_forms: int = 0,
     n_globals: int = 0,
     gvar_map: object = None,
+    top_lambda_slots: object = None,
 ) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
@@ -844,6 +845,45 @@ def _build_cad_module_code(
             out_inp = _slot_gv(in_pkg_idx)
             return bytes([0x03]) + struct.pack("<H", out_pkg) + \
                 bytes([0x35, 0x01]) + struct.pack("<H", out_inp) + bytes([0x03])
+        # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，CAD `-lambda-` SUBR）：
+        # 模块代码 `PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set`，不经
+        # kwote/引用常量（CAD 实测 bootstrap）。`-lambda-` 槽由 seg0 生成阶段
+        # 经 top_lambda_slots 映射（DEFCODE 注册为可调用 SUBR）。
+        if top_lambda_slots:
+            from compiler.ast_nodes import LambdaNode as _LN
+
+            _tgt = None
+            _is_lam = False
+            if isinstance(form, Call) and form.name == "set" and len(form.args) == 2:
+                _t0 = form.args[0]
+                if isinstance(_t0, QuotedExpr) and isinstance(_t0.expr, Symbol):
+                    _tgt = _t0.expr.name
+                _v1 = form.args[1]
+                _is_lam = isinstance(_v1, _LN) or (
+                    isinstance(_v1, QuotedExpr) and isinstance(_v1.expr, _LN)
+                )
+            elif isinstance(form, Setq):
+                for _t, _v in form.pairs:
+                    if isinstance(_t, Symbol):
+                        _tgt = _t.name
+                        _is_lam = isinstance(_v, _LN) or (
+                            isinstance(_v, QuotedExpr) and isinstance(_v.expr, _LN)
+                        )
+                        break
+            if _tgt is not None and _is_lam and _tgt in top_lambda_slots:
+                _sym_idx = symtab.name_to_idx.get(_tgt)
+                _lam_slot = top_lambda_slots[_tgt]
+                _b = bytearray()
+                if _sym_idx is not None:
+                    _b += bytes([0x09]) + struct.pack("<H", _slot_gv(_sym_idx))  # PUSH_G <sym>
+                # CAD 在 PUSH_G sym 与 PUSH_G <-lambda-> 间插 JUMP 0（相对偏移 0，
+                # 跳到下一条，bootstrap/tlrep 实测模块代码 `57 00 00 00 00`）。
+                _b += bytes([0x57, 0x00, 0x00, 0x00, 0x00])  # JUMP 0
+                _b += bytes([0x09]) + struct.pack("<H", _slot_gv(_lam_slot))  # PUSH_G <-lambda->
+                _set_idx = symtab.name_to_idx.get("set")
+                if _set_idx is not None:
+                    _b += bytes([0x35, 0x02]) + struct.pack("<H", _slot_gv(_set_idx)) + bytes([0x03])
+                return bytes(_b)
         fb = BytecodeBuffer()
         cg._emit_expr(fb, form, _tail=tail)
         fb.resolve()
@@ -1186,6 +1226,63 @@ def _collect_kwote_lambda_args(node):
             yield from _collect_kwote_lambda_args(e)
 
 
+def _collect_top_lambda_binds(forms):
+    """收集顶层 `(set/setq 'sym (lambda ...))` 绑定（纯顶层文件的 CAD 机制）。
+
+    CAD 对**纯顶层文件**（无 defun）的顶层 lambda 编译为 seg0 内嵌
+    ``-lambda-`` DEFUN（模块加载器 DEFCODE 注册为可调用 SUBR）+ 模块代码
+    ``PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set``。有 defun 的混合
+    文件（platform 等）顶层 lambda 仍是引用数据（CAD 实测无 `-lambda-` 槽）。
+    返回 ``[(sym_name, LambdaNode), ...]``（源码顺序）。
+    """
+    from compiler.ast_nodes import LambdaNode as _LN, Setq as _Setq
+
+    def _lambda_of(v):
+        if isinstance(v, _LN):
+            return v
+        if isinstance(v, QuotedExpr) and isinstance(v.expr, _LN):
+            return v.expr
+        return None
+
+    out = []
+    for f in forms:
+        if isinstance(f, Call) and f.name == "set" and len(f.args) == 2:
+            tgt = f.args[0]
+            lam = _lambda_of(f.args[1])
+            if lam is not None and isinstance(tgt, QuotedExpr) and isinstance(tgt.expr, Symbol):
+                out.append((tgt.expr.name, lam))
+        elif isinstance(f, _Setq):
+            for t, v in f.pairs:
+                lam = _lambda_of(v)
+                if lam is not None and isinstance(t, Symbol):
+                    out.append((t.name, lam))
+    return out
+
+
+def _rewrite_top_lambda_binds(forms):
+    """把顶层 set/setq-lambda 的值改写为 kwote 标记（`(function (lambda ...))`）。
+
+    仅对纯顶层文件调用（有 defun 时 CAD 用引用数据，不改写）。kwote 标记使
+    `_stmt_bytes` 能识别顶层 lambda（走 `-lambda-` 绑定路径）。`kwote`/`LAMBDA`
+    符号残留由 cmd_compile 在符号收集后清除（CAD 顶层 lambda 无这些槽）。
+    """
+    from compiler.ast_nodes import LambdaNode as _LN, Setq as _Setq
+
+    def _as_kwote(v):
+        if isinstance(v, _LN):
+            return QuotedExpr(expr=v, kwote=True)
+        if isinstance(v, QuotedExpr) and not v.kwote and isinstance(v.expr, _LN):
+            return QuotedExpr(expr=v.expr, kwote=True)
+        return v
+
+    for f in forms:
+        if isinstance(f, Call) and f.name == "set" and len(f.args) == 2:
+            f.args[1] = _as_kwote(f.args[1])
+        elif isinstance(f, _Setq):
+            f.pairs = [(t, _as_kwote(v)) for t, v in f.pairs]
+    return forms
+
+
 def cmd_compile(
     source: str,
     output: str = "",
@@ -1211,6 +1308,15 @@ def cmd_compile(
     program.forms = _flatten_top_level_forms(program.forms)
     # 条件/嵌套 defun（`(if c (defun f () ...))`）改写为 `(setq f '(lambda ...))`
     program.forms = _lower_nested_defuns(program.forms)
+    # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：CAD 用内嵌 `-lambda-`
+    # SUBR（seg0 紧凑 stub + DEFCODE 注册为可调用函数），模块代码
+    # ``PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set``。有 defun 的混合
+    # 文件 CAD 用引用数据，不改写。改写为 kwote 标记使符号收集跳过 lambda
+    # CONST（否则产生 `LAMBDA` 槽，CAD 无此槽）。
+    _defuns_now = [f for f in program.forms if isinstance(f, Defun)]
+    top_lambda_binds = _collect_top_lambda_binds(program.forms) if not _defuns_now else []
+    if top_lambda_binds:
+        program.forms = _rewrite_top_lambda_binds(program.forms)
     # 多 `(function (lambda ...))`（>1）改写为引用数据 `'(lambda ...)`
     program.forms = _lower_multi_kwote(program.forms)
     # `((lambda ...) args)` 立即调用改写为显式 `(apply '(lambda ...) (list ...))`
@@ -1269,6 +1375,12 @@ def cmd_compile(
     from compiler.cad_symbols import derive_symbol_names, is_const_entry
 
     for sym in derive_symbol_names(program):
+        if top_lambda_binds and sym == "kwote":
+            # 纯顶层含顶层 `(set/setq 'sym (lambda ...))`（CAD `-lambda-` 机制）：
+            # 收集器对 kwote 标记误收 `kwote` 符号（CAD 无此槽，顶层 lambda
+            # 不经 kwote 调用）。跳过；`-lambda-` 由 seg0 阶段经 top_lambda_slots
+            # 注册，不进 symtab。
+            continue
         if is_const_entry(sym):
             symtab.add_constant(sym[1])
         elif isinstance(sym, str) and sym.startswith('__real_') and sym.endswith('__'):
@@ -1346,6 +1458,31 @@ def cmd_compile(
             # `(in-package :@)` 由 _build_cad_module_code 单独发射
             # （PUSH_VALUE :@; FUNC_REF in-package），此处跳过占位生成。
             continue
+        # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：由
+        # _build_cad_module_code 按 top_lambda_slots 特判发射 `-lambda-` 绑定，
+        # 这里跳过（避免 codegen _emit_kwote 注册多余 `-LAMBDA-` 槽）。
+        if top_lambda_binds:
+            from compiler.ast_nodes import LambdaNode as _LN
+
+            _is_tl = False
+            _tl_names = {s for s, _ in top_lambda_binds}
+            if isinstance(form, Call) and form.name == "set" and len(form.args) == 2:
+                _t0 = form.args[0]
+                _v1 = form.args[1]
+                _is_tl = (
+                    isinstance(_t0, QuotedExpr) and isinstance(_t0.expr, Symbol)
+                    and _t0.expr.name in _tl_names
+                    and (isinstance(_v1, _LN) or (isinstance(_v1, QuotedExpr) and isinstance(_v1.expr, _LN)))
+                )
+            elif isinstance(form, Setq):
+                for _t, _v in form.pairs:
+                    if isinstance(_t, Symbol) and _t.name in _tl_names and (
+                        isinstance(_v, _LN) or (isinstance(_v, QuotedExpr) and isinstance(_v.expr, _LN))
+                    ):
+                        _is_tl = True
+                        break
+            if _is_tl:
+                continue
         codegen._emit_expr(top_level_bc, form)
         if isinstance(form, Setq):
             top_level_bc.emit(ENCODE_POP)
@@ -1364,6 +1501,48 @@ def cmd_compile(
             # generate_function 生成，仅需追加 END_DEFUN 分隔）。
             all_bytecode.emit(bytes([0x16]))
 
+    # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：CAD 把内嵌
+    # `-lambda-` DEFUN 放 seg0（紧凑 stub：`14 <argc><argc><argc> 00` + 体，
+    # 无 JUMP/CLEAR_ARGS/END，bootstrap `seg0 = 14 00 00 00 00 03 01 00`），
+    # 由 DEFCODE 注册为可调用 SUBR。模块代码 `PUSH_G <sym>; PUSH_G
+    # <-lambda-槽>; FUNC_REF set`。这里生成 stub 进 seg0，登记 `-lambda-`
+    # 槽供模块代码引用；有 defun 的混合文件（platform）CAD 用引用数据。
+    top_lambda_slots: dict = {}
+    if top_lambda_binds and not defun_forms:
+        for _ti, (_sym, _lam) in enumerate(top_lambda_binds):
+            _lbuf = BytecodeBuffer()
+            # 紧凑 stub：DEFUN 头（b1=b2=b3=argc）+ lambda 体（值位置）。
+            # CAD 纯顶层 `-lambda-` 体为单符号时：`14 <argc>x3 00; PUSH_VALUE 1`，
+            # `PUSH_VALUE 1` 引用 resource 槽 1（GVARINIT(0,2) 把体符号放槽 1）。
+            _argc = len(_lam.args)
+            _lbuf.emit(bytes([0x14, _argc & 0xFF, _argc & 0xFF, _argc & 0xFF, 0]))
+            _saved_tail = codegen._in_tail_context
+            codegen._in_tail_context = True
+            if len(_lam.body) == 1 and isinstance(_lam.body[0], Symbol):
+                # 单符号体：PUSH_VALUE 1（体符号由 resource 槽 1 提供）。
+                _lbuf.emit(bytes([0x03, 0x01, 0x00]))
+            else:
+                for _be in _lam.body[:-1]:
+                    codegen._emit_stmt(_lbuf, _be)
+                    _lbuf.emit(b"\x0a")  # POP
+                if _lam.body:
+                    codegen._emit_expr(_lbuf, _lam.body[-1], _tail=True)
+                else:
+                    _lbuf.emit(b"\x01")  # PUSH_NIL
+            codegen._in_tail_context = _saved_tail
+            _lbuf.resolve()
+            _off = len(all_bytecode.data)
+            _key = f"-lambda-#{_ti + 1}" if _ti else "-lambda-"
+            func_offsets[_key] = _off
+            all_bytecode.emit(bytes(_lbuf.data))
+            # `-lambda-` 槽 = 顶层符号数 + 1（CAD 把内嵌 SUBR 注册在末尾，
+            # GVARINIT(entry_count+2,1) 放 gvar 槽 entry_count+2；模块代码
+            # gvar 槽 = 符号槽 + 1 → 符号槽 = entry_count+1）。多 lambda 逆序
+            # 递减。不进 symtab（CAD 无 `-lambda-` 普通符号槽，仅 DEFCODE
+            # 区小写注册）。
+            _lam_slot = len(symtab.entries) + 1 - _ti
+            top_lambda_slots[_sym] = _lam_slot
+
     # 内嵌 `(function (lambda ...))` / `((lambda ...) args)` DEFUN（kwote/
     # 立即应用机制）：偏移相对所在函数字节码缓冲，需转换为 seg0 绝对偏移。
     # 每个内嵌 DEFUN 用独立 `-lambda-` 目录键（`-lambda-`、`-lambda-#2`、…，
@@ -1381,6 +1560,11 @@ def cmd_compile(
         nested_ends[n_start] = n_end
 
     for name, offset in func_offsets.items():
+        # `-lambda-`/`-lambda-#N`（内嵌 DEFUN）不进符号表（仅 DEFCODE 区注册，
+        # 顶层 lambda 的 `-lambda-` 槽由 top_lambda_slots 计算）。其余函数名
+        # 注册符号槽。
+        if isinstance(name, str) and (name == "-lambda-" or name.startswith("-lambda-#")):
+            continue
         symtab.add_func_ref(name, offset)
 
     all_bytecode.resolve()
@@ -1394,6 +1578,10 @@ def cmd_compile(
     resource = ResourceBuilder(symtab, encoding=encoding)
     module_reg_count = len(defun_forms) + top_level_count
     fas_nsyms = len(symtab.entries) - module_reg_count + 1
+    # 纯顶层文件含顶层 `-lambda-`（CAD 把内嵌 SUBR 当函数注册，nsyms 含它）。
+    # bootstrap CAD nsyms=2（模块 + -lambda-），setqa（无 lambda）nsyms=1。
+    if top_lambda_binds and not defun_forms:
+        fas_nsyms = 1 + len(top_lambda_binds)
     _pre_nsyms = fas_nsyms
     if other_forms:
         # 顶层语句在源码中位于最后一个 defun 之后（如 `(set '_ @::_)`、
@@ -1446,6 +1634,7 @@ def cmd_compile(
             func_names=[f.name for f in defun_forms],
             n_post_forms=_n_post_forms,
             n_globals=_n_globals,
+            top_lambda_slots=top_lambda_slots,
         )
     elif n_cmds:
         module_code = build_command_module_code(len(defun_forms))
@@ -1473,6 +1662,7 @@ def cmd_compile(
         top_level_count=top_level_count,
         commands=n_cmds,
         nested_ends=nested_ends,
+        top_lambda_body_syms=([_lam.body[-1].name for _, _lam in top_lambda_binds] if top_lambda_binds else None),
     )
     # commands + 顶层混合模式：模块注册把函数名逆序置前、顶层符号在后，
     # 模块代码符号引用（USUBR/PUSH_G）的 `symtab_idx+1` 不再等于实际 gvar 槽，
@@ -1497,6 +1687,7 @@ def cmd_compile(
                 n_post_forms=_n_post_forms,
                 n_globals=_n_globals,
                 gvar_map=gvar_map,
+                top_lambda_slots=top_lambda_slots,
             )
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args, codegen_nsyms=codegen_nsyms)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
@@ -1508,6 +1699,7 @@ def cmd_compile(
         top_level_count=top_level_count,
         commands=n_cmds,
         nested_ends=nested_ends,
+        top_lambda_body_syms=([_lam.body[-1].name for _, _lam in top_lambda_binds] if top_lambda_binds else None),
     )
     sec2_items = count_resource_records(seg1)
     # 确保 items 与 CAD 编译器一致。CAD 的 items 语义：

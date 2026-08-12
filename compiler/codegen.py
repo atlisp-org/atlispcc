@@ -1104,6 +1104,16 @@ class CodeGenerator:
         if not self.stub_format or not isinstance(node, LambdaNode):
             self._emit_quoted(buf, node)
             return
+        if self._module_mode:
+            # 顶层 `(set/setq 'sym (function (lambda ...)))`（纯顶层文件）：
+            # CAD 用内嵌 `-lambda-` SUBR（seg0 + DEFCODE 注册为可调用函数），
+            # 模块代码 ``PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set``，
+            # 不经 kwote 调用（模块代码里 ``FUNC kwote`` 无定义，CAD 真机报
+            # "no function definition: KWOTE"）。`-lambda-` 槽由 cli 在
+            # seg0 生成阶段注册（DEFCODE），这里只登记并引用。
+            lam_idx = self.symtab.get_or_add("-lambda-")
+            buf.emit(encode_op_u16(PUSH_G, lam_idx))
+            return
         lam_idx = self._emit_nested_lambda(buf, node)
         kwote_idx = self.symtab.get_or_add("kwote")
         buf.emit(encode_op_u16(PUSH_G, lam_idx))

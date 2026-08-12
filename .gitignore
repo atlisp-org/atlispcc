@@ -28,3 +28,4 @@ tests/atlisp_u_cad2.fas
 .tmp_cad_compile.py
 kernel_load_results.json
 load_run.log
+kernel_load_lsp.py
