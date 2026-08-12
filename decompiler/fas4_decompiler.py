@@ -2736,6 +2736,12 @@ class LispGenerator:
     ) -> str:
         raw_name = self._gvar_symbol_gvar(idx)
         biased_name = self._gvar_symbol_gvar(idx)
+        # `command` 内建 SUBR 在 FAS 资源段注册名为 `ads-cmd`（AutoCAD 内部 C
+        # 函数名），反编译时还原为 AutoLISP 的 `command`。
+        if raw_name and raw_name.lower() == "ads-cmd":
+            return "command"
+        if biased_name and biased_name.lower() == "ads-cmd":
+            return "command"
         if argc == 1 and (
             (raw_name and raw_name.upper() == "POLAR") or (biased_name and biased_name.upper() == "POLAR")
         ):

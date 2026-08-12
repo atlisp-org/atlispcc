@@ -27,6 +27,35 @@ from compiler.ast_nodes import (
 CONST_MARK = '__const__'
 
 
+# 无 get-/put-/call-/add-/insert- 子前缀的 vla- 方法名 → 标准 ActiveX
+# CamelCase（base-function CAD 实测 `vla-sendcommand`→`vla-SendCommand`、
+# `vla-postcommand`→`vla-PostCommand`）。未收录的走首字母大写 fallback。
+_VLA_METHOD_MAP = {
+    "vla-sendcommand": "vla-SendCommand",
+    "vla-postcommand": "vla-PostCommand",
+    "vla-addarc": "vla-AddArc",
+    "vla-addcircle": "vla-AddCircle",
+    "vla-adddimension": "vla-AddDimension",
+    "vla-addellipse": "vla-AddEllipse",
+    "vla-addhatch": "vla-AddHatch",
+    "vla-addline": "vla-AddLine",
+    "vla-addmtext": "vla-AddMText",
+    "vla-addpolyline": "vla-AddPolyline",
+    "vla-addrectangle": "vla-AddRectangle",
+    "vla-addspline": "vla-AddSpline",
+    "vla-addtext": "vla-AddText",
+    "vla-delete": "vla-Delete",
+    "vla-endundomark": "vla-EndUndoMark",
+    "vla-insertinmenubar": "vla-InsertInMenuBar",
+    "vla-item": "vla-Item",
+    "vla-object": "vla-Object",
+    "vla-regen": "vla-Regen",
+    "vla-removefrommenubar": "vla-RemoveFromMenuBar",
+    "vla-startundomark": "vla-StartUndoMark",
+    "vla-update": "vla-Update",
+}
+
+
 def normalize_vla_name(name):
     """规范化 vla- 前缀的 ActiveX 方法符号名（AutoCAD 24.1s 实测）。
 
@@ -34,11 +63,10 @@ def normalize_vla_name(name):
     保留**原始大小写**（方法名大小写敏感，ActiveX 接口方法区分大小写），
     且方法名部分首字母大写（t22_activex 实测：源码 ``vla-get-count`` →
     符号槽 ``vla-get-Count``、``vla-get-Documents`` 保持、``vla-get-ModelSpace``
-    保持、``vla-get-ActiveDocument`` 保持）。``vlax-`` 前缀的 VLISP 扩展
-    函数保持小写（``vlax-get-acad-object`` 原样）。非 vla-/vlax- 符号不变。
-
-    仅当符号以 ``vla-get-`` / ``vla-put-`` / ``vla-`` 开头时规范化方法名
-    首字母大写；其余（含 ``vlax-``）原样返回。
+    保持、``vla-get-ActiveDocument`` 保持）。无子前缀的 ``vla-<Method>``
+    按标准 ActiveX CamelCase（base-function CAD 实测 ``vla-sendcommand`` →
+    ``vla-SendCommand``）。``vlax-`` 前缀的 VLISP 扩展函数保持小写
+    （``vlax-get-acad-object`` 原样）。非 vla-/vlax- 符号不变。
     """
     for prefix in ("vla-get-", "vla-put-", "vla-call-", "vla-add-", "vla-insert-"):
         if name.lower().startswith(prefix):
@@ -46,18 +74,29 @@ def normalize_vla_name(name):
             if method and method[0].islower():
                 return prefix + method[0].upper() + method[1:]
             return name
+    if name.lower().startswith("vla-"):
+        mapped = _VLA_METHOD_MAP.get(name.lower())
+        if mapped:
+            return mapped
+        rest = name[len("vla-"):]
+        if rest and rest[0].islower():
+            return "vla-" + rest[0].upper() + rest[1:]
+        return name
     return name
 
 
 def strip_docstring(body):
-    """CAD 忽略 defun 后第一个裸字符串（docstring）。
+    """CAD 忽略 defun 后开头的连续裸字符串（docstring）。
 
     `(defun f () "文档说明" ...)` 编译时丢弃该字符串（AutoLISP 惯例，
-    docstr.fas CAD 实测 strings 为空）。仅当它是函数体**首个**独立字符串
-    字面量时返回剥离后的列表；空体或仅 docstring 时返回原列表（保持空体）。
+    docstr.fas CAD 实测 strings 为空）。连续多个 docstring 全部剥离
+    （base-function CAD 实测 handle-keywords 双 docstring 均不注册）。
+    仅当它是函数体**开头**的独立字符串字面量时跳过，不影响
+    `(strcat "a" "b")` 等表达式内字符串。
     """
-    if len(body) > 1 and isinstance(body[0], String):
-        return body[1:]
+    body = list(body)
+    while len(body) > 1 and isinstance(body[0], String):
+        body = body[1:]
     return body
 
 
@@ -74,7 +113,10 @@ def to_const(node):
             return ('T',)
         if node.name == 'nil':
             return ('NIL',)
-        return ('SYMBOL', node.name)
+        # quoted vla- 符号同样规范化（base-function `(set 'vla-postcommand
+        # vla-sendcommand)` CAD 实测 `'vla-postcommand` → 常量符号
+        # `vla-PostCommand`，与函数引用/定义名一致）。
+        return ('SYMBOL', normalize_vla_name(node.name))
     if isinstance(node, Integer):
         return ('INT', node.value)
     if isinstance(node, Real):
@@ -369,8 +411,65 @@ class CadSymbolCollector:
         for kept in kept_refs:
             for n, _ in kept:
                 claimed_in_body.add(n)
+        # CAD 的 locals 常量（`(quote (locals...))`）对相同结构只注册一次，
+        # 位置在**逆序最后遇到**它的函数处（base-function 实测 remove-dups
+        # 与 getf 同为 `(quote (result))`，CAD 槽在 getf 组而非 remove-dups 组）。
+        # 预扫描每个 locals 常量结构的逆序最后出现索引。
+        locals_last = {}
+        for _i, _f in enumerate(reversed(defuns)):
+            if _f.locals:
+                locals_last[tuple(_f.locals)] = _i
+        # cond else 键 `T` 同规则：跨函数只注册一次，位置在逆序最后遇到它的
+        # 函数处（base-function 实测 5 处 `(t ...)`，CAD 槽在 handle-keywords 组，
+        # 而非先遇到的 pair 组）。其余普通符号仍先到先得去重。
+        t_last = None
+        for _i, _k in enumerate(reversed(kept_refs)):
+            if any(str(n).lower() == "t" for n, _ in _k):
+                t_last = _i
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
-            for name, force in reversed(kept):
+            # 函数体符号逆序注册；CAD 对 kwote 块（kwote + lambda 体，由
+            # `__kwote_end__` 标记）保持收集序整体插到**调用者**（块后第一个
+            # 函数名）之后：base-function getf 实测 `[CADR, VL-MEMBER-IF,
+            # kwote, VL-PRIN1]`，i18n load-mt 实测 `[REVERSE, @::WITH-FILE-
+            # LINES, kwote, ...]`（kwote 不随其它符号逆序沉底）。
+            _kwote_blocks = []  # (块内 items 保持收集序, 调用者名)
+            _rest = []
+            _pos = 0
+            while _pos < len(kept):
+                _x = kept[_pos]
+                if _x[0] == "kwote":
+                    _items = [_x]
+                    _pos += 1
+                    while _pos < len(kept) and kept[_pos][0] != "__kwote_end__":
+                        _items.append(kept[_pos])
+                        _pos += 1
+                    _pos += 1  # 跳过 __kwote_end__
+                    _caller = None
+                    for _c in kept[_pos:]:
+                        if not str(_c[0]).startswith(('"', "'", "(")) and str(_c[0]) not in (
+                            "nil",
+                            "T",
+                        ):
+                            _caller = _c[0]
+                            break
+                    _kwote_blocks.append((_items, _caller))
+                else:
+                    _rest.append(_x)
+                    _pos += 1
+            _rev = list(reversed(_rest))
+            for _items, _caller in _kwote_blocks:
+                if _caller is not None:
+                    for _j, (_m, _) in enumerate(_rev):
+                        if _m == _caller:
+                            _rev = _rev[: _j + 1] + _items + _rev[_j + 1 :]
+                            break
+                    else:
+                        _rev = _items + _rev
+                else:
+                    _rev = _items + _rev
+            for name, force in _rev:
+                if str(name).lower() == "t" and i != t_last:
+                    continue
                 self.add(name, force=force or name in module_reg_names)
             # CAD `/ 局部变量`（多函数）：与单函数一致注入 `_al-bind-alist` +
             # `(quote (locals...))` 常量；`_al-bind-alist` 全文件共享一个符号槽
@@ -380,7 +479,8 @@ class CadSymbolCollector:
             if f.locals:
                 if f is source_first_local:
                     self.add('_al-bind-alist')
-                self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
+                if locals_last.get(tuple(f.locals)) == i:
+                    self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
             for loc in reversed(f.locals):
                 if loc not in claimed_in_body:
                     self.add(loc)
@@ -587,6 +687,11 @@ class CadSymbolCollector:
                 self._form_read_target(expr, reads, targets, arg_names, in_quote)
             if node.count:
                 self._form_read_target(node.count, reads, targets, arg_names, in_quote)
+        elif isinstance(node, Integer):
+            # 超 int32 整数字面量按 REAL 键收集（与 `_collect_byteorder` 一致，
+            # base-function 顶层 `(setq @::*mktime-epoch* 2208988800)` CAD 实测）。
+            if node.value > 2147483647 or node.value < -2147483648:
+                reads.add('__real_%s__' % float(node.value))
         elif isinstance(node, Cond):
             for clause in node.clauses:
                 for item in clause:
@@ -714,14 +819,22 @@ class CadSymbolCollector:
                         self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
                 else:
                     self._collect_byteorder(node.expr, out, arg_names, in_quote)
+                # kwote 块结束标记：CAD 注册序把 kwote 块（kwote + lambda 体）
+                # 保持收集序整体插到**调用者**（外层调用名）之后，不随其它函数
+                # 体符号逆序沉底（base-function getf / i18n load-mt 实测）。
+                out.append(("__kwote_end__", False))
             elif node.expr is not None:
                 # CAD 引用单符号 `'a`：编译为 PUSH_G 普通符号槽，不注册
                 # CONST（setcmp/setqa 实测 `(set 'a 5)` 的 A、`(setq x 'a)`
                 # 的 A 均为普通 SYMBOL 槽）。仅列表/lambda/dotted 等复合
                 # 结构才 const 化。
                 if isinstance(node.expr, Symbol) and node.expr.name not in ('T', 'nil'):
-                    if node.expr.name not in arg_names and not self._seen(out, node.expr.name):
-                        out.append((node.expr.name, False))
+                    # quoted vla- 符号同样规范化（base-function `(set
+                    # 'vla-postcommand vla-sendcommand)` CAD 实测 `'vla-postcommand`
+                    # → `vla-PostCommand` 符号槽）。
+                    _n = normalize_vla_name(node.expr.name)
+                    if _n not in arg_names and not self._seen(out, _n):
+                        out.append((_n, False))
                 else:
                     const = to_const(node.expr)
                     if const is not None:
@@ -751,7 +864,13 @@ class CadSymbolCollector:
             if not self._seen(out, key):
                 out.append((key, False))
         elif isinstance(node, Integer):
-            pass
+            # 超出 int32 范围的整数字面量：codegen 按 REAL 编码/注册
+            # （base-function 顶层 `(setq @::*mktime-epoch* 2208988800)` → 资源
+            # 段 REAL 槽 `2208988800.0`，CAD 实测），此处按 REAL 键收集。
+            if node.value > 2147483647 or node.value < -2147483648:
+                key = '__real_%s__' % float(node.value)
+                if not self._seen(out, key):
+                    out.append((key, False))
 
     def _collect_forward(self, node, out, locals_):
         """深度优先收集符号 (name, forced) 列表。
@@ -840,7 +959,15 @@ class CadSymbolCollector:
         elif isinstance(node, String):
             if not self._seen(out, '"' + node.value + '"'):
                 out.append(('"' + node.value + '"', False))
-        elif isinstance(node, (Integer, Real)):
+        elif isinstance(node, Integer):
+            # 超 int32 整数字面量：codegen 按 REAL 编码/注册，收集为 REAL 键
+            # （base-function 顶层 `(setq @::*mktime-epoch* 2208988800)` → 资源
+            # 段 REAL 槽，CAD 实测），此处与 `_collect_byteorder` 一致处理。
+            if node.value > 2147483647 or node.value < -2147483648:
+                key = '__real_%s__' % float(node.value)
+                if not self._seen(out, key):
+                    out.append((key, False))
+        elif isinstance(node, Real):
             pass
 
 

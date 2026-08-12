@@ -207,7 +207,11 @@ class ResourceBuilder:
         统一规范化，此处仅需保留当前大小写（不再 .upper()）。
         """
         s = str(s)
-        if s.lower().startswith(("vla-get-", "vla-put-", "vla-call-", "vla-add-", "vla-insert-", "vlax-")):
+        # `command` 内建 SUBR 在 CAD FAS 资源段注册名为 `ads-cmd`
+        # （base-function CAD 实测 `(command ...)` → 符号槽 `ads-cmd`）。
+        if s.lower() == "command":
+            return b"ads-cmd"
+        if s.lower().startswith(("vla-", "vlax-")):
             return s.encode(self.encoding, errors="replace")
         return s.upper().encode(self.encoding, errors="replace")
 

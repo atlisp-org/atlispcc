@@ -73,6 +73,7 @@ def _lower_nested_defuns(forms):
     """
     from compiler.ast_nodes import Symbol as _Sym, Setq as _Setq
     from compiler.ast_nodes import QuotedExpr as _Q, ListExpr as _L
+    from compiler.cad_symbols import strip_docstring
 
     def _as_lambda(f: Defun) -> _Q:
         all_args = [Symbol(a) for a in f.args]
@@ -81,7 +82,10 @@ def _lower_nested_defuns(forms):
             all_args += [Symbol("&rest"), Symbol(f.rest)]
         if f.locals:
             all_args += [Symbol("/")] + [Symbol(l) for l in f.locals]
-        return _Q(expr=_L(items=[Symbol("lambda"), _L(items=all_args)] + f.body))
+        # 条件/嵌套 defun 改写为 lambda 数据时同样剥离 docstring（base-function
+        # CAD 实测 vla-postcommand 条件定义字符串不注册）。
+        body = strip_docstring(f.body)
+        return _Q(expr=_L(items=[Symbol("lambda"), _L(items=all_args)] + body))
 
     def _rewrite(node):
         if isinstance(node, Defun):
@@ -453,7 +457,21 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     gvar_map: dict = {}
     for idx, v in enumerate(fg):
         if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
-            gvar_map.setdefault(str(v[1]).upper(), idx)
+            # 符号名统一大写（AutoLISP 大小写不敏感）；字符串大小写敏感
+            # （base-function 实测 `"date"`（timestamp）与 `"DATE"`（sleep）
+            # 是两个不同槽，`.upper()` 会错误合并）。
+            key = str(v[1]).upper() if v[0] == "SYMBOL" else str(v[1])
+            gvar_map.setdefault(key, idx)
+    # `command` 内建 SUBR 在资源段注册名为 `ads-cmd`（base-function CAD 实测），
+    # symtab 收集的符号名是 `command`。别名对齐使 FUNC/USUBR 分支能命中。
+    if "ADS-CMD" in gvar_map:
+        gvar_map.setdefault("COMMAND", gvar_map["ADS-CMD"])
+    # 实数常量：codegen 用 symtab REAL 槽（可能偏离资源段 GVARINIT 槽，
+    # base-function 实测 0.001 在 symtab 174 而 fg[130]），按值匹配映射。
+    real_map: dict = {}
+    for idx, v in enumerate(fg):
+        if isinstance(v, tuple) and len(v) == 2 and v[0] == "REAL":
+            real_map.setdefault(float(v[1]), idx)
     def _strip_list_markers(v):
         """symtab 常量结构 → fg 表可比较形式（规范化大小写/INT/REAL/LIST）。
 
@@ -501,7 +519,9 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
 
     def sym_of(idx: int):
         if 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] in ("SYMBOL", "STRING"):
-            return str(symtab.entries[idx][1]).upper()
+            v = symtab.entries[idx][1]
+            # 符号名统一大写；字符串大小写敏感（`"date"`/`"DATE"` 异槽）。
+            return str(v).upper() if symtab.entries[idx][0] == "SYMBOL" else str(v)
         return None
 
     # 每个内嵌 `-lambda-` 条目 → 它在所有 `-lambda-` 条目中的序号（0 起）。
@@ -548,6 +568,12 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     if 0 <= new_idx <= 0xFFFF:
                         out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                         continue
+        # 其余符号引用：统一用 gvar 槽 - 1。多函数的普通符号走 gvar_map；
+        # CONST/STRING 常量引用（PUSH_G 操作数 = gvar 槽 - 1）在单函数
+        # 也需修正（codegen 原始槽 = symtab idx，gvar 槽 = idx+1，
+        # 操作数 = idx——i18n_v2 实测 ANSI 表 symtab idx 4 → 操作数 3）。
+        # 注意：CAD stub 中调用后的占位 PUSH_VALUE[0] 是单字节 `03`（size=1），
+        # 并非符号引用，必须跳过，否则被扩展成 3 字节破坏字节一致性。
         # 其余符号引用：统一用 gvar 槽 - 1。多函数的普通符号走 gvar_map；
         # CONST/STRING 常量引用（PUSH_G 操作数 = gvar 槽 - 1）在单函数
         # 也需修正（codegen 原始槽 = symtab idx，gvar 槽 = idx+1，
@@ -631,7 +657,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     # gvar 槽映射；否则（单函数/表外）注册于符号槽末尾
                     # （gvar 槽 = nsyms，操作数 = nsyms-1，t15 实测）。
                     strval = symtab.entries[idx0][1]
-                    gkey = str(strval).upper()
+                    gkey = str(strval)  # 字符串大小写敏感（`"date"`/`"DATE"` 异槽）
                     if gkey in gvar_map:
                         new_idx = gvar_map[gkey] - 1 - offset
                     elif multi:
@@ -645,7 +671,22 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                         # （t06 等）字符串已在 fg，走上方 gvar_map 分支。
                         new_idx = nsyms - 1
                 else:
-                    new_idx = None
+                    # 函数体符号（SYMBOL 且不在 GVARINIT 表——fg 表）：
+                    # CAD 对 PUSH_G/PUSH_VALUE/SETQ_G 也用 `gvar 槽 - 1`
+                    # （hkrepro 实测 item→1、sym→9 = fg[2]/fg[10] 的 gvar-1）。
+                    # 此前仅 USUBR/FUNC 走此映射，单函数普通符号引用（foreach
+                    # 循环变量、quoted 符号）保留 symtab 槽——有顶层 form 时
+                    # symtab 槽与资源段 gvar 槽错位，CAD 报 `函数错误: :DIALOG`。
+                    _sym = sym_of(idx0)
+                    if _sym and _sym in gvar_map:
+                        new_idx = gvar_map[_sym] - 1 - offset
+                    else:
+                        new_idx = None
+                if etype == "REAL":
+                    # 实数常量按值匹配资源段 REAL 槽（codegen symtab 槽可能
+                    # 偏离 GVARINIT，base-function 实测 0.001 槽 174→fg[130]）。
+                    _ridx = real_map.get(float(symtab.entries[idx0][1]))
+                    new_idx = (_ridx - 1 - offset) if _ridx is not None else None
                 if new_idx is not None and 0 <= new_idx <= 0xFFFF:
                     opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
                     out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
@@ -978,7 +1019,9 @@ def _slot_of(symtab, node):
     from compiler.ast_nodes import Symbol, String as _Str
 
     if isinstance(node, Symbol):
-        return symtab.name_to_idx.get(node.name)
+        from compiler.cad_symbols import normalize_vla_name
+
+        return symtab.name_to_idx.get(SymbolTable._normalize_name(normalize_vla_name(node.name)))
     if isinstance(node, _Str):
         return symtab.name_to_idx.get(f"__str_{node.value}__")
     return None
@@ -1494,7 +1537,9 @@ def cmd_compile(
     for i, form in enumerate(defun_forms):
         offset = len(all_bytecode.data)
         func_bytecode, _ = codegen.generate_function(form)
-        func_offsets[form.name] = offset
+        from compiler.cad_symbols import normalize_vla_name
+
+        func_offsets[normalize_vla_name(form.name)] = offset
         all_bytecode.emit(func_bytecode)
         if i < len(defun_forms) - 1:
             # CAD stub: 函数间分隔符 `16`（CLEAR_ARGS `19 <argc> 00` 已由
@@ -1565,7 +1610,9 @@ def cmd_compile(
         # 注册符号槽。
         if isinstance(name, str) and (name == "-lambda-" or name.startswith("-lambda-#")):
             continue
-        symtab.add_func_ref(name, offset)
+        from compiler.cad_symbols import normalize_vla_name
+
+        symtab.add_func_ref(normalize_vla_name(name), offset)
 
     all_bytecode.resolve()
     seg0 = bytes(all_bytecode.data)

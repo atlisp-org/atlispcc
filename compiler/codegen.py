@@ -52,6 +52,21 @@ def normalize_vla_name(name):
             if method and method[0].islower():
                 return prefix + method[0].upper() + method[1:]
             return name
+    # 其余 `vla-` 函数/方法（vla-sendcommand→vla-SendCommand、
+    # vla-postcommand→vla-PostCommand，base-function CAD 实测）。
+    if name.lower().startswith("vla-"):
+        try:
+            from compiler.cad_symbols import _VLA_METHOD_MAP
+
+            mapped = _VLA_METHOD_MAP.get(name.lower())
+            if mapped:
+                return mapped
+        except ImportError:
+            pass
+        rest = name[len("vla-"):]
+        if rest and rest[0].islower():
+            return "vla-" + rest[0].upper() + rest[1:]
+        return name
     return name
 from compiler.symbol_table import SymbolTable
 
@@ -293,9 +308,17 @@ class CodeGenerator:
             self._in_stmt_ctx = saved
 
     def _emit_stmt(self, buf: BytecodeBuffer, node: Node):
-        """在语句上下文（值被丢弃）中发射一条表达式。"""
+        """在语句上下文（值被丢弃）中发射一条表达式。
+
+        语句上下文非尾：值被丢弃，故临时清 `_in_tail_context`，避免 foreach/
+        repeat/if 误按尾上下文编译（cond 分支内中间 foreach 实测多出 PUSH_NIL
+        + POP 占位，CAD 无此结构——hkrepro `@::handle-keywords` 的
+        `(foreach ...)` 后接 `expr`）。
+        """
         saved = self._in_stmt_ctx
+        saved_tail = self._in_tail_context
         self._in_stmt_ctx = True
+        self._in_tail_context = False
         try:
             if isinstance(node, IfNode):
                 self._emit_if(buf, node)
@@ -303,6 +326,7 @@ class CodeGenerator:
                 self._emit_expr(buf, node)
         finally:
             self._in_stmt_ctx = saved
+            self._in_tail_context = saved_tail
 
     def _emit_expr(self, buf: BytecodeBuffer, node: Node, _tail: bool = False):
         saved_tail = self._in_tail_context
@@ -315,8 +339,9 @@ class CodeGenerator:
             elif name.lower() == "t":
                 if self.stub_format:
                     # CAD 对值位置的 `T`/`t` 注册符号槽并用 PUSH_VALUE 引用
-                    # （t18 小写 t、t22 大写 T golden 实测），非 PUSH_T 内联。
-                    # 仅 `(and ...)` 短路尾 / cond else 键等由各自发射点处理。
+                    # （t18 小写 t、t22 大写 T golden 实测，大小写不敏感），非
+                    # PUSH_T 内联。仅 `(and ...)` 短路尾 / cond else 键等由
+                    # 各自发射点处理。SymbolTable 对 t/T 归一化到 `T` 槽。
                     idx = self.symtab.get_or_add(name)
                     buf.emit(encode_op_u16(PUSH_VALUE, idx))
                 else:
@@ -541,9 +566,18 @@ class CodeGenerator:
             for arg in args:
                 self._emit_expr(buf, arg)
         if self.stub_format:
-            self._emit_usubr(buf, len(args), idx)
-            # CAD stub: 每次调用后 NIL + PUSH_VALUE[0]（结果清理/保留）
-            self._emit_subr_cleanup(buf)
+            if name == "command":
+                # `command`（CAD 内部 SUBR `ads-cmd`）非 USUBR 内建：CAD 用
+                # FUNC 编码调用 + `NIL; PUSH_NIL; NIL` 清理（base-function
+                # CAD 实测 `FUNC(1,162); NIL; PUSH_NIL; NIL`，同 `_al-bind-alist`）。
+                self._emit_func3(buf, len(args), idx)
+                buf.emit(encode_op_noarg(0x00))  # NIL
+                buf.emit(encode_op_noarg(PUSH_NIL))  # PUSH_NIL
+                buf.emit(encode_op_noarg(0x00))  # NIL
+            else:
+                self._emit_usubr(buf, len(args), idx)
+                # CAD stub: 每次调用后 NIL + PUSH_VALUE[0]（结果清理/保留）
+                self._emit_subr_cleanup(buf)
         elif is_builtin:
             self._emit_func3(buf, len(args), idx)
         else:
@@ -556,13 +590,13 @@ class CodeGenerator:
             if self.stub_format:
                 if self._in_tail_context:
                     buf.emit(encode_op_noarg(DUP))
-                idx = self.symtab.get_or_add(target.name)
+                idx = self.symtab.get_or_add(normalize_vla_name(target.name))
                 buf.emit(encode_op_u16(SETQ_G, idx))
             elif target.name in self.local_slots:
                 slot = self.local_slots[target.name]
                 buf.emit(encode_op_u16(SET_LOCAL_16, slot))
             else:
-                idx = self.symtab.get_or_add(target.name)
+                idx = self.symtab.get_or_add(normalize_vla_name(target.name))
                 buf.emit(encode_op_u16(SETQ_G, idx))
         else:
             with self._value_ctx():
@@ -580,13 +614,13 @@ class CodeGenerator:
                 if self.stub_format:
                     if self._in_tail_context and i == n - 1:
                         buf.emit(encode_op_noarg(DUP))
-                    idx = self.symtab.get_or_add(target.name)
+                    idx = self.symtab.get_or_add(normalize_vla_name(target.name))
                     buf.emit(encode_op_u16(SETQ_G, idx))
                 elif target.name in self.local_slots:
                     slot = self.local_slots[target.name]
                     buf.emit(encode_op_u16(SET_LOCAL_16, slot))
                 else:
-                    idx = self.symtab.get_or_add(target.name)
+                    idx = self.symtab.get_or_add(normalize_vla_name(target.name))
                     buf.emit(encode_op_u16(SETQ_G, idx))
 
     def _emit_if(self, buf: BytecodeBuffer, node: IfNode):
@@ -624,11 +658,12 @@ class CodeGenerator:
             buf.patch_label(label_else, buf.pos())
             if node.else_expr:
                 self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
-            elif self._in_tail_context or self._module_mode:
-                # CAD stub：尾上下文 / 模块代码顶层无 else 分支时在 else 标签处
-                # 补隐式 PUSH_NIL（cond 为假时返回 nil），then 分支的 JUMP 跳过
-                # 它（t9 / i18n-cad 模块代码实测）。中间 if（函数体中间的语句）
-                # 不补：假路径直接跳下一语句（i18n-cad update-locale 实测）。
+            elif self._in_tail_context or self._module_mode or not self._in_stmt_ctx:
+                # CAD stub：尾上下文 / 模块代码顶层 / 值位置无 else 分支时在
+                # else 标签处补隐式 PUSH_NIL（cond 为假时返回 nil），then 分支
+                # 的 JUMP 跳过它（t9 / i18n-cad 模块代码 / base-function 值位置
+                # setq RHS 实测）。中间 if（函数体中间的语句）不补：假路径直接
+                # 跳下一语句（i18n-cad update-locale 实测）。
                 buf.emit(encode_op_noarg(PUSH_NIL))
             buf.patch_label(label_end, buf.pos())
             return
@@ -658,6 +693,11 @@ class CodeGenerator:
         label_loop = f"_while_loop_{buf.pos()}"
         label_end = f"_while_end_{buf.pos()}"
 
+        if self._in_tail_context and self.stub_format:
+            # 尾 while（函数最后语句）：CAD 在 loop 头前压入 PUSH_NIL 占位、
+            # 体开头 POP 弹掉（base-function @::sleep `(while ... (princ))`
+            # 实测 `01 ... 0a`，同 foreach stub 的尾协议）。
+            buf.emit(encode_op_noarg(PUSH_NIL))
         buf.label(label_loop)
         # while 条件里的 setq 需 DUP 保留返回值给 JMP32_IFNOT 判断
         # （i18n-cad load-locale `(while (setq opt% (read-line fp)) ...)` 实测
@@ -671,14 +711,19 @@ class CodeGenerator:
             buf.emit(encode_op_u16(JMP16_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_end, 2)
 
+        if self._in_tail_context and self.stub_format:
+            buf.emit(encode_op_noarg(POP))
         for i, form in enumerate(node.body):
             self._emit_stmt(buf, form)
-            # CAD stub：中间 setq 无 POP（SETQ_G 自身消费栈顶），仅非 setq 追加。
-            # 与 generate_function 顶层体规则一致（t11_localvars 实测）。
+            # CAD stub：中间 setq 无 POP（SETQ_G 自身消费栈顶）；尾 while
+            # 体各语句不 POP（值留栈，loop 头 PUSH_NIL 占位由 CLEAR_ARGS/
+            # 循环回跳处理，base-function @::sleep `(while ... (princ))`
+            # 实测体末无 POP）；中间 while 体非 setq 语句（如 `(princ n)`）
+            # 返回值被 POP 丢弃（t04_while 实测）。
             if self.stub_format:
-                if isinstance(form, (Setq, WhileNode)):
+                if isinstance(form, (Setq, WhileNode, IfNode)):
                     continue
-                if i >= len(node.body) - 1:
+                if self._in_tail_context:
                     continue
                 buf.emit(encode_op_noarg(POP))
             elif i < len(node.body) - 1:
@@ -892,7 +937,13 @@ class CodeGenerator:
             buf.emit(encode_op_noarg(POP))
             for a in actions[:-1]:
                 self._emit_stmt(buf, a)
-                buf.emit(encode_op_noarg(POP))
+                # 中间语句丢弃结果：if 自身管理栈（then 末尾已 POP / 无 else 补
+                # PUSH_NIL）；setq 由 SETQ_G 消费栈顶；foreach stub 以
+                # CLEAR_ARGS 1 平衡栈（hkrepro cond 分支1 实测 CAD 不额外
+                # POP）；progn 自身管理。再加 body 层 POP 会双 POP。其余
+                # （调用/print 等）发 POP 丢弃。
+                if not isinstance(a, (IfNode, Setq, Progn, ForeachNode)):
+                    buf.emit(encode_op_noarg(POP))
             if actions:
                 self._emit_expr(buf, actions[-1])
             buf.label(f"{base}_body_{i}_end")
@@ -988,10 +1039,11 @@ class CodeGenerator:
             elif name == "FUNC":
                 buf.emit(encode_op_noarg(PUSH_NIL))
             else:
+                _nm = normalize_vla_name(name)
                 if name in skip_reg:
-                    idx = self.symtab.name_to_idx.get(name, 0xFFFF)
+                    idx = self.symtab.name_to_idx.get(self.symtab._normalize_name(_nm), 0xFFFF)
                 else:
-                    idx = self.symtab.get_or_add(name)
+                    idx = self.symtab.get_or_add(_nm)
                 buf.emit(encode_op_u16(PUSH_G, idx))
         elif isinstance(node, Integer):
             val = node.value
@@ -1191,7 +1243,7 @@ class CodeGenerator:
                 b1 = argc + (1 if _ast_contains_loop(func) else 0)
                 buf.emit(bytes([0x14, b1 & 0xFF, argc & 0xFF, argc & 0xFF, 0]))
             return
-        idx = self.symtab.idx_of(func.name) or self.symtab.get_or_add(func.name)
+        idx = self.symtab.idx_of(func.name) or self.symtab.get_or_add(normalize_vla_name(func.name))
         buf.emit(encode_defun(idx, 0))
 
     def _emit_init_args(self, buf: BytecodeBuffer, args: List[str]):
@@ -1307,12 +1359,13 @@ class CodeGenerator:
         for name in set(self.local_slots.keys()) - set(arity_bound):
             pass
 
-        # CAD 忽略 defun 后第一个裸字符串（docstring，AutoLISP 惯例）：
+        # CAD 忽略 defun 后开头的连续裸字符串（docstring，AutoLISP 惯例）：
         # `(defun f () "文档说明" body...)` 编译时不生成该字符串
-        # （docstr.fas CAD 实测 strings 为空）。仅当它是函数体**首个**独立
-        # 字符串字面量时跳过，不影响 `(strcat "a" "b")` 等表达式内字符串。
+        # （docstr.fas CAD 实测 strings 为空）。连续多个 docstring 全部跳过
+        # （base-function CAD 实测 handle-keywords 双 docstring 均不注册），
+        # 不影响 `(strcat "a" "b")` 等表达式内字符串。
         body = func.body
-        if body and isinstance(body[0], String) and len(body) > 1:
+        while len(body) > 1 and isinstance(body[0], String):
             body = body[1:]
 
         for expr in body[:-1]:

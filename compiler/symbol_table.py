@@ -54,8 +54,19 @@ class SymbolTable:
         self.dispatch_stubs: Dict[str, int] = {}
         self.package_table = package_table or PackageTable()
 
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        """AutoLISP 对 `T`/`t` 大小写不敏感：统一归一化为 `T` 槽。
+
+        值位置 T（consp `(if ... T nil)` 的大写 `T`）与 cond else 键
+        （`(t expr)` 的小写 `t`）在 CAD 中共享同一符号槽。
+        """
+        if str(name).lower() == "t":
+            return "T"
+        return str(name)
+
     def get_or_add(self, name: str) -> int:
-        name = str(name)
+        name = self._normalize_name(name)
         if name not in self.name_to_idx:
             idx = len(self.entries)
             self.name_to_idx[name] = idx
@@ -64,7 +75,7 @@ class SymbolTable:
 
     def add_force(self, name: str) -> int:
         """强制加入符号（允许重复），用于 CAD stub 的递归引用重复槽。"""
-        name = str(name)
+        name = self._normalize_name(name)
         idx = len(self.entries)
         self.entries.append(('SYMBOL', name))
         return idx
@@ -151,7 +162,7 @@ class SymbolTable:
         return name.upper() in {n.upper() for n in BUILTIN_FUNCTIONS}
 
     def idx_of(self, name: str) -> Optional[int]:
-        return self.name_to_idx.get(str(name))
+        return self.name_to_idx.get(self._normalize_name(name))
 
     def collect_symbols(self, node: Node):
         if isinstance(node, Program):
