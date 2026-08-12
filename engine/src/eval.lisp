@@ -9,6 +9,8 @@
 (defvar *lambda-sym* (al-int "LAMBDA"))
 (defvar *defun-sym* (al-int "DEFUN"))
 (defvar *if-sym-* (al-int "IF"))
+(defvar *t-sym* (al-int "T"))
+(defvar *nil-sym* (al-int "NIL"))
 
 (defparameter *special-forms*
   (mapcar #'al-int
@@ -32,8 +34,12 @@
     (t form)))
 
 (defun al-value-symbol (sym)
-  "符号求值：先按变量取，未绑定变量时若为函数名则返回函数对象（apply/mapcar 未加引号时）。"
-  (al-value sym))
+  "符号求值：T→t、NIL→nil（AutoLISP 常量）；否则先按变量取，未绑定变量时
+   若为函数名则返回函数对象（apply/mapcar 未加引号时）。"
+  (cond
+    ((eq sym *nil-sym*) nil)
+    ((eq sym *t-sym*) t)
+    (t (al-value sym))))
 
 (defun al-eval-source (source)
   "解析并顺序求值整个源码，返回最后一个形式的值。"
@@ -170,8 +176,9 @@
     (let ((test (first clause))
           (body (rest clause)))
       (when (or (eq test t)
+                (eq test *t-sym*)
                 (al-eval-form test))
-        (return (if body (al-eval-forms body) (or (and (eq test t) t) (al-eval-form test))))))))
+        (return (if body (al-eval-forms body) (or (and (eq test t) t) (and (eq test *t-sym*) t) (al-eval-form test))))))))
 
 (defun al-eval-setq (args)
   "SETQ 变参成对：先求值后绑定，支持多对 (setq a 1 b 2)。"

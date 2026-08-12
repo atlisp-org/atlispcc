@@ -6,6 +6,7 @@ venv/
 !tests/*.lsp
 !samples/*.lsp
 !samples/zelx-reversing/*.lsp
+!engine/engine_smoke.lsp
 *.fas
 !tests/*.fas
 !samples/*.fas

@@ -5,12 +5,15 @@
 
 (defun al-run-file (path)
   "加载并顺序执行 AutoLISP 文件，返回最后一个顶层形式的值。"
-  (let ((last nil))
+  (let ((last nil)
+        (lines '()))
     (with-open-file (s path :direction :input :external-format :utf-8)
-      (let ((content (make-string (file-length s))))
-        (read-sequence content s)
-        (dolist (f (al-read-source content) last)
-          (setf last (al-eval-form f)))))))
+      (loop for line = (read-line s nil :eof)
+            until (eq line :eof)
+            do (push line lines)))
+    (let ((content (format nil "~{~a~^~%~}" (nreverse lines))))
+      (dolist (f (al-read-source content) last)
+        (setf last (al-eval-form f))))))
 
 (defun al-repl ()
   "简单 REPL。"

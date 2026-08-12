@@ -161,8 +161,8 @@
   (let* ((tk (pf-next p))
          (kind (tok-kind tk)))
     (case kind
-      (:quote (cons (al-int "QUOTE") (parse-form p)))
-      (:fquote (cons (al-int "FUNCTION") (parse-form p)))
+      (:quote (list (al-int "QUOTE") (parse-form p)))
+      (:fquote (list (al-int "FUNCTION") (parse-form p)))
       (:num (tok-value tk))
       (:str (tok-value tk))
       (:sym (tok-value tk))

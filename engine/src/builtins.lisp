@@ -254,6 +254,7 @@
 (defsubr "princ" (args) (let ((x (and args (first args)))) (al-print x) x))
 (defsubr "print" (args) (let ((x (and args (first args)))) (al-print x) x))
 (defsubr "prin1" (args) (let ((x (and args (first args)))) (write x :escape t) x))
+(defsubr "terpri" (args) (terpri) nil)
 (defsubr "princ-to-string" (args) (al-to-string (first args)))
 (defsubr "prin1-to-string" (args) (prin1-to-string (first args)))
 (defsubr "prompt" (args) (let ((s (first args))) (princ s) s))
@@ -283,6 +284,35 @@
 (defsubr "eq" (args) (eq (first args) (second args)))
 (defsubr "equal" (args) (equal (first args) (second args)))
 (defsubr "not" (args) (null (first args)))
+
+;;; ── 几何（点 = (x y [z]) 列表）──────────────────────────────────────────────
+
+(defun al-point-coords (p)
+  "AutoLISP 点 (x y [z]) → 坐标列表（缺省 z=0）。"
+  (list (float (or (car p) 0) 1d0)
+        (float (or (cadr p) 0) 1d0)
+        (float (or (caddr p) 0) 1d0)))
+
+(defsubr "distance" (args)
+  (destructuring-bind (p1 p2) args
+    (let ((a (al-point-coords p1))
+          (b (al-point-coords p2)))
+      (sqrt (+ (expt (- (first a) (first b)) 2)
+               (expt (- (second a) (second b)) 2)
+               (expt (- (third a) (third b)) 2))))))
+
+(defsubr "angle" (args)
+  (destructuring-bind (p1 p2) args
+    (let ((a (al-point-coords p1))
+          (b (al-point-coords p2)))
+      (atan (- (second b) (second a))
+            (- (first b) (first a))))))
+
+(defsubr "polar" (args)
+  (destructuring-bind (p ang dist) args
+    (let ((a (al-point-coords p)))
+      (list (+ (first a) (* (float dist 1d0) (cos (float ang 1d0))))
+            (+ (second a) (* (float dist 1d0) (sin (float ang 1d0))))))))
 
 (defun register-core-builtins ()
   "当前已用 defsubr 自动注册；此函数仅作文档/兼容入口。"

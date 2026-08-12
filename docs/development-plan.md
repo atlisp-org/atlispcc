@@ -636,23 +636,34 @@ atlispcc 编译产物与 engine 求值结果互相对照，验证编译器语义
 - `engine/atlisp.asd`：ASDF 系统，`src/{packages,values,reader,env,eval,builtins,main}.lisp`
 - 公共 API（`:atlisp` 导出）：`al-eval-source` / `al-run-file` / `al-repl`
 - 值模型：AutoLISP 数据映射到 CL 原生值（nil/t/int/double-float/string/AL 包符号/cons）
-- 冒烟基线（`al-eval-source`）：算术/defun/apply/list/dotted pair/if/while/cond/
-  foreach/strcat/动态作用域/function-lambda/length/logand/fix 全部通过
+- 冒烟基线（`engine/engine_smoke.lsp`，S1-S17 全 OK）：算术/递归/if/while/cond/
+  foreach/repeat/局部变量/&optional/&rest/互递归/dotted/strcat/geometry/
+  kwote-mapcar/apply/funcall/T-NIL 常量
+- **CAD 对拍**（2026-08-12，`scripts/engine_crosscheck.sh`）：t01-t21 同源用例
+  engine 求值结果与 CAD 期望值**全部一致**（21/21 OK）
 - 关键修复记录：
   - reader：转义符 `#\)`→`#\\`（第 51 行）；`scan-token` loop 补 `do`；
     `parse-list` 重写（原 `:rparen`/`:dot` 分支 return 使死代码，普通表恒 nil、
     dotted 丢数据——改 `case` + `nreverse`/`rplacd`，删 `al-splice`）
+  - reader 短 quote：`'` 用 `(list QUOTE ...)` 而非 `(cons QUOTE ...)`——`'(1 . 2)`
+    此前解析为 `(QUOTE 1 . 2)`（dotted 到 QUOTE 层），求值取 car 错；`'x` 解析为
+    `(QUOTE . X)` 报 "not of type LIST"（2026-08-12）
   - builtins：`length` 用 `(loop for x in l count t)`（`always`+`count` 非法）；
     `al-bitop` 用 `(lambda (x) (floor x))`（defsubr 不产生 CL 函数，`#'fix` 未定义）
   - eval：`al-eval-special` ECASE 键改双冒号 `al::QUOTE`…`al::DEFUN`
     （`al:` 单冒号要求导出，AL 包 `:use` 空不导出，READ error）
+  - eval：`al-value-symbol` 对 AL `T`→t、`NIL`→nil（此前 `(eq (al-int "T") t)`
+    为假，cond else 键 `(t ...)` 与互递归真值全错，2026-08-12）
+  - builtins：补 `terpri`；补几何 `distance`/`angle`/`polar`（点 = (x y [z]) 列表）
+  - main：`al-run-file` 读文件改逐行（`file-length`+`make-string` 在 Windows SBCL
+    崩溃），2026-08-12
 
 ## 16.3 后续方向（未排期）
 
-- foreach/repeat/quote 常量载体细化、`/ 局部变量`、&optional/&rest
-- `al-bind` 等内建补齐、迭代器/异常（auto error handling）语义
-- CAD 真机对拍：`scripts/cad_verify.py` 同源用例在 engine 复跑
-- 后续回到 P1/P2 主线（T2-T4、链接器、ZELX）
+- 异常语义细化（*error* handler、vl-catch-all-apply 等 CAD 错误分发）
+- `al-bind` 等内建补齐（atoms-family、vl-string-*、wcmatch 等 VLISP 层）
+- CAD 真机对拍扩展（`scripts/cad_verify.py` 剩余 CAD 专属用例，需 CAD 环境）
+- 后续回到 P0/P1 主线（kernel/lib 包验证、ZELX）
 
 
 ---
@@ -677,18 +688,18 @@ atlispcc 编译产物与 engine 求值结果互相对照，验证编译器语义
 
 ## 17.3 P0 — 真实 @lisp 包全面落地
 
-| 项 | 内容 | 验收 |
+| 项 | 内容 | 状态 |
 |----|------|------|
-| P0-1 | kernel/lib 剩余 @lisp 包逐个编译验证（同型缺陷：gvar 槽映射、-lambda- 内嵌、cond 双 POP、ads-cmd、大小写敏感槽） | CAD 真机清单 25→30 项 |
-| P0-2 | 真机缺陷修复后锁入 byte-identity 回归 + pytest 全量 | 350 cases + 新增不回归 |
-| P0-3 | atlisp_u 偶发 `参数太少`（`@::compat1` foreach 边界原子）定位修复 | 加载返回值稳定 |
+| P0-1 | kernel/lib 剩余 @lisp 包逐个编译验证（同型缺陷：gvar 槽映射、-lambda- 内嵌、cond 双 POP、ads-cmd、大小写敏感槽） | ⏳ 需 CAD 真机（当前 MCP 不可用） |
+| P0-2 | 真机缺陷修复后锁入 byte-identity 回归 + pytest 全量 | 350 cases 无回归 |
+| P0-3 | atlisp_u 偶发 `参数太少`（`@::compat1` foreach 边界原子）定位修复 | ✅ 2026-08-12 离线定位：`tests/atlisp_u.fas` golden 为旧版（`COMMAND`/vla- 全大写、乱码槽），与当前编译器（`ads-cmd`/vla- 混合大小写）系统性差异，非当前编译器确定性 bug；@::compat1 foreach 协议（预载/遍历/CLEAR_ARGS）结构完整。真机复核待 CAD 环境 |
 
 ## 17.4 P1 — engine 与 CAD 对拍
 
-| 项 | 内容 | 验收 |
+| 项 | 内容 | 状态 |
 |----|------|------|
-| P1-1 | engine 对拍：`scripts/cad_verify.py` t-series 同源用例在 engine 复跑 | 双轨结果一致 |
-| P1-2 | engine 补全：foreach/repeat 精细、`/ 局部变量`、`&optional`/`&rest`、`_al-bind-alist`、异常语义 | engine 冒烟用例扩展 |
+| P1-1 | engine 对拍：`scripts/cad_verify.py` t-series 同源用例在 engine 复跑 | ✅ 2026-08-12：t01-t21 全部一致（`scripts/engine_crosscheck.sh`）；修复短 quote/T-NIL/terpri/几何内建/al-run-file 读文件 |
+| P1-2 | engine 补全：foreach/repeat、`/ 局部变量`、`&optional`/`&rest`、`_al-bind-alist`、异常语义 | ✅ 冒烟 S1-S17 全过（`engine/engine_smoke.lsp`）；异常捕获验证通过 |
 
 ## 17.5 P2 — 工具链收尾
 
