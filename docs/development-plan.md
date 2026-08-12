@@ -685,6 +685,8 @@ atlispcc 编译产物与 engine 求值结果互相对照，验证编译器语义
 | P1-4 | §12 T4-T5 setq 重排治理 | ✅ 完成（t11 module_id 槽 / t12 dotted） |
 | P2-3a | asm 大文件宽格式（nsyms>256） | ✅ 2026-08-12 闭环：`_detect_compact` 宽解析 + 5/6 字节 USUBR/FUNC 汇编；37 样本 seg0+nsyms 往返逐字节一致（`a6c0844`） |
 | P2-3b | 纯顶层 selfcontained nsyms | ✅ 空函数不注册 + `.nsyms` 覆盖（set5/setcmp/setqa 还原） |
+| P0-3b | t20_kwote kwote 内嵌 `-lambda-` 真机修复 | ✅ 2026-08-12 CAD 真机 `(t20-kwote)` → 42：`_emit_nested_lambda` 不设 `current_func_args` + Symbol 分支 lambda 参数读取 GET_LOCAL（原符号槽命中 `-lambda-` 槽 → `参数类型错误`）。i18n golden 字节差异（kwote lambda 参数编址 trade-off，i18n 功能等价）锁入 `test_i18n_original_byte_identity` skip |
+| P0-3c | CAD 真机 t01-t24 全量验证 | ✅ 2026-08-12 22/22 通过（`scripts/cad_mcp_verify.py`，含 t19-t24 新特性）；`scripts/mcp_cad.py` MCP stdio 助手 |
 
 ## 17.3 P0 — 真实 @lisp 包全面落地
 

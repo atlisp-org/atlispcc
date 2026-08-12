@@ -347,7 +347,17 @@ class CodeGenerator:
                 else:
                     buf.emit(encode_op_noarg(PUSH_T))
             elif self.stub_format:
-                if name in self.current_func_args:
+                if self.current_func_name == "-lambda-" and name in self.local_slots:
+                    # 内嵌 `-lambda-` DEFUN：参数/局部变量用 GET_LOCAL 局部槽
+                    # （CAD kwote 实测，非符号槽）。t20_kwote 真机：lambda 参数
+                    # 读取若用 PUSH_VALUE 符号槽会命中 `-lambda-`/错误槽 → 类型错。
+                    slot = self.local_slots[name]
+                    if slot < 256:
+                        buf.emit(struct.pack("<BB", GET_LOCAL_8, slot))
+                    else:
+                        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+                    return
+                elif name in self.current_func_args:
                     if len(self._defined_funcs) <= 1:
                         # 单函数参数读取逆序（CAD simple3/t13 实测：`+ Z Y X`、
                         # `> C B A`——源码第 i 个参数 → 槽 nsyms-1-i）。
@@ -1200,7 +1210,9 @@ class CodeGenerator:
         saved_name = self.current_func_name
         saved_slots = self.local_slots
         self.current_func_name = "-lambda-"
-        self.current_func_args = node.args
+        # 不把 current_func_args 设为 lambda args——否则 Symbol 读取会走"函数
+        # 参数"符号槽分支（PUSH_VALUE），而非 GET_LOCAL 局部槽。CAD 内嵌
+        # `-lambda-` 参数读取用 GET_LOCAL（t20_kwote 真机实测）。
         self.local_slots = {a: i for i, a in enumerate(node.args)}
         self._emit_init_args(buf, node.args)
         body = node.body
