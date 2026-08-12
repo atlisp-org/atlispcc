@@ -29,8 +29,8 @@ AutoCAD 与 ZWCAD 的字节码引擎源自同一 Lisp 字节码血统，指令�
 | PUSH_VALUE | 03 | 24 | u16 |
 | PUSH_INT8 | 32 | 41 | u8 |
 | PUSH_INT32 | 33 | 42 | i32 |
-| USUBR | 35 | 0d | argc + idx |
-| FUNC | 51 | 0d | argc + idx |
+| USUBR | 35 | 0d | argc + idx（AutoCAD 大文件 nsyms>256 用 5 字节 `idx16+flags=3`） |
+| FUNC | 51 | 0d | argc + idx（AutoCAD 大文件 nsyms>256 用 6 字节 `idx16+flags=1 00`） |
 | BUILD_LIST | 39 | 45 | u16 |
 | SETQ_G | 06 | 27 | u16 |
 | POP | 0a | 2a | — |
@@ -60,7 +60,7 @@ AutoCAD 与 ZWCAD 的字节码引擎源自同一 Lisp 字节码血统，指令�
 | INIT_DONE | 1c | 2c | — |
 | JUMP | 57 | 16 | s32 |
 | 符号块 | 5b | 57 | names\0... |
-| 单符号块（保留大小写） | 56 | — | name\0 00（`vl-ACAD-defun`） |
+| 单符号块（保留大小写） | 56 | — | name\0 00（`vl-ACAD-defun`、`_al-bind-alist`、`kwote`） |
 | FUNC_REF | 35/51 | — | argc + idx（命令模块代码） |
 | 字符串块 | 55 | 55 | count + len + data |
 | END_DEFUN | 16 | 03 | — |

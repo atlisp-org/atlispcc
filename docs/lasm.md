@@ -172,11 +172,17 @@
 
 | 指令 | 紧凑 stub | 自包含 |
 |------|----------|--------|
-| `USUBR` / `FUNC` | `35/51 <argc> <idx:1>`（3 字节） | `35/51 <argc> <idx:2> <flags> ...`（5/6 字节） |
+| `USUBR` / `FUNC` | `35/51 <argc> <idx:1>`（3 字节，nsyms≤256） | `35/51 <argc> <idx:2> <flags> ...`（5/6 字节） |
 | `PUSH_VALUE [0]` | `03`（单字节） | `03 <idx:2>`（3 字节） |
 | `PUSH_VALUE [i>0]` | `03 <idx:2>`（3 字节） | 同左 |
 | `CLEAR_ARGS` | `19 <argc:2> 00`（3 字节） | `19 <argc:2>`（3 字节） |
 | `DEFUN` | `14 <argc>x3 <mode>`（argc 编码，.lasm 显示 4 字节） | `14 <gv:2> <off:2>`（gvar 编码） |
+
+> **宽格式限制**：汇编器 compact 模式仅支持 **3 字节** USUBR/FUNC
+> （`encode_usubr3`/`encode_func3`），对 nsyms>256 的大文件（5 字节
+> `35 <argc> <idx16> <flags=3>` / 6 字节 `51 <argc> <idx16> <flags=1> 00`）
+> 会截断索引。`disasm` 端 `_detect_compact` 亦按短格式解析，宽文件会被误解析。
+> 宽格式大文件请用 CLI `compile`/`link` 生成，勿依赖 `disasm→asm` 往返。
 
 汇编器依据 `.format` 指令选择编码；缺省按指令特征自动判定。
 
@@ -297,3 +303,5 @@ atlispcc asm --zelx x.lasm x.zelx    # → ZWCAD ZELX
 - 反汇编器对未知操作码输出 `UNK_<hex>`，汇编时不支持（编码会失败）
 - 已知限制：复杂多函数文件（4+ 交叉引用）`disasm → asm` 的资源段符号槽序
   不与 CAD 原布局逐字节一致，但产物仍有效可反编译加载
+- **宽格式限制**：compact 汇编仅支持 3 字节 USUBR/FUNC；nsyms>256 的大文件
+  （5/6 字节宽格式）请用 CLI `compile`/`link` 生成，`disasm→asm` 往返会截断索引

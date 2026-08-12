@@ -11,9 +11,21 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 python scripts/cad_verify.py          # 直接运行
 ```
 
-`scripts/cad_verify.py` 逐个编译 t01-t15 → 独立 CAD 连接加载 → 断言返回值。
-**每个用例独立连接**（避免 CAD 会话累计失效）；t10 混合模式为已知缺陷
-（见 `docs/development-plan.md` §8.C2）。手动断言脚本见 `tests/cad_verify.lsp`。
+`scripts/cad_verify.py` 逐个编译 t01-t24 + i18n（**25 项**）→ 独立 CAD 连接
+加载 → 断言返回值。**每个用例独立连接**（避免 CAD 会话累计失效）；t10 混合
+模式已随 byte-identity 转正（2026-08-05，KNOWN_ISSUES 已空）。手动断言脚本见
+`tests/cad_verify.lsp`。
+
+> **CAD 模态对话框自动关闭**：CAD 偶发弹出模态对话框（`alert` 错误框、命令
+> 中断框）会阻塞 `atlisp-mcp` 的 eval 调用。可用 `tools.cad_dialog_killer`
+> 自动关闭：
+> ```sh
+> python -m tools.cad_dialog_killer <cad-pid> --watch --timeout-s 3600 &
+> python -m tools.cad_dialog_killer all --watch --timeout-s 3600   # 或扫描全部 CAD
+> ```
+> 工具用 C#（`tools/src/cad_dialog_killer.cs`）编译为 exe，首次运行自动编译，
+> 枚举 CAD 窗口检测可见 `#32770` 对话框并模拟点击关闭。实测自动关闭 `alert`
+> 并解除 MCP 阻塞（2026-08-08）。需 Windows + .NET Framework。
 
 ## 为什么需要安全策略
 
@@ -41,7 +53,7 @@ CAD 加载前，先在本项目内校验输出：
 atlispcc disasm out.fas out.lasm
 # 反编译，确认函数/参数/符号结构
 atlispcc decompile out.fas out_decomp.lsp
-# 单元测试确保 167/167
+# 单元测试确保 348 passed（347 + 1 skip）
 python -m pytest
 ```
 

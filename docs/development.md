@@ -25,22 +25,29 @@ asm/
   opcodes.py         操作码定义与编码函数（codegen/linker/汇编共用）
 
 compiler/
-  cli.py             CLI 入口（atlispcc），子命令：compile/decompile/disasm/asm/validate/link/build-vlx
+  cli.py             CLI 入口（atlispcc），子命令：compile/decompile/info/analyze/roundtrip/validate/zelx/unzelx/disasm/asm/link/build-vlx
   parser.py          Lisp 源码解析器 → AST
-  ast.py             AST 节点定义（含 Defpackage、InPackage）
+  ast_nodes.py       AST 节点定义（含 Defpackage、InPackage）
   packages.py        包系统：PackageTable、名混淆/还原
   symbol_table.py    符号表构建与作用域分析（含包解析）
   cad_symbols.py     CAD 符号槽顺序推导（CadSymbolCollector）
   codegen.py         字节码生成器（AST → 指令流）
   resource_builder.py 常量/符号/函数索引 → 资源段
   fas_writer.py      指令流 → FAS4 二进制
-  opt.py             优化器（-O）：8 个 pass 跨 O1-O3 级别
+  opt.py             优化器（-O）：9 个 pass 跨 O1-O3 级别
   analyzer.py        编译分析与统计
+  dep_analysis.py    调用图/依赖分析（analyze 子命令）
+  roundtrip.py       编译往返冒烟（roundtrip 子命令）
+  _gvar_map.py       commands+顶层混合 gvar 槽重映射
   linker.py          多文件 FAS 链接器
   vlx_builder.py     VLX 容器构建器
 
+engine/
+  atlisp.asd         SBCL AutoLISP 运行时（ASDF 系统，实验性跨校验器）
+  src/*.lisp         packages/values/reader/env/eval/builtins/main
+
 tools/
-  validate.py        LSP 语法验证器
+  validate.py        LSP 语法验证器（+ 危险函数/危险命令/未使用局部变量）
   fas-analyzer.py    FAS4 分析工具
   fas-split.py       FAS 分割工具
   decrypt_fas4.py    解密工具
@@ -61,13 +68,17 @@ tools/
 | `compiler/codegen.py` | 字节码生成器（AST → 指令流） |
 | `compiler/resource_builder.py` | 常量/符号/函数索引 → 资源段 |
 | `compiler/fas_writer.py` | 指令流 → FAS4 二进制 |
-| `compiler/opt.py` | 优化器：8 个 pass 跨 O1-O3 级别 |
+| `compiler/opt.py` | 优化器：9 个 pass 跨 O1-O3 级别 |
 | `compiler/analyzer.py` | 编译分析与统计 |
+| `compiler/dep_analysis.py` | 调用图/依赖分析（analyze 子命令） |
+| `compiler/roundtrip.py` | 编译往返冒烟（roundtrip 子命令） |
+| `compiler/_gvar_map.py` | commands+顶层混合 gvar 槽重映射 |
 | `asm/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
 | `asm/opcodes.py` | 操作码定义与编码函数（codegen/linker/汇编共用） |
 | `compiler/linker.py` | 多文件 FAS 链接器 |
 | `compiler/vlx_builder.py` | VLX 容器构建器 |
 | `validate.py` | 生成的 `.lsp` 语法验证器 |
+| `engine/atlisp.asd` | SBCL AutoLISP 运行时（实验性，跨校验器） |
 
 ## 架构管线
 
@@ -89,7 +100,7 @@ Lisp 源码 → Parser.parse() → AST
 - **O0**：无优化
 - **O1**：常量折叠 + 死分支消除 + 窥孔优化
 - **O2**：O1 + 常量传播 + 死赋值消除 + 重复 O1
-- **O3**：O2 + 跨函数常量传播 + 死代码消除 + 小函数内联
+- **O3**：O2 + 跨函数常量传播 + 死代码消除 + 小函数内联 + 删除死函数
 
 每个优化是可组合的 Pass 类：
 
@@ -103,6 +114,7 @@ Lisp 源码 → Parser.parse() → AST
 | CrossFuncConstPropagate | 常量返回的 0 参函数替换为常量 |
 | DeadCodeElim | 删除 `exit`/`quit` 后的死代码 |
 | InlineSmallFuncs | 内联单次调用的小函数 |
+| RemoveDeadFuncs | 删除未被引用且非命令的函数（仅当有入口点时，O3） |
 
 ### 反编译器管线（decompile）
 
@@ -215,7 +227,7 @@ CAD 真机 add/mul、square/sum-squares、f1/f2/f3、重名冲突场景全部可
 ```sh
 ./scripts/run_tests.sh         # 一键全量检查（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）
 ./scripts/run_tests.sh --cad   # 附加 CAD 真机验证（需 CAD 连接）
-python scripts/cad_verify.py   # CAD 真机验证（逐个编译 t01-t15 加载断言）
+python scripts/cad_verify.py   # CAD 真机验证（逐个编译 t01-t24+i18n 加载断言，25 项）
 python -m pytest               # 运行所有测试（348 用例 + 1 skip 占位）
 python -m pytest tests/ -v     # 详细输出
 python -m pytest tests/test_resource_stream.py  # 资源码专项测试
@@ -227,7 +239,7 @@ python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
 - `test_cli.py` — CLI 路径（28 用例：compile/-O/--analyze/--report/validate/link/vlx/info/analyze/dispatch + validate 补强规则 + 源码编码检测 + 顶层 progn/条件 defun/atlisp_u 综合包编译）
-- `test_compile_decompile.py` — 编译-反编译往返（73 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
+- `test_compile_decompile.py` — 编译-反编译往返（73 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t-series 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
 - `test_compiler_output.py` — FAS 输出正确性（60 用例，含 7 对 CAD golden 逐字节比对 + t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
 - `test_optimizer.py` — 所有优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（13 用例，含重名冲突警告 + 3 份 CAD golden byte-identity）
@@ -247,8 +259,9 @@ python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 FAS4 输出格式与 AutoCAD 编译器一致：
 - seg0 = 函数字节码（`<nsyms> $...`），seg1 = 资源段（常量/符号/函数索引）
 - 紧凑 stub 格式 `total_size = len(seg0) + 1`（CAD 实测恒等：cross/m2/m3/multi/sh/lambda_test 六份产物；seg0 = `<nsyms> $` 后的纯字节码）；自包含格式 `total_size = len(seg0_payload)`。`FasWriter.write(..., compact=True)` 走前者（CLI/链接器/紧凑汇编）
-- **汇编器（`asm/assembler.py`）同时支持两种布局**：`.lasm` 头部的 `.format compact|selfcontained` 指令选择布局与 stub 编码（USUBR/FUNC 3 字节、PUSH_VALUE[0] 单字节、CLEAR_ARGS `19 <argc> 00`）；缺省按指令特征自动判定。`disasm → asm` 往返 seg0 逐字节一致，紧凑产物可在 CAD 加载执行
+- **汇编器（`asm/assembler.py`）同时支持两种布局**：`.lasm` 头部的 `.format compact|selfcontained` 指令选择布局与 stub 编码（USUBR/FUNC 3 字节、PUSH_VALUE[0] 单字节、CLEAR_ARGS `19 <argc> 00`）；缺省按指令特征自动判定。`disasm → asm` 往返 seg0 逐字节一致，紧凑产物可在 CAD 加载执行。**限制**：汇编器 compact 模式仅支持 3 字节 USUBR/FUNC，对 nsyms>256 的宽格式文件（5/6 字节）会截断——宽格式大文件请用 CLI compile/link 生成，避免 disasm→asm 往返
 - 紧凑 stub 生成规则（与 CAD 逐字节一致）：中间 setq 无 POP、尾 setq 先 DUP、无 else 的 `if` 补 PUSH_NIL、有参函数末尾 `19 <argc> 00`（CLEAR_ARGS）
+- **大文件宽格式**（nsyms>256）：5 字节 USUBR `35 <argc> <idx16> <flags=3>`、6 字节 FUNC `51 <argc> <idx16> <flags=1> 00`（`asm/opcodes.py` `encode_usubr`/`encode_func`，flags 内联原 `00 03` 清理；atlisp_u.lsp 502 函数实测）
 - seg1 使用滚动 XOR 加密（`find_key`/`decrypt_stream`），尾部含密钥长度字节 + 密钥 + `;fas4 crunch` 标记
 - 段分隔符为 `16 24 0d 0a`，`nsyms` 为符号槽数（资源注册顺序）
 - seg1 资源流 = 模块头(`14 01 01 01 00`) + 代码引用 + 符号/字符串注册 + GVARINIT + DEFCODE + INIT_DONE + 模块代码；`seg1` 头 `items` = GVARINIT + INIT_DONE 计数
@@ -258,6 +271,30 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - **模块注册段**（混合 defun+顶层）：注册函数名 + 顶层表达式符号（连续 SYMBOL 合并 5b 块，遇 STRING 分块）；`nsyms = len(entries) - 模块注册符号数 + 1`；函数注册 GVARINIT st_init = nsyms；DEFCODE 后 GVARINIT var_pos = 模块注册符号数 + 2
 - 多函数函数间分隔符：`16`（END_DEFUN；CLEAR_ARGS `19 <argc> 00` 已由 codegen 生成，分隔符只追加 `16`）
 - 反编译回归参考：AutoCAD 产物 `tests/fun-cad.fas`（对应 `tests/fun.lsp`）
+
+**kwote 机制**（`(function (lambda ...))`，v0.1.18+）：
+
+- `_emit_nested_lambda` 发内嵌 `-lambda-` DEFUN（`JUMP <label:4>; 14 argc argc argc 00;
+  体; CLEAR_ARGS; 16; <label>`），随后 `PUSH_G <lam_idx>; FUNC3 1 <kwote>; NIL;
+  PUSH_NIL; NIL`。每个内嵌 `-lambda-` 独立符号槽（t3 槽 18、t4 槽 17、t5 槽 16）。
+- 资源段：每个内嵌 lambda 独立 DEFCODE，在 GVARINIT(0, nsyms) 前置发射、按 seg0
+  偏移逆序；`-lambda-` 保留小写、不进 `symtab.entries`（仅 DEFCODE 区注册）——
+  fas_nsyms 比 codegen_nsyms 大 1，seg0 引用 `gvar 槽 - 2`（`_patch_usubr_idx`
+  的 offset 修正）。
+- 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，v0.1.22）：内嵌 `-lambda-`
+  SUBR（seg0 紧凑 stub `14 <argc>x3 00` + 体），模块代码
+  `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`。
+
+**`command` 内建**：资源段注册名为 `ads-cmd`（非 `COMMAND`）；调用字节
+`FUNC3 + NIL + PUSH_NIL + NIL`（base-function 真机实测）。
+
+**`/ 局部变量`**（t11）：`_al-bind-alist` 符号 + `(quote (locals...))` 常量独立
+注册（0x56 保留大小写）；绑定字节 `PUSH_G <const>; FUNC 1; NIL; PUSH_NIL; NIL; POP`；
+CLEAR_ARGS = argc + locals。
+
+**commands + 顶层混合**（atlisp_u.lsp）：`compiler/_gvar_map.py` 解析 seg1 模块
+注册段得到 `{符号名: gvar槽}` 映射，`_offset_slots` 二次生成模块代码时按实际
+槽位重映射 USUBR/PUSH_G/FUNC（`symtab_idx+1` 不再等于实际 gvar 槽）。
 
 反编译器同时支持两种布局：
 - **自包含格式**（`tests/cad/i18n-cad.fas`、`tests/cad/i18n.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
@@ -274,8 +311,12 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 
 `compiler/cli.py` 的 `cmd_compile` 完整流程：
 
+0. **源码改写**（@lisp 综合包支持，v0.1.21+）：`_flatten_top_level_forms`（顶层
+   `(progn ...)` 展开）、`_lower_nested_defuns`（条件/嵌套 defun → `(setq f
+   '(lambda ...))`）、`_rewrite_top_lambda_binds`（纯顶层 lambda → `-lambda-`
+   SUBR）、`_lower_multi_kwote`（多 kwote → 引用数据）、`_lower_immediate_lambda`
 1. **符号注册**：`derive_symbol_names`（`compiler/cad_symbols.py`）按 CAD 顺序收集符号，注册到 `SymbolTable`
-2. **codegen**：`CodeGenerator(stub_format=True)` 生成 seg0 函数字节码（含 CLEAR_ARGS `19 <argc> 00`）
+2. **codegen**：`CodeGenerator(stub_format=True)` 生成 seg0 函数字节码（含 CLEAR_ARGS `19 <argc> 00`）；nsyms>256 时 `wide_subr=True`（5/6 字节宽格式）
 3. **顶层表达式**：`_build_cad_module_code` 生成 CAD 风格模块代码（setq 用 `PUSH_G 值+1; DUP; SETQ_G 变量+1`，非 setq 用 codegen + 槽偏移 `_offset_slots`）
 4. **seg1 构建**：`ResourceBuilder.build(..., top_level_count=...)` — 模块注册含顶层符号；多函数用 `_func_ranges_bytes`（末函数 end = total_size）
 5. **nsyms**：`len(entries) - 模块注册符号数 + 1`（模块注册 = 函数名 + 顶层符号数）
@@ -283,6 +324,11 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 7. **两轮构建**：先建 seg1（获取 gvar 表）→ patch seg0 → 重建 seg1（代码引用长度依赖最终 seg0）
 
 `_build_cad_module_code` 生成的模块代码（`_slot_of` 查符号/字符串槽，字符串 key 为 `__str_<值>__`）：
+
+- 顶部 `PUSH_G <模块注册符号数+1>; POP` 占位；setq → `PUSH_G 值+1; DUP; SETQ_G 变量+1`
+- `(in-package :@)` → `PUSH_VALUE <pkg槽>; FUNC_REF in-package`
+- 函数注册尾 `JUMP + PUSH_G <b>; SETQ_G <c>`（b = `2n+1+top_level_count-i`，c = 函数符号槽+1）
+- **post-form 分组**：最后一个 defun 之后的顶层语句排到函数注册尾之后（`n_post_forms`）
 
 ## 调试与验证
 
@@ -341,7 +387,7 @@ python -m tools.find_key encrypted.fas    # 在 FAS 中定位 XOR 加密密钥
 ### 生成文件验证
 
 ```sh
-python -m tools.validate output.lsp       # 语法 + 危险函数 + 未使用局部变量
+python -m tools.validate output.lsp       # 语法 + 危险函数 + 危险命令（validate_command）+ 未使用局部变量
 ```
 
 ### ZWCAD ZELX（逆向 LispConverter）
@@ -363,6 +409,25 @@ python -m tools.cad_probe ...                 # MCP CAD 交互辅助（开发调
 
 `tools.lisp_converter_auto`（ZWCAD LispConverter.exe GUI 自动化，样本生产）与
 `tools.cad_probe` 依赖桌面环境，通常不用于 CI。
+
+### engine/（SBCL AutoLISP 运行时）
+
+`engine/` 是一个实验性 SBCL/ASDF 运行库（`engine/atlisp.asd`），用于脱离 CAD
+环境执行 AutoLISP 源码，作为编译器语义的跨校验器：
+
+```sh
+cd engine
+sbcl --noinform --non-interactive --load atlisp.asd \
+     --eval '(asdf:load-system "atlisp")' \
+     --eval '(in-package :atlisp)' \
+     --eval '(format t "~a~%" (al-eval-source "(+ 1 2)"))'
+```
+
+- 值模型：AutoLISP 数据映射到 CL 原生值（nil/t/int/double-float/string/AL 包符号/cons）。
+- 公共 API（`:atlisp` 导出）：`al-eval-source` / `al-run-file` / `al-repl`。
+- 冒烟基线：算术/defun/apply/list/dotted pair/if/while/cond/foreach/strcat/
+  动态作用域/function-lambda/length/logand/fix 全部通过。
+- 与 FAS4 关系：不参与字节码编解码，仅对照同一源码的编译产物与引擎求值结果。
 
 ## 代码规范
 

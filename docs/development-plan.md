@@ -466,630 +466,97 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 
 ---
 
-## 8. 功能完善开发计划（2026-08 版，v0.1.9 → v0.2）
+## 8. 功能完善开发计划（2026-08 版，v0.1.9 → v0.2）✅ 已完成（D 除外）
 
-> 基于 v0.1.9（200/200 测试通过，9 个 golden 对字节一致）与 CAD golden 实测
-> 差异分析制定。**均衡推进 A（健壮性）+ B（测试/CI）+ C（字节兼容）**，
-> ZELX（D）最后。
->
-> **golden 实测样本位置**（本次核实）：全部位于 `tests/cad/`——
-> `t*.fas`（CAD 官方产物，配套 `t*.lsp` 源与 `t*_atlispcc.fas` 我方产物对比）、
-> `cadtest_v10-17.fas`（含 `.lsp`/反编译对照）、`i18n-cad.fas`/`i18n.fas`（i18n 混合模式目标）。
-> 原计划引用的 `D:/atlisp-test/cad_t*.fas` **当前不存在**，golden 一律以 `tests/cad/` 为准。
->
-> **t-series golden 已补齐**（2026-08-04/05，AutoCAD 24.1s `vlisp-compile` 生成）：
-> 源码与 golden 均自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，18 份，含 t04/t05）。
-> 字节一致状态：
-> t01-t15/t18 **byte-identity**（18 项已入 `test_t_series_byte_identity` 回归，
-> 2026-08-04 转正 t03/t09/t13/t15，2026-08-05 转正 t10/t11/t12/t14 + 新增 t18，
-> 2026-08-06 转正 t16/t17）；
-> `CAD_T_SERIES_DIFF` 已空，`pytest` 254 passed。
+> 精简归档：A（工具链健壮）/B（测试/CI）/C（字节兼容）全部完成；D（ZELX
+> 复杂压缩）为 P2 遗留，需 ZWCAD 真机（阻塞，见 §17 P2-2）。详细阶段已折叠。
 
-### 8.A 工具链健壮性（P1）
-
-| 任务 | 说明 |
+| 任务 | 结论 |
 |------|------|
-| A1 修复 `python compiler/cli.py` 崩溃 | ✅ **已修复**（2026-08-04）：`compiler/ast.py` 改名 `ast_nodes.py` 并更新全部 import（15 个文件），双入口 `python compiler/cli.py` 与 `python -m compiler.cli` 均可运行 |
-| A2 README 与打包矛盾 | `pyproject.toml` `packages.find` 已含 `tools*`（会随 wheel 分发），README §工具 却写"不随 pip 包分发"。修正 README 表述 |
-| A3 validate.py 门禁补强 | ✅ **已补**（2026-08-04）：新增 `validate_danger`（quit/exit/startapp warn）+ `validate_unused`（/ 局部变量未使用 warn），warn 不阻断返回码；附 4 个测试用例 |
-| A4 `--analyze` 统计增强 | ✅ **已补**（2026-08-04）：analyze 增 `symbol_slots`（stub nsyms 估算）；CLI `--analyze` 输出符号槽数、优化前后指令/符号槽 delta、编译后 seg0/seg1 字节数与实际 nsyms |
+| 8.A 工具链健壮 | ✅ CLI 双入口、validate_danger/unused/command 门禁、`--analyze` 增强 |
+| 8.B 测试/CI | ✅ t-series byte-identity 回归（18 份 golden）、i18n roundtrip、mypy、twine 依赖 |
+| 8.C 字节兼容 | ✅ t01-t18 **18/18 byte-identity**；i18n 拆件 p01-p07 + 原文件 byte-identity |
+| 8.D ZELX 复杂压缩 | ⏳ 小型简单文件逐字节一致（15/15）；复杂文件阻塞（需 ZWCAD 环境） |
 
-### 8.B 测试与 CI 完善（P1）
-
-| 任务 | 说明 |
-|------|------|
-| B1 ~~t-series byte-identity 回归~~ | **恢复并已落地**（2026-08-04/06）：源码与 golden 自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，18 份）。`test_t_series_byte_identity` 覆盖 **18 项**（t16/t17 于 08-06 转正，`CAD_T_SERIES_DIFF` 空）。t12/t14 于 08-05 转正（资源段 + `vl-ACAD-defun` 注册），t10/t11 同日转正（混合模式符号序 / `_al-bind-alist` 协议），t18 同日新增转正（互递归多函数），t16/t17 08-06 转正（foreach/repeat stub 协议） |
-| B2 CI mypy 校验 | CI 已跑 `mypy .`（3.10-3.13 矩阵，`pyproject.toml` 已配 mypy `python_version=3.10`）；本机 Python 3.9 无 mypy，以 CI 结果为准 |
-| B3 twine check 依赖 | ✅ **已补**（2026-08-04）：dev 依赖加 `build`/`readme-renderer`/`twine` |
-| B4 混合模式 roundtrip 测试 | ✅ **已加**（2026-08-04）：`test_i18n_mixed_mode_roundtrip`（`tests/cad/i18n.lsp` 编译→反编译→validate 通过，与 C2 共用目标） |
-
-### 8.C 字节级 CAD 兼容补齐（P0，核心）
-
-实测差异汇总（`cad_symbols.py` 符号收集序与 CAD 不一致）：
-
-| 文件 | 差异数 | 差异形态 | 根因假设 |
-|---|---|---|---|
-| t03_fib | ✅ **已修复**（2026-08-04） | 递归函数名多次自身调用共享重复槽（t03 递归两次仅 1 重复 FIB） |
-| t09_funcall | ✅ **已修复**（2026-08-04） | 同函数内跨函数调用共享重复槽（sum-of-squares 两次调用 square） |
-| t10_init | ✅ **已修复**（2026-08-05） | 混合模式顶层符号序 + 模块代码多函数尾（见 C2/§9.2） |
-| t11_localvars | ✅ **已修复**（2026-08-05） | `_al-bind-alist` 局部变量绑定协议（codegen 注入 `(_al-bind-alist '(locals...))`，CLEAR_ARGS = argc + locals） |
-| t12_quote | ✅ **已修复**（2026-08-05） | dotted `'(1 . 2)` 常量 `2a` 收尾（仅资源段差异） |
-| t13_nested_if | ✅ **已修复**（2026-08-04） | 单函数参数绑定/读取逆序（simple3/t13 实测 `+ Z Y X`） |
-| t14_command | ✅ **已修复**（2026-08-05） | c: 命令需 `vl-ACAD-defun` 资源注册（模块注册段插入 `56` 编码，不进 symtab.entries） |
-| t15_cad_funcs | ✅ **已修复**（2026-08-04） | 共享参数槽位（源码序最先使用者之后）+ 字符串 gvar 槽 |
-
-技术路线（每项用 `tests/cad/` golden 实测迭代 `CadSymbolCollector`）：
-1. ~~t15/t13（简单 swap）~~ ✅：改 `_collect_byteorder` builtin/函数名去重序、共享参数槽位、单函数参数逆序
-2. ~~t03/t09（偏移 -1）~~ ✅：递归/跨函数调用重复槽共享（多次调用仅 1 重复槽）
-3. ~~t11（局部变量）~~ ✅：`_al-bind-alist` 绑定协议（codegen 生成绑定序列，见 §9.2 阶段 1）
-4. ~~t12（quote 常量）~~ ✅：dotted 常量 `2a` 收尾（见 §9.2 阶段 3）
-5. ~~t14（c: 命令）~~ ✅：`vl-ACAD-defun` 资源注册（见 §9.2 阶段 3）
-
-> **样本来源**：源码与 golden 自包含于 `tests/cad/`——`t0X_xxx.lsp`（源）+
-> `t0X_xxx_cad.fas`（CAD `vlisp-compile` 2026-08-04/05 生成，18 份，含 t04/t05），
-> 另有 `tests/cad/t*.fas`/`t*_atlispcc.fas` 成对对比样本。t01-t15/t18 **全部**
-> byte-identity 回归（`test_t_series_byte_identity`，18/18，t16/t17 于 2026-08-06 转正）。
-
-**C2 i18n 混合模式（原为最大缺口 1139 字节差 / -69 len）**
-
-- 根因：`i18n.lsp` = defun + 顶层表达式**交错**（非先 defun 后顶层），
-  `cad_symbols.py` 与 `_build_cad_module_code` 只支持"函数块在前、顶层在后"
-- 方案：
-  1. 扩展 `CadSymbolCollector.collect_program` 支持 defun/顶层交错时的"持续块规则"
-     （顶层表达式符号在函数体内建之前，按源码序跨块收集）
-  2. `ResourceBuilder.build` 的 `module_entries` 切分逻辑改为按交错序
-  3. 用 `tests/cad/i18n.lsp` + `tests/cad/i18n-cad.fas` 迭代至字节一致
-- 进度：**拆件 p01-p07 全部 byte-identity**（2026-08-06，`tests/cad/i18n_split/`，
-  锁入 `I18N_SPLIT_FULL_IDENTICAL`；seg0+seg1+nsyms 对齐）。
-  拆件修复了：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）、
-  stub 下 if-then 分支尾 setq 补 DUP、"setq 目标归属优先于读取"
-- 验收：✅ **已完成**（2026-08-06）——`i18n.lsp` 原文件编译 seg0/seg1/nsyms 与
-  CAD golden 逐字节一致，锁入 `test_i18n_original_byte_identity`
-
-**C3 补充 CAD 验证样本**
-
-- ~~扩充 `tests/cad/` 样本集（while/cond/局部变量/foreach/repeat/递归多函数/c: 命令）~~ ✅ **已补**（2026-08-05）：
-  - while/cond/局部变量/c: 命令原已覆盖（t04/t05/t11/t14）
-  - **新增 t16_foreach、t17_repeat、t18_multi_recursive**（互递归多函数），
-    源码与 CAD golden（`vlisp-compile 'st` 真机生成）自包含于 `tests/cad/`
-  - CAD 实测产出命令：`(vlisp-compile 'st "src.lsp" "out.fas")`
-- 现状：**18/18 全部 byte-identity 转正**（t16/t17 于 2026-08-06 转正，见 §9.2 记录；i18n 混合模式拆件 p01-p07 于 08-06 转正）
-
-### 8.D ZELX 复杂文件压缩（P2）
-
-| 任务 | 说明 |
-|------|------|
-| D1 复刻 ZWCAD 压缩重编码 | `zelx_build.py` 对小型/简单文件逐字节一致（15/15 样本，2026-08-11 复核：payload 解密后与官方 zelx 逐字节一致，含 asetq/astrcat/awhile/s3f/snest/sstr/szero/t1/tiny）；复杂文件缺 ZWCAD 压缩重编码（模块代码重编码 + 符号重排）。对照 `docs/zelx-format.md` §5-§6 与 `tools/zelx_diff.py` 逆向 LispConverter.exe。**阻塞**：复杂样本（base-whole/at-math/@lisp）与 ZWCAD/LispConverter 仅在 Windows 机器，本机（Linux，无 ZWCAD）无法产出/验证，需在 CAD 环境推进 |
-| D2 ZELX 真实加载验证 | 现状标记"ZWCAD 能否加载需真实验证"；建立 ZWCAD 测试实例验证小型/复杂 zelx 加载。**阻塞**：同 D1（需 ZWCAD 真机） |
-
-### 8.E 执行顺序与验收
-
-**执行顺序（均衡推进 A+B+C）**：
-1. **8.A + 8.B 先行**（P1，低风险、可独立并行）：A1 ast 重命名、A2 文档、A3 validate、A4 analyze、B2 mypy、B3 readme-renderer、B4 i18n roundtrip
-2. **8.C 穿插**（P0，核心）：t15→t13→t03/t09→t14→t12→t11→C2 i18n（每项用 `tests/cad/` golden 迭代）
-3. **8.D 最后**（P2，独立）
-
-**验收标准**：
-- **8.A 完成**：`python compiler/cli.py` 与 `python -m compiler.cli` 双入口可运行（✅）；README 无矛盾；validate 增规则有测试；`--analyze` 输出新增统计字段
-- **8.B 完成**：t-series byte-identity 回归落地（16 项 identical + 2 项 xfail，新增 test_resource_stream 24 用例）；B4 i18n roundtrip 用例通过；CI 绿（mypy + pytest）；dev 依赖含 readme-renderer
-- **8.C 完成**：✅ t10/t11/t12/t14 由 xfail 全部转正为 byte-identity（移入 `CAD_T_SERIES_IDENTICAL`；t03/t09/t13/t15 已于 2026-08-04 转正）；✅ i18n 混合模式字节一致（`test_i18n_original_byte_identity`，2026-08-06）；`pytest` 全绿（无 xfail）
-- **8.D 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过
+**8.C 关键协议（实现参考）**：递归/跨函数重复槽共享（t03/t09）；参数逆序（t13）；
+`_al-bind-alist` 局部变量绑定（t11）；dotted `'(1 . 2)` 常量 `2a` 收尾（t12）；
+`c:` 命令 `vl-ACAD-defun` 保留大小写注册（t14）；foreach/repeat 内建 stub（t16/t17）。
+涉及：`compiler/{codegen,cad_symbols,resource_builder,cli}.py`、`tests/cad/`
 
 ---
 
-# 9. 字节兼容收尾开发计划（2026-08-05 版，v0.1.9 → v0.2）
+# 9. 字节兼容收尾开发计划（2026-08-05 版）✅ 已完成 18/18
 
-> **范围**：聚焦字节兼容 P0/P1（t11/t10/t12/t14/i18n 全转正），ZELX（8.D）暂缓。
-> **CAD 验证**：独立实例 + 快照流程（遵守 §3.7 安全策略，不手动 patch 字节码）。
-> **产出**：本文件作为单一事实源，逐阶段更新。
+> 精简归档：t10/t11/t12/t14/i18n/t16/t17 全部转正 byte-identity，`CAD_T_SERIES_DIFF` 空。
 
-## 9.1 现状核实（2026-08-06 实测，`pytest` 266 passed）
-
-> 变参样本（t19_variadic、t21_variadic_extra）**无 CAD golden**，仅真机功能验证
-> （`scripts/cad_verify.py`，22 项）；反编译参数名在单函数已修复、多函数仍有
-> 错位（见 §3.5b/§3.5c）。
-
-| 项 | seg0 | seg1 | nsyms | 根因 | 优先级 |
-|---|---|---|---|---|---|
-| t11_localvars | ✓ | ✓ | 8vs8 | **已转正 2026-08-05**（`_al-bind-alist` 绑定协议） | P0 ✅ |
-| t10_init | ✓ | ✓ | 4vs4 | **已转正 2026-08-05**（混合模式顶层符号序 + 模块代码多函数尾） | P0 ✅ |
-| t12_quote | ✓ | ✓ | 5vs5 | **已转正 2026-08-05**（dotted 常量 `2a` 收尾） | P1 ✅ |
-| t14_command | ✓ | ✓ | 6vs6 | **已转正 2026-08-05**（`vl-ACAD-defun` 注册 + 命令模块代码） | P1 ✅ |
-| i18n 混合模式 | ✓ | ✓ | 92vs92 | **已转正 2026-08-06**（defun+顶层交错持续块规则，原文件 `test_i18n_original_byte_identity` 回归） | P1 ✅ |
-| t18_multi_recursive | ✓ | ✓ | 7vs7 | **已转正 2026-08-05**（互递归多函数，天然一致） | C3 ✅ |
-| t16_foreach | ✓ | ✓ | 5vs5 | **已转正 2026-08-06**（CAD stub foreach 内建调用协议：`PUSH_G/PUSH_NIL/INIT_ARGS 3` 预载 + `JMP32_IFNOT` + 尾 `CLEAR_ARGS 1`） | C3 ✅ |
-| t17_repeat | ✓ | ✓ | 4vs4 | **已转正 2026-08-06**（repeat 递减循环：`GET_LOCAL; PUSH_INT8 0; FIX_LEQ; JMP32_IFNOT` + 体前 `DEC`） | C3 ✅ |
-
-## 9.2 已转正（byte-identity，18/18）✅
-`t01_math` `t02_recursion` `t03_fib` `t04_while` `t05_cond` `t06_strcat`
-`t07_list` `t08_apply_mapcar` `t09_funcall` `t10_init` `t11_localvars`
-`t12_quote` `t13_nested_if` `t14_command` `t15_cad_funcs`
-`t18_multi_recursive` `t16_foreach` `t17_repeat`
-（2026-08-06：t16/t17 转正后 `CAD_T_SERIES_DIFF` 空，`pytest` 266 passed；
-i18n 原文件 byte-identity 锁入 `test_i18n_original_byte_identity`）
-
-> **t18_multi_recursive 转正记录（2026-08-05）**：互递归（`is-even`/`is-odd` 互相调用）
-> 属"多函数 + 递归重复槽"场景，符号槽/字节码与 CAD 天然一致，无需新逻辑。
-
-> **t16_foreach / t17_repeat 转正记录（2026-08-06）**：CAD 把 `foreach`/`repeat`
-> 编译为**对内建遍历的真实调用协议**，codegen 改为与之逐字节一致的 stub 编码：
-> - **foreach**：列表求值→存局部槽 → `PUSH_G <var>; PUSH_NIL; INIT_ARGS 3`（预载）
->   → loop 头 `GET_LOCAL; JMP32_IFNOT` → 体 `GET_LOCAL; CAR; SETQ_G <var>;
->   GET_LOCAL; CDR; SET_LOCAL` 推进 → 体各式无 POP → `JUMP` → 尾 `CLEAR_ARGS 1` 清理预载
-> - **repeat**：次数→存局部槽 → loop 头 `GET_LOCAL; PUSH_INT8 0; FIX_LEQ; JMP32_IFNOT`
->   （n<=0 退出）→ 体前先 `GET_LOCAL; DEC; SET_LOCAL` 递减 → 体各式无 POP → `JUMP`；
->   无预载，尾部无 CLEAR_ARGS
-> - **DEFUN 头**：含 foreach/repeat 的函数 `b1=argc+1`（`14 <argc+1> <argc> <argc> 00`）
-> - **反编译器**：`_defun_headers_are_argc` 的 stub 检测允许 `b1 == b3+1`
->   （否则 `is_stub_format` 误判 False，带 foreach/repeat 多函数文件函数命名失败）
-> 差异不影响功能（CAD 真机 `(sum-foreach '(1 2 3 4))`→10 ✓，`scripts/cad_verify.py` 15/15）。
-
-> **t12_quote 转正记录（2026-08-05）**：根因是 dotted 引用 `'(1 . 2)` 的常量在
-> seg1 资源流中以 `39 <count>` 收尾，而 CAD 用单字节 `2a`（LIST_END）。修复：
-> `cad_symbols.to_const` 为 dotted ListExpr 返回 3 元组 `('LIST', items, True)`，
-> `resource_builder._emit_const` 对 dotted 列表输出 `2a` 而非 `39 <count>`。
-
-> **t14_command 转正记录（2026-08-05）**：c: 命令需在模块注册段插入
-> `vl-ACAD-defun` 符号（`0x56` 编码、保留大小写 `Vl-ACAD-defun`），并使模块注册
-> GVARINIT st_init +1（4→5）、函数注册基址 gv_var_pos +1（4→5）。vl 仅存在于
-> resource_gvars（模块注册），不进 symtab.entries，故 seg0 引用的 function_gvars
-> 槽位不变。模块代码改用 `build_command_module_code`（每命令
-> `PUSH_G<c>; FUNC_REF 2; PUSH_NIL; POP` 注册）。
-
-> **t11_localvars 转正记录（2026-08-05）**：CAD 用 `_al-bind-alist` 绑定 `/ 局部变量`
-> （`(defun f (args / l1 l2) (_al-bind-alist '(l1 l2)) ...)`），而非直接 GET_LOCAL。
-> 修复：
-> - `cad_symbols.py`：含 `/ 局部变量` 的函数在函数体符号后、参数前注入
->   `_al-bind-alist` 符号 + `(quote (locals...))` 常量 → nsyms 6→8、slot 对齐
-> - `codegen.py`：`generate_function` 在 INIT_ARGS 后发 `_al-bind-alist` 绑定序
->   `PUSH_G <const>; FUNC 1, <_al-bind-alist>; NIL; PUSH_NIL; NIL; POP`；
->   CLEAR_ARGS = argc + locals；while 体中间 setq 无 POP（t11 实测）
-> - `resource_builder.py`：`_al-bind-alist` 以 `0x56` 保留大小写独立注册
-
-> **t10_init 转正记录（2026-08-05）**：混合模式（顶层表达式 + defun）的模块注册
-> 符号序 + 多函数模块代码尾：
-> - `cad_symbols.py`：多函数路径顶层符号改用字节码引用序逆序（与单函数一致）
-> - `cli.py` `_build_cad_module_code`：多函数注册尾改为每函数一组
->   `PUSH_G <b>; SETQ_G <c>`（b = 2n+1+top_count-i，c = n-i），组间 `PUSH_G<c>; POP; JUMP`
-> - `cli.py` `_patch_usubr_idx`：函数体字符串 PUSH_G 操作数 = nsyms-1（t15/t10 实测）
-> - **golden 重新生成**：原 golden 的 `hello` 函数名小写是 CAD 会话环境已存在
->   `hello` 符号所致（环境 artifact）；改用 `t10-init-hello` 并经 CAD 重新
->   `vlisp-compile` 生成干净 golden
-
-## 9.3 执行阶段
-
-### 阶段 1：t11 `_al-bind-alist`（P0，最大 seg0 缺口）✅ 已完成 2026-08-05
-- 逆向 CAD 绑定序列（ref 用 `PUSH_G+FUNC`，我们直接 `GET_LOCAL`）
-  - ref seg0：`... 51 01 05 00 01 00 0a 32 ...`（FUNC `_al-bind-alist` 绑定 alist）
-- 改 `compiler/codegen.py` `_emit_init_args` 生成 `_al-bind-alist` 协议；对齐 `cad_symbols.py` 符号槽（局部变量进符号表）
-- 回归防护：t04_while/t05_cond（含局部变量）必须保持 byte-identity ✅
-
-### 阶段 2：t10_init（P0，小样本混合模式）✅ 已完成 2026-08-05
-- 对齐顶层 init 表达式符号收集序（nsyms 2→4）
-- 为阶段 4 i18n 预研持续块规则
-- golden 重新生成（`hello` 环境 artifact）
-
-### 阶段 3：t12_quote + t14_command（P1，仅 seg1）✅ 已完成 2026-08-05
-- t12：dotted 常量 `2a` 收尾（`cad_symbols.to_const` + `resource_builder._emit_const`）
-- t14：`c:` 命令 `vl-ACAD-defun` 模块注册（`0x56` 保留大小写）+ `build_command_module_code`
-  - 根因：REF 在模块注册段于命令函数名间插入 `vl-ACAD-defun` 符号
-    （`C:ADD, vl-ACAD-defun, C:HELLO`），使模块注册 `st_init` 4→5、
-    函数注册基址 `var_pos` 4→5；模块代码每命令追加
-    `PUSH_G <c>; FUNC_REF 2; PUSH_NIL; POP`（`35 <argc> <idx> <01>`）而非 `PUSH_G <c>; POP`。
-  - REF 命令模块代码（n=2）：`14 01 00 00 00 | PUSH_G4 POP JUMP0 | PUSH_G6 SETQ_G3 |
-    PUSH_G3 FUNC_REF2 PUSH_NIL POP | PUSH_G3 POP JUMP0 | PUSH_G5 SETQ_G1 |
-    PUSH_G1 FUNC_REF2 PUSH_NIL POP | PUSH_G1 END`
-  - 槽位公式（n=2 与 golden 逐字节一致，n>2 外推）：`var_pos=n_funcs+3`；
-    `a=var_pos-1-i`、`b=var_pos+n_funcs-1-i`、`c=n_funcs+1-i`（i<n-1）、末 `c=1`。
-  - 关键约束：`vl-ACAD-defun` 仅在模块注册段（resource_gvars）注册，**不进**
-    `symtab.entries`（否则 seg0 引用的 function_gvars 槽位 +1 破坏字节一致）；
-    `commands` 计数 = 1（vl 符号数），非命令函数数。
-
-### 阶段 4：i18n 混合模式（P1，1133 处主战场）✅ 已完成 2026-08-06
-- `CadSymbolCollector.collect_program` 持续块规则（defun/顶层交错）
-  - ✅ 顶层符号序已对齐（t10 转正，与单函数一致）
-  - ✅ `/ 局部变量` `_al-bind-alist` 协议已落地（t11 转正）
-- 模块注册段交错序：✅ **已完成**。i18n（9 defun + 7 顶层）模块注册首符号
-  `_`（`(set '_ @::_)` 顶层目标）在槽 0、`@::_` 槽 1、函数名逆序随后，
-  `@::CODEPAGE2LANG`（顶层引用）归入顶层符号段而非函数组——按 CAD 实测
-  逐块持续规则逆向完成，原文件 byte-identity（`test_i18n_original_byte_identity`）。
-
-### 阶段 5：收尾 ✅ 已完成 2026-08-05
-- xfail → `CAD_T_SERIES_IDENTICAL` 逐项转正（`tests/test_compiler_output.py`）
-  - ✅ t10/t11/t12/t14 全部转正，`CAD_T_SERIES_DIFF` 空
-- 独立 CAD 实例 + 快照流程真机复核（`scripts/cad_verify.py`）
-- 更新本文件、AGENTS.md、兼容性矩阵
-
-### 阶段 6：t16_foreach + t17_repeat（C3，foreach/repeat 内建调用协议）✅ 已完成 2026-08-06
-- codegen `_emit_foreach_stub` / `_emit_repeat_stub`（CAD 逐字节实测，见 §9.2 记录）
-- DEFUN `b1=argc+1`（`_ast_contains_loop` 递归检测，`_emit_defun_header` 应用）
-- 函数体中间 foreach/repeat 后无 POP（foreach 自带 `CLEAR_ARGS 1`，repeat 栈已平衡）
-- 反编译器 `_defun_headers_are_argc` 允许 `b1 == b3+1`
-- 回归防护：t04_while/t11_localvars/t18/t-complex O2（含 foreach/repeat 混合）保持一致 ✅
-- t16/t17 移入 `CAD_T_SERIES_IDENTICAL`，`pytest` 266 passed
-
-## 9.4 涉及文件
-`compiler/codegen.py`、`compiler/cad_symbols.py`、`compiler/resource_builder.py`、
-`compiler/cli.py`、`tests/test_compiler_output.py`、`docs/development-plan.md`
-
-## 9.5 验收
-- ✅ `pytest` 全绿（无 xfail）；t16/t17 已转正，`CAD_T_SERIES_DIFF` 空
-- ✅ t11/t10/t12/t14/t18 + t16/t17 移入 `CAD_T_SERIES_IDENTICAL`（18/18 字节级一致）
-- ✅ **i18n.lsp 原文件 byte-identity**（2026-08-06）：原文件（defun+顶层+kwote `-lambda-`
-  交错混合模式）编译 seg0+nsyms+seg1 与 `tests/cad/i18n-cad.fas` 逐字节一致，
-  锁入 `test_i18n_original_byte_identity` 回归。拆分件 p01-p07 亦全对齐
-- `cad_verify.py` 真机 15/15（独立实例流程）
-
-# 10. 反编译正确性完善计划（2026-08-07 版，P0 三缺陷）
-
-## 10.1 目标
-
-修复 §3.5c/§3.5d/§3.5e 三个反编译正确性缺陷（均为**解码器侧纯修复**，
-不动字节码，CAD byte-identity 不受影响）。基线：`pytest` 276 passed + 1 skip。
-
-## 10.2 执行阶段
-
-### 阶段 1：§3.5c 多函数参数名错位 ✅ 已完成
-
-**现象**：`t01_math_cad.fas`（CAD golden，add/multiply 各 2 参）反编译为
-`(defun add (b arg_2))`；多函数 + argc>1 全部触发。
-
-**修复**（`_extract_signature`）：
-- 多函数 stub：gvar 表越界时操作数 `o` 真实符号 = `symbol_slots[o+1]`
-- 单函数 stub：`_stub_tail_arg_names` 从 `symbol_slots` 尾部取 argc 个去重符号逆序
-
-**测试**：`test_multi_func_*`（3 例）+ `test_t01_golden_multi_func_arg_names`
-（直接解 CAD golden）+ `test_lambda_*`（§3.5e 同路径）。t01/t09/t18/t13/t15
-golden 解译参数名全对齐。
-
-### 阶段 2：§3.5d or/if 参数位展开 ✅ 已完成
-
-**修复**（`_render_block`）：
-- `COND_AND` 目标为紧随 `PUSH_T`（短路链 END）时折叠链并吞掉 `PUSH_T`
-- 表达式位 `if`（then 分支无 POP）：压栈作值 + 分支前不 `flush_stack()`
-
-**测试**：`test_or_expr_folded_not_leaked`、`test_list_or_args_folded`、
-`test_list_if_args_folded`、`test_if_expr_in_call_folded`。
-
-### 阶段 3：§3.5e lambda 参数遮蔽 ✅ 已完成
-
-**修复**（`_extract_signature` + `_stub_tail_arg_names`）：单函数 stub 参数名
-取 `symbol_slots` 尾部，`lst` 与 lambda 参数 `x`/`y` 各自保留。
-
-**测试**：`test_lambda_param_no_shadow`、`test_lambda_distinct_param_names`。
-
-### 阶段 4：§10.4 遗留缺陷（共享参数 / `/` 误判 / 循环协议）✅ 已完成
-
-- **共享参数**（t07/t08，多函数共用 lst）：新增 `_stub_extended_gvar`
-  （基础 gvar 表 + symbol_slots 尾部未入表符号），参数按 gvar 槽 - 1 寻址
-  时 `operand → extended[o+1]`（t08 op5→LST@6、t07 op7→LST@8 实测）。
-  仅用于 `_extract_signature` 参数名解析，不改全局 gvar 表（避免打乱函数体
-  引用回退）。t07 `get-first/get-rest (lst)`、`pair (a b)`、t08 `sum-list/
-  double-all (lst)` 全部对齐。
-- **`/` 误判**（t12）：`_localize_assigned_globals` 仅当函数声明 `/ 局部变量`
-  （`func.locals` 非空或 `local_binding_names`）时把 setq 目标加入局部表；
-  否则 setq 目标是全局（t12 `(setq lst '(a b c))` 不再输出 `/ lst`）。t11
-  `_al-bind-alist` 局部变量不受影响。
-- **循环协议**（t16/t17）：`_defun_headers_are_argc` 无目录扫描允许
-  `b1 == b3+1`（foreach/repeat 的 DEFUN 头 b1=argc+1，t16 之前被误判为
-  自包含格式）；新增 `_detect_repeat_setup`（体前 `GET_LOCAL; DEC; SET_LOCAL`
-  递减协议），`(repeat n ...)` 正确渲染。t16 `sum-foreach (lst)` + foreach、
-  t17 `repeat-count (n)` + repeat 结构正确。
-
-**测试**：`test_t08_golden_shared_arg_names`、`test_t07_golden_shared_arg_names`、
-`test_t12_golden_global_setq_not_localized`、`test_t16_golden_foreach_arg_and_structure`、
-`test_t17_golden_repeat_arg_and_structure`（均直接解 CAD golden）。
-
-## 10.3 验收
-
-- ✅ `pytest` 291 passed + 1 skip（较基线 +15 回归用例，无 xfail）
-- ✅ 全部 t-series golden 参数名/结构比对：t01-t13/t15/t18 全对齐；t14
-  `c:add(/ a b)` 为**有意设计**（c: 命令函数参数本地化，`_emit_function`
-  行 1375-1380）；t16/t17 参数名与循环结构正确，仅 `total`/`acc` 等全局
-  setq 目标被本地化（cosmetic，功能等价）
-- ✅ 字节级：CAD byte-identity 测试（18/18）不回归
-
-## 10.4 遗留（cosmetic，功能等价）
-
-- t14 `c:add(/ a b)`：c: 命令函数参数被有意本地化（CAD 以无参调用 c: 命令）。
-  **有意设计**（§12 T3），非 bug——CAD 编译 c: 函数即把参数按下槽处理，反
-  编译保持 `/ a b` 语义等价且可运行
-
-## 10.5 涉及文件
-
-- `decompiler/fas4_decompiler.py`：`_extract_signature`、`_render_block`、
-  `_stub_tail_arg_names`、`_stub_extended_gvar`、`_stub_is_multi_func`、
-  `_detect_repeat_setup`、`_detect_loop`、`_localize_assigned_globals`、
-  `_defun_headers_are_argc`
-- `tests/test_variadic_args.py`、`tests/test_compile_decompile.py`
-
-# 11. vla-/vlax- ActiveX 真机缺陷修复（2026-08-08）
-
-## 11.1 目标
-
-t22_activex（vla-/vlax- ActiveX）此前仅 roundtrip + 真机待确认。CAD 真机
-（`scripts/cad_verify.py`）复核时发现编译产物在 CAD 返回空。根因两类编译 bug，
-修复后 t22 编译产物与 CAD golden（`tests/cad/t22_activex_cad.fas`）逐字节一致，
-CAD 真机 24/24 全过。
-
-## 11.2 根因与修复
-
-**A. vla- 符号名保留大小写**（`cad_symbols.py` / `codegen.py` / `resource_builder.py`）
-
-- CAD 对 `vla-get-<Method>` 等方法符号保留**原始大小写**且方法名首字母大写
-  （ActiveX 接口方法名大小写敏感）：源码 `vla-get-count` → 符号槽 `vla-get-Count`
-  （`vla-get-Documents`/`ModelSpace`/`ActiveDocument` 保持源码写法，`vlax-` 前缀
-  保持小写如 `vlax-get-acad-object`）。
-- 此前 `_enc_sym` 统一大写（`VLA-GET-COUNT`）导致 CAD 无法匹配 ActiveX 方法，
-  函数调用返回空。
-- 修复：新增 `normalize_vla_name`（`cad_symbols` + `codegen` 各一份，避免循环
-  import），`add()`/`_emit_call_expr`/`_emit_expr` 统一在符号名层面规范化；
-  `resource_builder._enc_sym` 对 `vla-get-`/`vla-put-`/`vla-call-`/`vla-add-`/
-  `vla-insert-`/`vlax-` 前缀不再 `.upper()`。
-
-**B. 值位置 `T`/`t` 符号槽**（`cad_symbols.add` / `codegen._emit_expr`）
-
-- `(if c T nil)` 的大写 `T` 此前被 `add()` 的 `('T','nil')` 过滤（不注册符号槽）
-  且 codegen `_emit_expr` 内联 `PUSH_T`，导致 T 符号槽缺失、nsyms 少 1、
-  后续符号槽（vla- 内建等）整体偏移、USUBR 索引错乱。
-- CAD 对值位置 `T`/`t` **均注册符号槽并用 `PUSH_VALUE` 引用**（t18 小写 `t`
-  走符号引用路径碰巧通过，t22 大写 `T` 触发）。`(and ...)` 短路尾部与 cond
-  else 键仍各自处理（CAD golden 实测 PUSH_T/force 注册）。
-- 修复：`add()` 对 `t`/`T` 大小写不敏感注册（`nil` 恒内联 PUSH_NIL）；
-  codegen stub 格式下 `T` 走 `PUSH_VALUE` 引用（非 stub 保持 PUSH_T）。
-
-**C. USUBR/FUNC 符号槽末尾编址**（`cli.py _patch_usubr_idx`）
-
-- 符号槽末尾（超出 gvar 表，`build_mvar_tables` 的 fg 仅 nsyms 项）的调用目标
-  （t22 的 `vlax-get-acad-object` 在符号槽 15、fg 表外）此前保留 codegen 原始
-  操作数（15），CAD 无法解析。CAD 按 `gvar 槽 = nsyms` 编址（操作数 = nsyms-1，
-  t22 实测操作数 11）。
-- 修复：USUBR/FUNC 分支新增 elif——`sym` 是 SYMBOL 且不在 gvar_map 时，
-  操作数 = `nsyms - 1 - offset`。
-
-## 11.3 t21 修正（测试期望，非编译 bug）
-
-`t21-product` 原定义 `(&optional factor &rest rest)` 为 min=0，触发 §3.5 已知
-CAD 限制（CAD 对 `b4=01, min=0` 硬性不收集 rest，真机任何参数均返回空）。
-已改为 `(factor &rest rest)`（min=1，CAD 收集「剩余参数」），真机
-`(t21-product 2 3 4)` → 24。optional+rest 组合意图由 `t21-greet`（纯 optional）
-+ `t21-first-arg`（纯 rest）保留。
-
-## 11.4 验收
-
-- ✅ `pytest` 304 用例（303 passed + 1 skip，无 xfail）
-- ✅ `t22_activex` byte-identity：编译产物 seg0+sec2+nsyms 与
-  `tests/cad/t22_activex_cad.fas`（CAD `vlisp-compile` 2026-08-08 生成）逐字节一致，
-  锁入 `test_t_series_byte_identity`（`CAD_T_SERIES_IDENTICAL` 加入 `t22_activex`）
-- ✅ CAD 真机 `scripts/cad_verify.py` 24/24 全过（t22 `(T T)`、t23 `T`）
-- ✅ 既有 18 份 t-series byte-identity 与 i18n 混合模式不回归；disasm→asm 往返
-  38→39 文件一致（新增 t22_activex_cad.fas）
-
-## 11.5 涉及文件
-
-`compiler/cad_symbols.py`、`compiler/codegen.py`、`compiler/resource_builder.py`、
-`compiler/cli.py`、`tests/cad/t22_activex.lsp`、`tests/cad/t22_activex_cad.fas`、
-`tests/cad/t21_variadic_extra.lsp`、`tests/test_compiler_output.py`、
-`scripts/cad_verify.py`、`docs/feature-plan.md`、`AGENTS.md`
+- 阶段 1 t11 `_al-bind-alist '(locals)`：INIT_ARGS 后发 `PUSH_G;FUNC 1;NIL;PUSH_NIL;NIL;POP`，
+  CLEAR_ARGS = argc + len(locals)
+- 阶段 2 t10 混合模式顶层符号序 + 多函数模块代码尾（`PUSH_G<2n+1-i> SETQ_G<n-i>`）
+- 阶段 3 t12 dotted `2a` + t14 `vl-ACAD-defun`（`build_command_module_code`，0x56 不进 symtab）
+- 阶段 4 i18n defun/顶层交错「持续块规则」+ 模块注册段交错序
+- 阶段 6 t16/t17 stub：foreach `PUSH_G;PUSH_NIL;INIT_ARGS 3` + `JMP32_IFNOT` + 尾 `CLEAR_ARGS 1`；
+  repeat `GET_LOCAL;PUSH_INT8 0;FIX_LEQ;JMP32_IFNOT` + 体前 `DEC`；DEFUN 头 `b1=argc+1`
+- 涉及：`compiler/{codegen,cad_symbols,resource_builder,cli}.py`、`tests/test_compiler_output.py`
 
 ---
 
-# 12. 反编译精细度收尾开发计划（v0.3，S3 主线，2026-08-09）✅ 已定稿
+# 10. 反编译正确性完善计划（2026-08-07 版）✅ 已完成
 
-> **主线选择**：见 AGENTS.md 任务清单——本轮新功能开发以 **S3 反编译精细度收尾**
-> 为核心（用户确认）。ZELX 复杂压缩（8.D/S1）、多 CAD 平台矩阵（S2）、工具链
-> 新功能（S4）顺延到后续阶段。
-> **边界**：全部为**解码器侧（decompiler）修复**，不动字节码/资源段，CAD
-> byte-identity（t-series 18/18）不受影响。反编译产物不求字节 golden，验收以
-> **语义 == 源码结构**为准。
+> 精简归档：§3.5c/d/e + §10.4 全为解码器侧纯修复，字节码零改动。pytest 276→291；
+> t-series golden 参数名/结构全对齐；t14 `c:add(/ a b)` 属有意设计。
 
-## 12.1 目标
+- `_extract_signature`：多函数 gvar 越界→`symbol_slots[o+1]`；`_stub_tail_arg_names` 尾部
+  argc 去重逆序（单函数/lambda 遮蔽）
+- `_render_block`：or/if 参数位折叠（COND_AND 短路链 + 表达式位 if 压栈）
+- `_stub_extended_gvar`（共享参数）、`_localize_assigned_globals` `/` 误判、
+  `_defun_headers_are_argc` `b1==b3+1` + `_detect_repeat_setup`（循环协议）
+- 涉及：`decompiler/fas4_decompiler.py` 8 处 + `tests/{test_variadic_args,test_compile_decompile}.py`
 
-消除 §10.4 全部 cosmetic 差异，使反编译输出与源码**语句结构等价、语句顺序
-一致**：
+---
 
-1. 循环（foreach/repeat）的 setq 初始化重排（渲染到循环体之后）
-2. `/ 局部变量` 声明清单合成与源码不一致（t16/t17 源码无 `/` 却额外输出
-   `/ total x`；t11 经 `_al-bind-alist` 协议输出 `/ loc1` 为正确基线）
-3. c: 命令参数本地化的语义澄清
-4. `(setq expr ...)` 在 `(eval ...)` 之后渲染的顺序重排
+# 11. vla-/vlax- ActiveX 真机缺陷修复（2026-08-08）✅ 已完成
 
-并附带 `_render_block` 大样本反编译热点基准对齐（`scripts/benchmark.py` 驱动）。
+> 精简归档：t22 编译产物与 CAD golden 逐字节一致；CAD 真机 24/24。
 
-## 12.2 现状基线（2026-08-09）
+- A. vla- 保留大小写（方法名首字母大写，`vlax-` 小写）：`normalize_vla_name` + `_enc_sym`
+  对 vla-/vlax- 前缀不 `.upper()`
+- B. 值位置 `T`/`t` 注册符号槽 + stub 下 `PUSH_VALUE` 引用（nil 仍内联）
+- C. USUBR/FUNC 槽末尾编址：操作数 = `nsyms - 1 - offset`
+- t21 修正：`(factor &rest rest)` min=1（§3.5 CAD 硬性限制）
+- 涉及：`cad_symbols`/`codegen`/`resource_builder`/`cli` + `tests/cad/t22_activex*`
 
-- `pytest` 313 passed / 1 skipped；t-series byte-identity **18/18**；disasm→asm
-  往返 43 文件一致；CAD 真机 24/24（`scripts/cad_verify.py`）
-- 反编译大样本：`benchmark.py --big 5000` 合成文件冷启动 **5.5s**（优化前 6.9s，
-  cProfile 定位 `is_compact_stub` 热点 → `lru_cache` 缓存纯函数判定后 -20%；
-  进程内二次 3.4s=源码内容命中）；残余分布：parse/disasm 主导、
-  `_render_block` 已轻量（3000 函数 0.26s tottime）
-- `scripts/benchmark.py` 新增 `--big N`（合成大样本）与 `--profile-decompile`
-  （反编译热点）
+---
 
-## 12.3 执行阶段
+# 12. 反编译精细度收尾开发计划（v0.3，S3 主线，2026-08-09）✅ 已完成
 
-### 阶段 1：循环语句 setq 初始化顺序（T1）
+> 精简归档：T1-T7 全部完成；pytest 313→316；大样本基准 6.9s→5.5s（-20%）。
 
-- 位置：`decompiler/fas4_decompiler.py` `_render_block`（1600-）、
-  `_detect_loop`/`_detect_repeat_setup`（2034-2116）
-- 现状：`(setq total 0)` 等循环前置 setq（foreach/repeat preamble）在语句
-  重排后渲染到循环体之后（t16 `sum-foreach(lists)/total`、t17 `repeat-count
-  (n)/acc`）
-- 目标：循环前 setq 保序在循环渲染**之前**；循环体内 setq 不受影响
-- 验收：t16/t17 golden 反编译 = 源码 `(setq total 0)` 先于 `(foreach ...)`
-- **✅ 已完成**（2026-08-09）：foreach/repeat preamble 的循环前置 setq 经
-  `_detect_loop`/`_detect_repeat_setup` 识别后，在语句重排阶段保持其在循环
-  渲染之前；t16/t17 golden 反编译与源码顺序一致（`test_t16_golden_foreach_
-  arg_and_structure`/`test_t17_golden_repeat_arg_and_structure`）
-
-### T2：`/ 局部变量` 声明清单与源码对齐（t16/t17/t11）
-
-- 位置：`_localize_assigned_globals`、`_extract_signature`、
-  `_stub_tail_arg_names`、`_al-bind-alist`（local_binding_names）
-- 现状：
-  - t11（localvars）经 `_al-bind-alist` 真实协议绑定 → 输出 `/ loc1 ...` ✅
-  - t16/t17 无 `/ locals` 声明却被 extra 本地化（setq 目标进置局部表，渲染出
-    `/ total x`）；应仅在存在 `_al-bind-alist`/显式局部绑定集合时 localize
-- 目标：`/ locals` 列表 = 函数真实局部声明；循环 setq 目标如为全局（t16/t17）
-  保持全局、不附 `/`；t11 不变
-- 验收：t16 `sum-foreach (lst)` **无 `/`**（total 为真全局，`SETQ_G` 保序），
-  `(setq total 0)` 前置循环；t17 `repeat-count (n)` 同（acc 无 `/`）；t11 回归
-  不影响
-- **✅ 已完成**（2026-08-09）：`_localize_assigned_globals` 仅在存在
-  `_al-bind-alist`/显式局部绑定集合时 localize；t16/t17 循环 setq 目标保持
-  全局、不附 `/`；t11 经 `_al-bind-alist` 协议不变
-
-### T3：c: 命令参数本地化语义澄清（t14）
-
-- 现状：`c:add(/ a b)` 参数被有意本地化（CAD 以无参调用 c:）——设计正确
-- 目标：**不改**；在计划文档 + 回归注释明确"c: 命令参数本地化为有意设计"，防
-  误判为 bug 回改
-- 验收：t14 golden 反编译 `(defun c:add (/ a b) ...)` 保持；随 §10.4 新增
-  显式标注
-- **✅ 已完成**（2026-08-09）：t14 c: 命令参数本地化确认是**有意设计**
-  （CAD 以无参调用 c: 命令，编译即把参数按下槽处理）；§10.4 已显式标注，防
-  误判为 bug 回改
-
-### T4：`(setq expr ...)` 与 `(eval expr)` 顺序（cosmetic 遗留）
-
-- 位置：`_render_block` 表达式收集/暂存逻辑
-- 现状：`(setq expr ...)` 渲染在 `(eval expr)` 之后（eval 反向依赖收集）
-- 目标：恢复源码顺序（前置 statements 与后置调用流顺序）
-- 验收：eval 相关 roundtrip 测试输出与源码结构一致；既有 `test_eval_*`
-  不回归
-- **✅ 已修复**（2026-08-09）：根因是语句调用（`princ`/`eval` 丢值时经 `POP`
-  先成行，而更早的完整 setq 语句 token 滞留在 stack 底部，直到块末 flush
-  才输出 → 顺序颠倒）。修复在 `_render_block` 的 POP 分支：先 `while stack`
-  flush 滞留的完整语句，再输出当前 POP 语句。锁入回归
-  `test_stmt_order_setq_before_eval_call` + `test_stmt_order_setq_value_
-  position_untouched`（值位置 setq 不拆分）。既有 t01-t22/i18n golden 不回归
-
-### T5：统一 setq 重排治理（t11/t12 同类 artifact）
-
-- 全局 setq 初始化（t11 params `/ lst`、t12 全局 `(setq lst '(a b c))`）
-  与循环协议 preamble 统一走同一"顺序保持"的渲染策略
-- 验收：t11/t12 golden 反编译与源码顺序一致
-- **✅ 已修复**（2026-08-09）：t11 `/ result i` 局部清单被 `_gvar_item`
-  stub 分支吞掉——`PUSH_G` 操作数是“gvar 槽 - 1”，`PUSH_G 6` 应命中
-  `gvar_table[7]` 的列表常量 `(RESULT I)`，但原实现 branch1 设置 `result`
-  后仍无条件落入 `symbol_slots[idx]` 回退，把完整列表压成单符号 `result`。
-  修复：branch1 命中 `gvar_table[idx+1]` 且非 None 时**立即 return**，
-  `elif deref` 分支与末尾 symbol_slots 回退保持不变。t11 golden 反编译现为
-  `(_al-bind-alist '(result i))`，且 `(setq result 0)`/`(setq i 1)` 保序在
-  `(while ...)` 之前。锁入回归 `test_t11_locals_decl_and_setq_order`
-  （golden fixture `tests/cad/t11_localvars_cad.fas`）。`tests/cad/
-  t11_localvars_cad_decompiled.lsp`（非测试引用的参考文件）已按当前输出重写。
-  t12 的 quote 常量 `(setq lst 'a)`/`'(cons 1 2)` 属 deferred 常量链解码
-  （`_deref_deferred_constant` 仅处理单元素包裹），非 setq 顺序域。
-  **✅ 已解决（2026-08-11）**：根因是函数表 GVARINIT 的 **module_id 槽**
-  （`var_pos + st_init`）未被解析——`core/fas_core.py` 新增
-  `build_module_id_slots`（仅登记结构化 LIST/CONS module_id，原子型
-  SYMBOL/STRING 是符号槽重复不登记），反编译器 `_gvar_item` 越界查询该槽；
-  dotted 常量 `('CONS',1,2)` 由 `_render_data_item` 改渲染为 `(1 . 2)`。
-  回归：`test_module_id_slots_structured_only`、扩展
-  `test_t12_golden_global_setq_not_localized`（`'(a b c)` / `'(1 . 2)` / `'(1 2 3)`）。
-
-### T6：`_render_block` 性能热点对齐
-
-- 定位：`benchmark.py` 增加大样本 decompile 分数；对 `_render_block` 做
-  函数级破潜（cProfile `decompile` 路径）
-- 目标：大文件反编译较当前 6.9s 有可测改善；若无热点（已线性）则记录基线
-  放弃
-- 额外：`scripts/benchmark.py` 内置大样本（合成 5000 函数 .fas）
-- **✅ 已完成**（2026-08-09）：`--big N` 合成 5000 函数样本冷启动 6.9s →
-  5.5s（cProfile 定位 `is_compact_stub` 热点 → `lru_cache` 缓存纯函数判定，
-  -20%）；进程内二次 3.4s（源码内容命中）。`_render_block` 已线性（3000 函数
-  0.26s tottime），无残余热点。`--profile-decompile` 定位反编译热点
-
-### T7：回归与文档
-
-- 新增反编译语义 golden 回归：`test_decompiler_stmt_order`（setq 顺序 /
-  eval 顺序 / foreach / 循环 / locals）、`test_*_locals_decl_fidelity`
-- 更新 `docs/feature-plan.md`、`docs/development-plan.md` §10.4「遗留」清空
-  （T1-T5 完成后移入「§12.4 验收」）；AGENTS.md 反向兼容记录
-- **✅ 已完成**（2026-08-09）：新增回归
-  - `test_stmt_order_setq_before_eval_call`、`test_stmt_order_setq_value_
-    position_untouched`（T4）
-  - `test_t11_locals_decl_and_setq_order`（T5，golden fixture）
-  - `test_t16_golden_foreach_arg_and_structure`、`test_t17_golden_repeat_
-    arg_and_structure`（T1/T2 既有）
-  - §10.4「遗留」仅剩 t14 一项（显式标注"有意设计"）
-  - 新增 `docs/compilation-process.md`（编译过程说明），README/AGENTS 已登记
-
-## 12.4 验收标准
-
-- [x] `pytest` 全绿（316 passed / 1 skipped），新增 4 项反编译语义回归
-- [x] t-series golden 参数名/结构全对齐（t14 仅命令本地化为有意）
-- [x] CAD byte-identity 18/18 不回归（compiler/资源段零改动）
-- [x] `scripts/benchmark.py` 大样本：反编译顺序输出正确 + 性能 vs 基线记录
-  （6.9s → 5.5s，`--big N`）
-- [x] §10.4「遗留」条目全部清空或显式标注"有意设计"（仅剩 t14 一项）
-
-## 12.5 涉及文件
-
-- `decompiler/fas4_decompiler.py`：`_render_block`、`_localize_assigned_globals`、
-  `_extract_signature`、`_stub_extended_gvar`、`_defun_headers_are_argc`、
-  `_detect_loop`、`_detect_repeat_setup`
-- `tests/test_compile_decompile.py`（新语义回归）、`tests/test_fidelity_*.py`
-  （若单一可加）
-- `scripts/benchmark.py`（decompile 大样本）
+- T1 循环 setq 保序在循环前（`_detect_loop`/`_detect_repeat_setup`）
+- T2 `/ 局部变量` 清单 = 真实局部声明（t16/t17 循环 setq 目标保持全局）
+- T3 c: 命令参数本地化 = 有意设计（文档+回归注释标注）
+- T4 `(setq ...)` 与 `(eval ...)` 顺序：`_render_block` POP 分支先 flush 滞留语句
+- T5 setq 重排：t11 `_gvar_item` branch1 命中 `gvar_table[idx+1]` 立即 return；
+  t12 module_id 槽（`build_module_id_slots`）+ dotted `(1 . 2)` 渲染
+- T6 性能：`is_compact_stub` lru_cache（6.9s→5.5s）；`_render_block` 已线性无热点
+- T7 回归：`test_stmt_order_*`、`test_t11_locals_decl_and_setq_order`；§10.4 仅剩 t14
+- 涉及：`decompiler/fas4_decompiler.py`、`scripts/benchmark.py`、`tests/`
 
 ---
 
 # 13. 工具链新功能（S4，2026-08-09）✅ 已完成
 
-> S3 反编译精细度收尾完成后，S4「工具链新功能」重新开启并落地。范围：
-> `compile --report`（编译报告导出）、`atlispcc info`（快速概览）、
-> `atlispcc analyze`（调用图/依赖分析）、`atlispcc roundtrip`（往返冒烟）。
-> **边界**：全部为 CLI/独立模块层新增，不动 compiler 核心 codegen/资源段
-> （t-series byte-identity 18/18、CAD golden 保持逐字节一致）。
+> 精简归档：`--report`/`info`/`analyze`/`roundtrip` 落地；pytest 340。全为 CLI/独立层新增，
+> 编译器核心零改动（18/18 byte-identity 不回归）。
 
-## 13.1 已交付
+| 子命令 | 说明 |
+|--------|------|
+| `compile --report <json>` | 编译统计+产物信息导出 |
+| `info` | .fas/.zelx 头部/段/函数目录/符号/字符串概览，`--json` |
+| `analyze` | `dep_analysis.py` 调用图 text/dot/mermaid/json；.lsp/.fas 双输入；DEFCODE 公开函数自动 root |
+| `roundtrip` | `roundtrip.py` 编译→反编译→validate→compare 冒烟（裸内存管线） |
 
-| 子命令 | 文件 | 说明 |
-|---|---|---|
-| `compile --report <json>` | `compiler/cli.py` `cmd_compile` | 编译统计 + 产物信息导出 JSON（analysis/optimized/product） |
-| `info` | `compiler/cli.py` `cmd_info` | .fas/.zelx 头部/段规模/函数目录/符号/字符串概览，`--json` 输出 |
-| `analyze` | `compiler/dep_analysis.py` | 调用图图模型 + text/dot/mermaid/json 四格式；.lsp（Parser）与 .fas（字节码 USUBR/FUNC 扫描）双输入 |
-| `roundtrip` | `compiler/roundtrip.py` | 编译→反编译→validate→compare 冒烟；裸内存管线（顶层表达式保留在 seg0） |
-
-### 关键决策
-
-- **roundtrip 用「裸内存管线」**（`tests/test_compile_decompile.py`
-  `compile_and_decompile` 同款）：CLI compile 把顶层表达式编入 seg1 模块代码，
-  反编译后顶层 `(princ "...")` 退化为 nil 导致字符串比对误报。roundtrip 定位
-  代码生成回归自检，产物发布仍走 `atlispcc compile`。
-- **analyze 同时支持 .lsp 与 .fas**：.fas 侧经 `Disassembler` + `ControlFlowAnalyzer`
-  扫描 USUBR/FUNC 操作数（符号槽索引）解析被调名；`extract_stub_function_names`
-  提供 DEFCODE 真实函数名；DEFCODE 注册的公开函数自动提升为 root，避免
-  单入口文件被误标 UNUSED。`--no-cc` 可关闭 c:*/*error* 的 root 提升。
-- **info 不触发完整反编译**：直接读 FAS4 头部 + 资源段解密统计；zelx 侧复用
-  `tools/zelx_info.py`，输出四段规模与 payload 熵。
-
-## 13.2 验收
-
-- [x] `pytest` 全绿（**340 passed / 1 skipped**，新增 `tests/test_diagnostics.py`
-  20 用例 + `test_cli.py` 4 用例：compile report JSON、info fas/zelx/json、
-  analyze 图模型与格式、roundtrip PASS/FAIL 与 CLI 退出码）
-- [x] t-series byte-identity 18/18 不回归（compiler 核心零改动）
-- [x] 手动验证：`info` 对 `t01_math_cad.fas`（nsyms=5）、`i18n-cad.fas`
-  （catalog 8 函数）、`samples/zelx-reversing/asetch.zelx`（四段 + payload）
-  输出正确；`analyze` 对 t01/t03/t10/fun-cad 图模型合理（fib 自边、单入口
-  无 unused）；`roundtrip` 对 t01/t10/t13/t16/t19/t20/t22 O2 全 PASS
-- [x] `tools/compare_lsp.py` 重构出 `compare_texts()` 可复用比对函数，
-  原 CLI 打印行为保持（defuns/strings/symbols 三段 + 缺失清单）
-
-## 13.3 涉及文件
-
-- `compiler/cli.py`：`cmd_compile`（report_json）、`cmd_info`、`cmd_analyze`、
-  `roundtrip` 子命令 dispatch
-- `compiler/dep_analysis.py`（新增）、`compiler/roundtrip.py`（新增）
-- `tools/compare_lsp.py`（重构，`compare_texts` 可复用）
-- `tests/test_diagnostics.py`（新增 20 用例）、`tests/test_cli.py`（+4 用例）
-- 文档：`README.md`（子命令清单 + 三节详解）、`AGENTS.md`（CLI 清单/测试表/
-  关键文件表）
-- 文档：`docs/development-plan.md` §10/§12、`docs/feature-plan.md`、`AGENTS.md`
+- 涉及：`compiler/cli.py`、`compiler/{dep_analysis,roundtrip}.py`（新增）、`tools/compare_lsp.py`、
+  `tests/test_diagnostics.py`（+20）、`tests/test_cli.py`（+4）
 
 ---
 
@@ -1142,76 +609,18 @@ globals`）面向 CAD 格式设计，对裸管线产物无法匹配 → 参数/�
 
 # 15. @lisp 综合包编译支持（2026-08-11）✅ 已完成
 
-## 15.1 目标
+> 精简归档：`tests/atlisp_u.lsp`（502 函数 + 221 顶层语句 + 80 kwote）编译产物在 CAD 真机
+> 模块代码完整执行、功能全部可用；v0.1.21 发布。详细修复折叠。
 
-让 `tests/atlisp_u.lsp`（@lisp 包，502 函数 + 221 顶层语句 + 80 kwote 回调 +
-条件/嵌套 defun + 运行时 `(eval '(defun ...))` 模式）可编译为 CAD 可加载的
-FAS。此前该文件解析即失败（`'(defun)` 裸引用关键字），编译后加载更是错误频出。
-修复后编译产物在 AutoCAD 24.1s 真机**模块代码完整执行、功能全部可用**。
-
-## 15.2 关键修复
-
-**A. 解析器：裸引用关键字按数据解析**（`parser.py`）
-
-- `'(defun)`/`'(lambda)`/`'(setq)`/`'(cond)` 等**空引用列表**此前被当特殊形式
-  解析（`'(defun)` 因缺函数名报错、其余解析成空结构节点）。现按普通数据列表
-  （ListExpr）解析；引用 **lambda 体内**特殊形式仍保留结构（i18n golden 实测
-  编译为可执行代码，不回归）。
-
-**B. 顶层/条件/嵌套 defun 降级**（`cli.py`）
-
-- 顶层 `(progn (defun ...) ...)`（@lisp 包整体包裹模式）展开为顶层 form
-  （`_flatten_top_level_forms`）。
-- 条件/嵌套 defun（`(if c (defun f ...))`、函数体内局部辅助函数）改写为
-  `(setq f '(lambda ...))` 数据赋值（`_lower_nested_defuns`）——AutoLISP 符号
-  绑定 lambda 列表后仍可直接调用（等价 defun-q），保留"条件定义"语义。
-- 多 `(function (lambda ...))`（80 个 kwote 回调，catalog 仅支持单 `-lambda-`）
-  改写为引用数据 `'(lambda ...)`（`_lower_multi_kwote`，含 Cond 分支与嵌套
-  kwote 递归）——apply/mapcar 回调实测等价（`(k1 5)(k2 5) → (10 8)`）。
-
-**C. commands + 顶层混合 gvar 槽重映射**（`cli.py` + 新增 `compiler/_gvar_map.py`）
-
-- `commands`（c: 命令）模式下模块注册把函数名逆序置前、顶层符号在后，
-  `symtab_idx+1` 不再等于实际 gvar 槽 → 顶层函数调用引用错误槽位（
-  `参数太少/太多`）。新增 `_gvar_map.py` 直接解析 seg1 模块注册段得到准确
-  `{符号名: gvar槽}` 映射，`_offset_slots` 二次生成模块代码时按实际槽位重映射
-  USUBR/PUSH_G/FUNC。
-
-**D. 大文件 USUBR/FUNC 宽格式**（`codegen.py` / `cli.py` / `asm/opcodes.py`）
-
-- 符号槽 ≤255 用 3 字节 USUBR `35 <argc> <idx8>`（与 golden 逐字节一致）；
-  符号槽 >255（大文件）用 **5 字节 USUBR** `35 <argc> <idx16> <flags=3>`、
-  **6 字节 FUNC** `51 <argc> <idx16> <flags=1> 00`（CAD atlisp_u seg0/module
-  code 实测）。codegen 按 `nsyms > 256` 统一选择 `wide_subr`；`_patch_usubr_idx`
-  /`_offset_slots` 用 `short_subr=False` 反汇编并按宽格式重编码（patch delta=0，
-  函数偏移不再错位）。大文件调用清理 `00 03` 内联进 USUBR flags（seg0 不再
-  额外发 NIL+PUSH_VALUE）。
-
-**E. 顶层符号槽推导修正**（`cad_symbols.py`）
-
-- `top_level_count` 由收集器 `module_reg_count` 推导（函数名 + 顶层表达式符号
-  实际注册数），避免 `max(顶层符号槽)+1-n_funcs` 在顶层表达式引用**函数体**
-  符号（高槽位）时严重高估（atlisp_u 实测 3036 vs 实际 342）导致模块代码
-  函数注册 `PUSH_G b` 槽超出 gvar 表。
-
-**F. 资源段/编码杂项**（`resource_builder.py` / `cli.py`）
-
-- commands + 顶层混合时补齐顶层符号/常量模块注册段记录。
-- 超 int32 整数字面量（`@::*mktime-epoch* 2208988800`）退回通用路径按 REAL
-  编码，REAL 常量字符串补小数点（`2208988800.0`，CAD 否则报"不适合 fixnum"）。
-- post-defun 顶层 setq（`top_after_defun`）的函数名槽纳入模块注册区推导。
-
-## 15.3 验证
-
-- `pytest` **348 用例**（346 passed + 1 skip），新增 3 回归用例
-  （parser 裸引用、CLI progn+条件 defun、atlisp_u 整体编译）
-- `scripts/run_tests.sh` 全过，18/18 CAD golden byte-identity 不变
-- CAD 真机（AutoCAD 24.1s）：`atlisp_u.fas` 加载后模块代码完整执行（顶层
-  221 语句全运行）、`@::safe-eval`/`define-config-typed`/`@::compat1` 等功能
-  正常、兼容别名（`@:load` 等）创建成功
-- 已知残余：加载返回值偶发一次 `参数太少`（`@::compat1` foreach 处理某边界
-  原子），不影响任何功能——包已完整可用
-- 版本 `0.1.21` 已发布 PyPI
+- A. 解析器：裸引用关键字 `'(defun)` 等按数据列表解析（`parser.py`）
+- B. 顶层 `(progn ...)` 展开 + 条件/嵌套 defun → `(setq f '(lambda ...))` 数据赋值 + 
+  多 kwote→引用数据（`_flatten_top_level_forms`/`_lower_nested_defuns`/`_lower_multi_kwote`）
+- C. commands+顶层混合 gvar 槽重映射：`compiler/_gvar_map.py` 解析 seg1 模块注册段，
+  `_offset_slots` 二次生成按实际槽位重映射 USUBR/PUSH_G/FUNC
+- D. 大文件宽格式：符号槽 >255 用 5 字节 USUBR / 6 字节 FUNC（`wide_subr`/`short_subr=False`）
+- E. 顶层符号槽推导：`top_level_count` 由 `module_reg_count` 推导（避免高估）
+- F. 资源段杂项：REAL 整数降温（`2208988800.0`）、commands+顶层模块注册段补齐
+- 涉及：`compiler/{parser,cli,codegen,cad_symbols,resource_builder}.py`、`compiler/_gvar_map.py`
 
 ---
 
@@ -1244,3 +653,54 @@ atlispcc 编译产物与 engine 求值结果互相对照，验证编译器语义
 - `al-bind` 等内建补齐、迭代器/异常（auto error handling）语义
 - CAD 真机对拍：`scripts/cad_verify.py` 同源用例在 engine 复跑
 - 后续回到 P1/P2 主线（T2-T4、链接器、ZELX）
+
+
+---
+
+# 17. 整体开发计划（2026-08-12 版，v0.1.22 → v0.3）
+
+## 17.1 目标
+
+以 v0.1.22（真实 @lisp 文件编译推进 + engine 冒烟全绿）为基线，按三条主线收敛：
+真实包全面落地（P0）→ 残留正确性（P1）→ engine/工具链收尾（P2）。
+
+## 17.2 P0 — 真实 @lisp 包全面落地（延续 v0.1.22 主线）
+
+| 项 | 内容 | 验收 |
+|----|------|------|
+| P0-1 | kernel/lib 剩余 @lisp 包逐个编译验证（同型缺陷：gvar 槽映射、-lambda- 内嵌、cond 双 POP、ads-cmd、大小写敏感槽） | CAD 真机清单 25→30 项 |
+| P0-2 | `engine/` 与 CAD 对拍：`scripts/cad_verify.py` t-series 同源用例在 engine 复跑 | 双轨结果一致 |
+| P0-3 | 真机缺陷修复后锁入 byte-identity 回归 + pytest 全量 | 348 cases + 新增不回归 |
+
+## 17.3 P1 — 残留正确性
+
+| 项 | 内容 | 验收 |
+|----|------|------|
+| P1-1 | §3.6 链接器多函数 CAD 只注册首个函数（根因已定位到 DEFCODE 注册路径） | 3 份 CAD golden byte-identity 扩展 |
+| P1-2 | §12 T2：`/ 局部变量` 声明清单与源码对齐（t16/t17/t11） | 反编译清单行对齐源码 |
+| P1-3 | §12 T3：c: 命令参数本地化语义澄清（t14） | 反编译 `c:` 参数名可读 |
+| P1-4 | §12 T4-T5：setq 重排治理（t11/t12 artifact） | 反编译置数顺序与源码一致 |
+
+## 17.4 P2 — engine 与工具链收尾
+
+| 项 | 内容 | 验收 |
+|----|------|------|
+| P2-1 | §16.3 engine 补全：foreach/repeat/quote 载体、`/ 局部变量`、`&optional`/`&rest`、`_al-bind-alist`、异常语义 | engine 冒烟用例扩展 |
+| P2-2 | ZELX 复杂文件压缩（D1，`tools/zelx_build.py` vs LispConverter 大文件逐字节） | 复杂 zelx byte-identity |
+| P2-3 | `unzelx` 健壮性、链接器多格式/宽槽 >255 边界 | 无崩溃 + 逐字节一致 |
+
+## 17.5 验收标准
+
+- `./scripts/run_tests.sh` 全过（py_compile + pytest + disasm→asm 往返 + byte-identity）
+- 18 份 CAD golden byte-identity 不变，新增样本继续转正
+- CAD 真机（AutoCAD 24.1s）清单 >=25 项全过
+- `engine/` 冒烟：`al-eval-source` 覆盖 t-series 主语义无回归
+
+## 17.6 涉及文件
+
+- `compiler/{codegen,resource_builder,cad_symbols,linker}.py`
+- `compiler/cli.py`、`compiler/_gvar_map.py`
+- `decompiler/fas4_decompiler.py`
+- `engine/src/{reader,eval,builtins,env,values,main}.lisp`
+- `tools/zelx_build.py`、`scripts/cad_verify.py`
+- `tests/`（新增回归 + atlisp_u/kernel 产物）

@@ -1,12 +1,47 @@
 # atlispcc 项目进度报告
 
-> 生成日期：2026-08-11
-> 分支：main · 最新提交 `f9de61e`（v0.1.21）
+> 生成日期：2026-08-12
+> 分支：main · 最新提交 `2dec5e5`（v0.1.22）
 > 本文档为滚动进度报告；历史周期记录保留于下方，最新周期见第 0 节。
 
 ---
 
-## 0. 本周期（2026-08-11）摘要
+## 0. 本周期（2026-08-11 → 08-12，v0.1.22）摘要
+
+| 指标 | 数值 |
+|------|------|
+| 测试用例 | **348 用例**（347 passed + 1 skip，无 xfail） |
+| t-series byte-identity | **25 项**（`CAD_T_SERIES_IDENTICAL`：t01-t18 + t22_activex + andor/and2/or2/andval + chinese + qsingle） |
+| CAD 真机验证 | **25 项**（`scripts/cad_verify.py`：t01-t24 + i18n，t24 待复核） |
+| 版本 | **v0.1.22** |
+
+### 本周期成果
+
+1. **真实 @lisp 文件编译推进**（kernel 单文件 / bootstrap / base-function）：
+   - `9c2acee` kernel 单文件编译产物 CAD 加载修复（in-package/lambda 常量/
+     字符串槽/循环检测）。
+   - `b2ee792` 纯顶层文件顶层 lambda 编译为内嵌 `-lambda-` SUBR（bootstrap 与
+     CAD **逐字节一致**）：seg0 紧凑 stub `14 <argc>x3 00` + 体、模块代码
+     `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`。
+   - `52a41a6` base-function CAD 加载 `:dialog` 错误修复（foreach item 槽 gvar
+     映射 + cond body 双 POP 修复 + strip_docstring + `command`→`ads-cmd` +
+     超 int32 整数按 REAL + 字符串大小写敏感）。hkrepro 完全 byte-identical。
+2. **`engine/` SBCL AutoLISP 运行时冒烟全绿**（`2abdc72`）：reader/parse-list/
+   scan-token/builtins/eval 修复，R1-R15 全过（算术/defun/apply/list/dotted/
+   if/while/cond/foreach/strcat/动态作用域/function-lambda/length/logand/fix）。
+   文档：fas-format §7 探索索引、development-plan §16。
+3. **文档精简**：development-plan §8-§13/§15 压缩为归档（1247→706 行），
+   §14/§16/§17 保留；`compilation-process.md` 扩写至 583 行；`fas-format.md`
+   更新至 v0.1.22（宽格式/`-lambda-`/module_id 槽/`ads-cmd`）。
+4. **版本 0.1.22**：PyPI 发布。
+
+### 已知残余
+
+- t24_star_error 真机待 CAD 复核。
+- atlisp_u 加载返回值偶发一次 `参数太少`（`@::compat1` foreach 边界原子），
+  不影响任何功能。
+
+## 0.1 本周期（2026-08-11，v0.1.21）摘要
 
 | 指标 | 数值 |
 |------|------|
@@ -86,10 +121,10 @@
 
 | 指标 | 数值 |
 |------|------|
-| 代码规模 | ~8,900 行 Python |
-| 测试用例 | **304/304 通过**（303 passed + 1 skip 占位，16 个测试文件） |
-| 核心模块 | `decompiler/fas4_decompiler.py`(2665)、`compiler/opt.py`(1376)、`compiler/codegen.py`(1243)、`core/fas_core.py`(707)、`compiler/cli.py`(1213) |
-| CLI 子命令 | compile / decompile / disasm / asm / validate / link / build-vlx |
+| 代码规模 | ~17,400 行 Python（compiler+decompiler+core+asm+tools+scripts） |
+| 测试用例 | **348 用例**（347 passed + 1 skip，20 个测试文件） |
+| 核心模块 | `decompiler/fas4_decompiler.py`(3149)、`compiler/cli.py`(2274)、`compiler/codegen.py`(1441)、`compiler/opt.py`(1376)、`core/fas_core.py`(902) |
+| CLI 子命令 | compile / decompile / info / analyze / roundtrip / validate / zelx / unzelx / disasm / asm / link / build-vlx |
 | 优化级别 | -O1/-O2/-O3（9 个 pass） |
 
 ---
@@ -217,3 +252,4 @@ seg1 明文结构，定位符号注册差异。
 - `docs/cad-stub-format.md` — 紧凑 stub 格式规范
 - `docs/lasm.md` — 反汇编/汇编文本表示
 - `docs/cad-testing.md` — CAD 测试指南
+- `docs/compilation-process.md` — 编译过程说明（.lsp → .fas 各阶段详解）

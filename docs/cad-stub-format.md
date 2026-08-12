@@ -75,8 +75,9 @@
 
 即有限参数恒为 `b1 == b2 == b3`（均等于参数个数），`b4 = 00`。
 > 注：曾有语义描述 b1 为「参数个数 + 局部变量数」；AutoCAD 实测表明
-> `/` 声明的局部变量不计入 DEFUN 头（局部槽由 INIT_ARGS 之外的
-> GET_LOCAL/SET_LOCAL 动态分配）。
+> `/` 声明的局部变量不计入 DEFUN 头。但 **含 foreach/repeat 的函数** `b1 =
+> argc + 1`（t16/t17 实测 `14 02 01 01 00`，argc=1）；且 `/ 局部变量` 经
+> `_al-bind-alist` 协议绑定（见 §2.2b），非 GET_LOCAL 动态分配。
 
 **`&optional` / `&rest` 可变参数**（本项目编译器生成，CAD 运行时可加载执行）：
 
@@ -124,11 +125,20 @@ PUSH_G <idx:2>         # 09 xx xx（字符串字面量）
 
 **USUBR 即 CAD 内部的 Xsubr 指令**（调用函数，见 `docs/opcodes.md`）。
 
-3 字节短形式：
+3 字节短形式（nsyms ≤ 256，小文件）：
 
 ```
 35 <argc:1> <idx:1>
 ```
+
+**5 字节宽形式（nsyms > 256，大文件，atlisp_u.lsp 实测）**：
+
+```
+35 <argc:1> <idx:2> <flags=3>
+```
+
+FUNC 对应 3 字节 `51 <argc> <idx:1>` 与 6 字节宽形式
+`51 <argc:1> <idx:2> <flags=1> 00`。宽形式 flags 内联了原 `00 03` 清理。
 
 **索引规律（关键逆向）**：`idx = 符号的 gvar 槽 - 1`。即 USUBR 调用
 gvar 槽 `idx+1` 处的符号。
@@ -139,11 +149,39 @@ gvar 槽 `idx+1` 处的符号。
 
 ### 2.5 调用后清理
 
-每个 USUBR/FUNC 调用后追加：
+每个 USUBR/FUNC 调用后追加（**仅小文件 3 字节短形式**）：
 
 ```
 00 03   # NIL + PUSH_VALUE[0]（结果清理/保留）
 ```
+
+> 大文件宽形式（nsyms>256）flags=3 内联此清理，**无**额外 `00 03` 后缀。
+> `command` 内建调用后为 `00 01 00`（NIL + PUSH_NIL + NIL，base-function 实测）。
+
+### 2.5b `/ 局部变量` 绑定（`_al-bind-alist`，t11 实测）
+
+含 `/ 局部变量` 的函数，CAD 用 `_al-bind-alist` 绑定而非 GET_LOCAL：
+
+```
+PUSH_G <locals 常量槽>; FUNC3 1 <_al-bind-alist>; NIL(00); PUSH_NIL(01); NIL(00); POP
+```
+
+- `_al-bind-alist` 符号与 `(quote (loc1 ...))` 常量在符号表独立注册
+  （`_al-bind-alist` 以 `0x56` 保留大小写单符号块，不进 5b 合并块）。
+- 符号收集：局部变量常量注入函数体符号之后、参数之前（t11 实测
+  `+ <= I RESULT _al-bind-alist (RESULT I) N`）。
+- 函数收尾 `CLEAR_ARGS = argc + len(locals)`（t11 实测 3）。
+
+### 2.5c kwote 内嵌 `-lambda-`（`(function (lambda ...))`，v0.1.18+）
+
+- 内嵌 DEFUN 字节：`JUMP <label:4>; 14 argc argc argc 00; 体; CLEAR_ARGS; 16;
+  <label>`，随后 `PUSH_G <lam_idx>; FUNC3 1 <kwote>; NIL; PUSH_NIL; NIL`。
+- 每个内嵌 `-lambda-` 独立符号槽（t3 槽 18、t4 槽 17、t5 槽 16，nsyms=19）。
+- `-lambda-` 不进 `symtab.entries`，仅资源段 DEFCODE 区小写注册 → fas_nsyms
+  比 codegen_nsyms 大 1，seg0 引用 `gvar 槽 - 2`。
+- 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，v0.1.22）：内嵌 `-lambda-`
+  SUBR（seg0 紧凑 stub `14 <argc>x3 00` + 体，无 JUMP/CLEAR_ARGS/END），模块
+  代码 `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`。
 
 ### 2.6 控制流
 
@@ -342,19 +380,20 @@ for i in 0..len(data)-1:
 
 ## 7. 已验证成果（AutoCAD 24.1s 实测）
 
-> **最新（本轮）**：四类编译产物（seg0 + seg1 + total_size）与 AutoCAD **逐字节一致**，
-> CAD 运行结果全部正确：
-> - **纯函数定义**（t1–t11）：单函数 defun
-> - **多个纯函数定义**（m1/m2）：`(f1 5) (f2 3)` → `(6 6)`
-> - **无函数定义有顶层表达式**（tops1–tops3、version）：`@::*version*` → `1.23.8`
-> - **有函数定义和顶层表达式**（mix）：`(list @::*ver* (mix-fn 5))` → `(1.0 6)`
-> - 单函数递归（fact）：`(fact 5)` → `120`
->
-> 此前与 CAD 的 DIFF（多余 POP、writer 尾字节、total_size、无 else if、
-> 符号名大小写、顶层表达式放 seg0、多函数符号收集顺序、多函数分隔符、
-> CLEAR_ARGS 操作数）已全部修复。
->
-> 下表为更早一轮（多函数/递归/while/cond，14/14）的历史记录：
+> **当前（v0.1.22）**：`CAD_T_SERIES_IDENTICAL` 锁入 **25 项** byte-identity
+> （t01-t18 + t22_activex + andor/and2/or2/andval + chinese + qsingle，
+> `tests/test_compiler_output.py`）；i18n 原文件/拆分件 byte-identity 回归；
+> 链接输出与 `tests/cad/link/*_cad.fas` 3 份 golden 逐字节一致。CAD 真机
+> **25 项**全过（`scripts/cad_verify.py`：t01-t24 + i18n，含 foreach/repeat/
+> 变参/kwote/vla-/command/*error*）。
+
+> 早期历史：四类编译产物（seg0 + seg1 + total_size）与 AutoCAD **逐字节一致**，
+> CAD 运行结果全部正确：纯函数（t1-t11）、多个纯函数（m1/m2）、无函数纯顶层
+> （tops/version）、混合（mix）、单函数递归（fact）。此前与 CAD 的 DIFF
+> （多余 POP、writer 尾字节、total_size、无 else if、符号名大小写、顶层表达式
+> 放 seg0、多函数符号收集顺序、多函数分隔符、CLEAR_ARGS 操作数）已全部修复。
+
+下表为更早一轮（多函数/递归/while/cond，14/14）的历史记录：
 
 | 测试 | 调用 | 结果 |
 |------|------|------|
@@ -379,35 +418,41 @@ for i in 0..len(data)-1:
 
 | 文件 | 职责 |
 |------|------|
-| `compiler/codegen.py` | stub 字节码生成（DEFUN/参数/USUBR/if/递归） |
+| `compiler/codegen.py` | stub 字节码生成（DEFUN/参数/USUBR/if/递归/kwote `-lambda-`） |
 | `compiler/cad_symbols.py` | 符号槽顺序推导 |
 | `compiler/resource_builder.py` | seg1 资源段（GVARINIT/DEFCODE/模块代码） |
 | `compiler/fas_writer.py` | total_size（stub 减 2）、文件头、加密、trailer |
-| `compiler/cli.py` | 编译管线、`_patch_usubr_idx` |
+| `compiler/cli.py` | 编译管线、`_patch_usubr_idx`、`_build_cad_module_code`、改写层 |
+| `compiler/_gvar_map.py` | commands+顶层混合 gvar 槽重映射 |
 | `compiler/symbol_table.py` | add_force（重复槽）、repeat_slots |
 | `compiler/linker.py` | stub 链接适配 |
 | `asm/assembler.py` | 反汇编/汇编（.fas ↔ .lasm，`_detect_compact` 独立判定） |
-| `asm/opcodes.py` | 操作码定义与编码函数（stub 3 字节/自包含长编码） |
+| `asm/opcodes.py` | 操作码定义与编码函数（stub 3 字节/宽格式 5-6 字节/自包含长编码） |
 | `decompiler/fas4_decompiler.py` | stub 反编译（函数名/DEFCODE/判定） |
 | `tools/validate.py` | 接受含 `:` 的合法 AutoLISP 符号 |
+| `engine/atlisp.asd` | SBCL AutoLISP 运行时（实验性跨校验器） |
 
 ---
 
 ## 9. 遗留问题
 
-- **复杂顶层表达式**（i18n.lsp 等含 `if`/`cond`/嵌套调用/非字符串 setq）：
-  `_build_cad_module_code` 仅精确处理简单 `setq 变量 "字符串"` 的 CAD 模式；
-  复杂表达式的模块代码编码尚未完全对齐 CAD（CAD 报格式错误），需完整的
-  顶层表达式编译引擎（匹配 CAD 的所有 setq/if/set 编码模式）。
-  `disasm → asm` 往返不携带 seg1 模块代码：含顶层表达式的文件重新汇编后
-  顶层代码丢失（函数本身仍可正确加载执行）。
-- **多函数 stub 反编译符号槽映射**：参数绑定/读取槽（`nsyms-1-i`）与
-  symbol_slots 的对应适配（需反编译器重建 gvar 表；影响 compile→decompile
-  往返质量，不影响 CAD 兼容/编译输出）
-- 链接器多函数合并后的反编译
+- **链接器多函数合并后的反编译**（参数名非源码名，cosmetic；字节码功能正确）。
+  §3.6 的「字节码功能正确」已由 2026-08-08 根治（链接输出与 CAD golden 逐字节
+  一致）。
 
-> `Fas4Parser.parse` 的 total_size 截断问题**已修复**：解析器改用 `16 24 0d 0a`
-> 终止符界定 seg0，可读全末尾 2 字节（CLEAR_ARGS 操作数）。
+> 已解决项（历史）：
+> - **复杂顶层表达式**（i18n.lsp 等含 `if`/`cond`/嵌套调用/非字符串 setq）：
+>   已由 `_build_cad_module_code`（2026-08-06）完整对齐 CAD——i18n 原文件
+>   seg0+sec2+nsyms 逐字节一致（`test_i18n_original_byte_identity`），拆件
+>   p01-p07 全对齐。
+> - **多函数 stub 反编译符号槽映射**：已由 `_gvar_item`/`build_mvar_tables`
+>   重建 gvar 表解决（参数名恢复，§3.5c/d/e、§10 系列修复）。
+> - **链式 quote 常量**（t12）：函数表 GVARINIT 的 **module_id 槽**存结构化
+>   LIST/CONS 常量（`build_module_id_slots`，`core/fas_core.py`；原子型
+>   SYMBOL/STRING 是符号槽重复不登记），反编译器 `_gvar_item` 越界查询还原
+>   `'(a b c)`/`'(1 . 2)`/`'(1 2 3)`。
+> - **`Fas4Parser.parse` 的 total_size 截断**：已修复——解析器改用 `16 24 0d 0a`
+>   终止符界定 seg0，可读全末尾 2 字节（CLEAR_ARGS 操作数）。
 
 ## 实测结论
 

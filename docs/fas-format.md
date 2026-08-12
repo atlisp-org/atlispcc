@@ -51,11 +51,18 @@
 ```
 
 **nsyms**：符号槽总数。单函数 = 去重符号数；多函数由编译器内部符号表分配（与去重数可能不同）。
+`nsyms` 也决定字节码编址宽度：`nsyms > 256` 时大文件走 **5 字节 USUBR / 6 字节 FUNC**
+（见 §5）。
+
+**seg0 为空（纯顶层文件，无 defun）**：`FasWriter` 以空格占位
+` $\r\n` 替代 `SEG_TERMINATOR`（CAD set5/setcmp 实测）。此时文件头
+`total_size = len(seg0) + 1 = 1`，`<nsyms> $` 后无字节码。
 
 **seg0 尾部 2 字节**：仅存在于紧凑 stub 格式。它们**不是独立的 argc 编码**，
 而是最后一个函数指令序列末尾的 2 字节（随函数体变化，如 t9→`00 01`、t10→`01 00`、
 t11→`01 00`），落在 `total_size` 统计之外、终止符之前。`FasWriter` 不再显式生成
-「尾部 2 字节」——字节码本身自然以这些指令结尾，写盘时 `total_size` 少计 2 即可。
+「尾部 2 字节」——字节码本身自然以这些指令结尾，写盘时 `total_size = len(seg0) + 1`
+少计 2 即可（CAD 实测恒等：cross/m2/m3/multi/sh/lambda_test 六份产物）。
 
 > 历史版本曾把 seg0 尾部 2 字节描述为「首个函数 argc 编码」，经 AutoCAD 逐字节
 > 对比证实为误判：尾部内容由末段指令决定，与函数参数个数无固定对应。
@@ -186,7 +193,7 @@ for i in 0..len(data)-1:
 | `15` | 模块头（备用） | 同 `14` | — |
 | `3a` | DEFCODE | `3a` | 弹出栈上 `(name, start, module)` 三元组注册函数目录；stub 最后一个追加 `3a 01` |
 | `43` | GVARINIT | `43 <var_pos:2> <st_init:2>` | 弹出栈顶 `st_init` 个值，倒序填入 `var_pos..var_pos+st_init-1` 槽；`module_id` 非空时写入函数 gvar 表 |
-| `35`/`51` | FUNC_REF | `35 <argc> <idx:2> 01` | 引用函数目录中 `idx` 处函数（命令模块代码调用 `vl-ACAD-defun` 注册命令，t14 实测） |
+| `35`/`51` | FUNC_REF | `35 <argc:1> <idx:2> 01` | 引用函数目录中 `idx` 处函数（命令模块代码调用 `vl-ACAD-defun` 注册命令，t14 实测 `35 01 <idx:2> 01`；大文件用 `51 <argc:1> <idx:2> <flags> 00` 宽格式） |
 | `1c` | INIT_DONE | `1c` | 模块初始化完成标记 |
 | `16` | END_DEFUN | `16` | 函数/模块代码结束 |
 | `5c` | GET_LOCAL_WIDE | `5c 00 00` | DEFCODE 前的固定序列（压入局部槽 0） |
@@ -224,8 +231,8 @@ for i in 0..len(data)-1:
 模块部分与 DEFCODE 部分使用固定的 st_init / var_pos：
 
 - **模块注册**：`GVARINIT(0, 函数数 + 2)`
-- **函数注册**：`GVARINIT(0, 符号数)`
-- **DEFCODE**：`GVARINIT(函数数 + 2, 函数数)`
+- **函数注册**：`GVARINIT(0, 符号数)`（st_init = 注册符号数 + 1 = **nsyms**）
+- **DEFCODE**：`GVARINIT(函数数 + 2, 函数数)`（`gv_var_pos = len(func_names) + top_level_count + 2 (+commands)`）
 
 > **c: 命令模式偏移**（t14_command 实测）：含命令函数时，模块注册段额外注册
 > `vl-ACAD-defun`（`56` 单符号块），使模块注册 GVARINIT st_init 与 DEFCODE
@@ -236,6 +243,18 @@ for i in 0..len(data)-1:
 > `vl-ACAD-defun` 仅注册于模块注册段（resource_gvars），**不进**符号表
 > `symtab.entries`，因此函数注册 GVARINIT st_init（= nsyms）与 seg0 引用的
 > function_gvars 槽位保持不变。
+>
+> **commands + 顶层表达式混合**（atlisp_u.lsp，502 函数）：函数名已单独注册
+> （每个独立 `5b` 块，首命令后插入 `56 vl-ACAD-defun 00 00`），其余顶层符号/
+> 常量仍需登记；模块注册 GVARINIT `st_init = module_entries_count + 2 + commands`，
+> DEFCODE 基址 `var_pos` 同样 +commands。此时 `symtab_idx+1` 不再等于实际 gvar
+> 槽，模块代码符号引用（USUBR/PUSH_G/FUNC）须经 `_gvar_map.py` 重建 gvar 表后
+> `_offset_slots` 二次重映射。
+
+> **module_id 槽**（t12 修复，`build_module_id_slots`）：函数表 GVARINIT 的
+> `module_id` 槽（`var_pos + st_init`）存放结构化 LIST/CONS 常量（如
+> `'(a b c)`、`'(1 . 2)`、`'(1 2 3)`）；原子型 SYMBOL/STRING 是该符号的重复槽，
+> 不登记。反编译器 `_gvar_item` 越界查询该槽以还原链式 quote 常量。
 
 ### 3.4 DEFCODE（函数定义）
 
@@ -250,9 +269,32 @@ for i in 0..len(data)-1:
 
 DEFCODE 把 `(module, start, name)` 三元组注册进函数目录；seg0 偏移即 start。
 
+- **stub 格式按源码逆序注册**（`func_names = list(reversed(func_names))`）。
+- 只有**最后一个** DEFCODE 追加 `01`（stub 格式），其余仅 `3a`。
+- **函数名统一大写**（`_enc_sym`）；`-lambda-` 内嵌函数保留小写
+  （`-LAMBDA-` 是错的），多 `-lambda-` 目录键为 `-lambda-#N`、编码仍为 `-lambda-`。
+- 多函数文件在 DEFCODE 之前发 `_func_ranges_bytes`（函数代码引用范围表）：
+  `32 <start> 32 <end> 2a ... 39 <count> 00`，从末尾逆序。
+
+> **kwote 内嵌 `-lambda-`**（`(function (lambda ...))` / 立即应用机制，v0.1.18+）：
+> 每个内嵌 lambda 独立 DEFCODE，在 GVARINIT(0, nsyms) 前置发射、按 seg0 偏移
+> **逆序**（CAD 实测：先发射的 lambda 被 GVARINIT 后弹出，分配更高槽——t3 槽 18、
+> t4 槽 17、t5 槽 16，nsyms=19）。字节：`5c 00 00 32 <off> 5b -lambda- 00 00 3a`。
+> 宿主函数代码引用 end 用下一个**非内嵌**函数起始，内嵌项 end 用自身结束偏移
+> （nested_ends）。`-lambda-` 不进 `symtab.entries`（无普通符号槽），仅 DEFCODE
+> 区注册——故 fas_nsyms 比 codegen_nsyms 大 1，seg0 引用须 `gvar 槽 - 2`
+> （`_patch_usubr_idx` 的 offset 修正）。
+
 ### 3.5 模块代码
 
-CAD 风格模块入口（`build_module_code`），引用 seg0 中注册的符号：
+CAD 把源码中的**顶层表达式**（defun 之外的 setq/set 等）编译进 seg1 模块代码，
+seg0 只含 defun 函数。三种构建器：
+
+- `build_module_code(n_funcs)`：纯函数文件（无顶层表达式、无命令）固定函数注册尾。
+- `build_command_module_code(n_funcs)`：含 c: 命令（§3.5a）。
+- `_build_cad_module_code(...)`：含顶层表达式（cli.py 逆向实现，最通用）。
+
+**`build_module_code`**（纯函数文件）：
 
 ```
 14 01 00 00 00    # DEFUN 头
@@ -262,6 +304,27 @@ CAD 风格模块入口（`build_module_code`），引用 seg0 中注册的符号
 09 03 00 06 01 00 # PUSH_G + SETQ_G
 09 01 00 16       # PUSH_G + END_DEFUN
 ```
+
+- n_funcs=0（无函数）：`DEFUN头 + 顶层表达式 + END_DEFUN`。
+- n_funcs>1：每函数 `PUSH_G <a>; POP; JUMP; PUSH_G <b>; SETQ_G <c>`
+  （a=n_funcs+1-i、b=2n+1-i、c=n-i），末 `PUSH_G 1; END`。
+
+**`_build_cad_module_code`**（含顶层表达式，逆向规则）：
+
+- 符号引用使用 **gvar 槽 = 符号槽 + 1**；顶部 `PUSH_G <模块注册符号数+1>; POP` 占位。
+- 顶层 setq → `PUSH_G <值槽+1>; DUP; SETQ_G <变量槽+1>`（中间 pair 无 DUP、
+  最后一对 DUP；`'()`/`nil` → PUSH_NIL；整数字面量内联 `PUSH_INT8/INT32`；
+  复杂值退回通用 codegen 路径后按真实 SETQ_G 指令定位补 DUP——不碰 USUBR
+  的 0x06 索引字节）。
+- 每个顶层语句后 POP（最后一句除外）。
+- `(in-package :@)` → `PUSH_VALUE <pkg槽>; FUNC_REF in-package`。
+- **函数注册尾**：`JUMP + PUSH_G <b>; SETQ_G <c>`（b = `2*n_funcs+1 +
+  top_level_count - i`，c = 函数符号槽 + 1），组间 `PUSH_G <c>; POP; JUMP`。
+- **post-form 分组**：最后一个 defun 之后的顶层语句排到函数注册尾之后
+  （`n_post_forms`，支持多个）；首个 defun 之前的顶层语句（globals）排在最前。
+- **顶层 lambda 绑定**（纯顶层 `(set/setq 'sym (lambda ...))`，`-lambda-` SUBR）：
+  `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`。
+- commands+顶层混合时经 `_gvar_map.py` 重建 gvar 表后二次生成（§3.3）。
 
 ### 3.5a 命令模块代码（`build_command_module_code`，t14_command 实测）
 
@@ -326,13 +389,19 @@ nsyms = len(entries) - 模块注册符号数 + 1
 | 特性 | 自包含格式 | 紧凑 stub 格式（CAD） |
 |------|-----------|----------------------|
 | 生成 | `stub_format=False` | `stub_format=True`（默认 CLI） |
-| seg0 END_DEFUN | 有（`16`） | 无 |
-| DEFUN 头 | `14 <gvar_ref:2> <offset:2>` | `14 <argc>x3 00` |
-| 符号寻址 | function_gvars 间接 | 符号槽直接 |
-| USUBR/FUNC | 5/6 字节 | 3 字节 |
+| seg0 END_DEFUN | 有（`16`） | 无（函数间 `16` 分隔，CLEAR_ARGS 由 codegen 生成） |
+| DEFUN 头 | `14 <gvar_ref:2> <offset:2>` | `14 <argc>x3 00`（变参 b4=01；循环函数 b1=argc+1） |
+| 符号寻址 | function_gvars 间接 | 符号槽直接（gvar 槽 = 符号槽 + 1，操作数 = gvar 槽 - 1） |
+| USUBR/FUNC | 5/6 字节 | 3 字节（小文件）；**nsyms>256 时 5/6 字节宽格式** |
 | GET_LOCAL | `05 <slot:1>` | `5c <slot:2>`（GET_LOCAL_WIDE） |
 | 函数目录 | mvar 表重建 | DEFCODE 序列 |
 | 参考产物 | `tests/cad/i18n-cad.fas` / `tests/cad/i18n.fas` | `tests/fun-cad.fas` |
+
+> **大文件宽格式**（v0.1.19+，atlisp_u.lsp 502 函数实测）：符号槽 >255 时
+> USUBR 用 5 字节 `35 <argc> <idx16> <flags=3>`、FUNC 用 6 字节
+> `51 <argc> <idx16> <flags=1> 00`（`asm/opcodes.py` `encode_usubr`/`encode_func`，
+> flags 内联了原 `00 03` 清理）。`_patch_usubr_idx`/`_offset_slots` 用
+> `short_subr=False` 反汇编并按宽格式重编码（patch delta=0，函数偏移不再错位）。
 
 ---
 
@@ -378,6 +447,25 @@ nsyms = len(entries) - 模块注册符号数 + 1
 - `top_level_count` 由收集器 `module_reg_count` 推导（避免高估）。
 - 链接器输出与 CAD golden 逐字节一致。
 - 反汇编每行前显示指令原始十六进制字节列。
+
+### 关键格式结论（v0.1.21–v0.1.22）
+
+- **顶层 `(set/setq 'sym (lambda ...))`**（纯顶层文件）：CAD 用内嵌 `-lambda-`
+  SUBR（seg0 紧凑 stub `14 <argc>x3 00` + 体，无 JUMP/CLEAR_ARGS/END），模块
+  代码 `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`；`-lambda-`
+  槽 = 顶层符号数 + 1（多 lambda 逆序递减），DEFCODE 区小写注册
+  （bootstrap 与 CAD 逐字节一致，v0.1.22）。
+- **`command` 内建**：资源段注册名为 `ads-cmd`（非 `COMMAND`）；调用字节
+  `FUNC3 + NIL + PUSH_NIL + NIL`（base-function 真机实测）。
+- **字符串大小写敏感**：`"date"` 与 `"DATE"` 是两个不同槽（`.upper()` 会错误
+  合并）；REAL 常量按值匹配资源段槽（codegen symtab 槽可能偏离 GVARINIT）。
+- **值位置 `T`/`t`**：均注册符号槽并用 `PUSH_VALUE` 引用（cond else `(t expr)`
+  键与值位置 `T` 共享槽，SymbolTable 归一化到 `T`）；nil 恒内联 PUSH_NIL。
+- **`/ 局部变量`**：`_al-bind-alist` 符号 + `(quote (locals...))` 常量独立注册
+  （0x56 保留大小写，不进 5b 合并块）；绑定字节
+  `PUSH_G <const>; FUNC 1; NIL; PUSH_NIL; NIL; POP`；CLEAR_ARGS = argc + locals。
+- **module_id 槽**：函数表 GVARINIT 的 `module_id` 槽存结构化 LIST/CONS 常量
+  （t12 链式 quote 解码，`build_module_id_slots`）。
 
 ### engine/（SBCL AutoLISP 运行时，v0.1.21+ 开始）
 

@@ -2,7 +2,9 @@
 
 > 逆向来源：ZWCAD 2017 SDK 的 `LispConverter.exe`（"FAS&VLX Converter"，MFC GUI）
 > 与 @lisp 样本对（`base-whole.fas` ↔ `base-whole.zelx` 等）。
-> 工具：`python -m tools.zelx_info <x.zelx> [-s] [-o payload.bin]`。
+> 工具：CLI `atlispcc zelx <lsp|fas> <out.zelx>` / `atlispcc unzelx <in.zelx> <out.fas>`，
+> 或 `python -m tools.zelx_info <x.zelx> [-s] [-o payload.bin]`。
+> `atlispcc asm --zelx <x.lasm> <x.zelx>` 可从 `.lasm` 直接汇编 ZELX（见 `docs/lasm.md`）。
 
 ## 1. 概述
 

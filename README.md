@@ -14,6 +14,10 @@
 - **大型 @lisp 包支持** 顶层 `(progn ...)` 包裹、条件/嵌套 defun、
   多 kwote 回调（`(function (lambda ...))`）与 >256 符号大文件
   （5 字节 USUBR / 6 字节 FUNC 宽格式）均可编译，产物在 CAD 完整加载运行
+- **kwote 机制** `(function (lambda ...))` 内嵌 `-lambda-` DEFUN、顶层
+  `(set/setq 'sym (lambda ...))` 内嵌 `-lambda-` SUBR（与 CAD 逐字节一致）
+- **`engine/` SBCL 运行时** 独立于 CAD/FAS 的 AutoLISP 求值环境
+  （`al-eval-source`/`al-run-file`/`al-repl`），作为编译器语义的跨校验器
 
 ## 安装
 
@@ -288,7 +292,7 @@ atlispcc validate combined.lsp
 ```sh
 make cad-test    # 或: python scripts/cad_verify.py
 ```
-`scripts/cad_verify.py` 逐个编译 t01-t15 → 在 CAD 加载 → 断言返回值（24 项通过）。
+`scripts/cad_verify.py` 逐个编译 t01-t24 + i18n → 在 CAD 加载 → 断言返回值（25 项通过）。
 
 > **CAD 模态对话框自动关闭**：CAD 偶发弹出模态对话框（`alert` 错误框、命令中断框）
 > 会阻塞 `atlisp-mcp` 的 eval 调用。可用 `tools.cad_dialog_killer` 自动关闭：
@@ -330,12 +334,14 @@ make cad-test    # 或: python scripts/cad_verify.py
 | lambda/quote | ✅ | `(map-inc '(1 2 3))` → (2 3 4)；lambda 参数局部化正确 |
 | vla-/vlax- ActiveX | ✅ | `(t22-acad-doc)` 返回文档对象；编译产物与 CAD golden 逐字节一致 |
 | command 交互调用 | ✅ | `(t23-created-circle-p)` → T（画圆→断言→自清理） |
+| `*error*` 错误处理 | ✅ | `(t24-handler-test)` → "handler-ran"（t24_star_error 真机用例） |
 | **多文件链接** | ✅ | `atlispcc link` 输出与 CAD 直接编译逐字节一致，CAD 真机全部函数可调用（含跨文件交叉引用、多参数、重名冲突） |
 
 > 单函数文件（`fun.lsp`、`fact.lsp`）与 CAD 编译器输出解密后逐字节一致。
-> t-series（t01-t18）与 `tests/cad/t01_math_cad.fas` 等 **19 份 CAD golden**
-> 编译产物 byte-identity（含 t22 ActiveX）；链接输出与 `tests/cad/link/*_cad.fas`
-> **3 份 CAD golden** 逐字节一致。CAD 真机验证 24/24（`scripts/cad_verify.py`）。
+> `CAD_T_SERIES_IDENTICAL` 锁入 **25 项** byte-identity（t-series t01-t18 + t22_activex
+> + andor/and2/or2/andval + chinese + qsingle）；i18n 原文件/拆分件 byte-identity 回归。
+> 链接输出与 `tests/cad/link/*_cad.fas` **3 份 CAD golden** 逐字节一致。
+> CAD 真机验证 **25/25**（`scripts/cad_verify.py`，t01-t24 + i18n）。
 
 ## 完整示例
 
@@ -443,6 +449,7 @@ make clean       # 清理构建产物与缓存
 - `docs/compilation-process.md` — 编译过程说明（.lsp → .fas 各阶段详解）
 - `docs/development.md` — 开发者说明（架构、管线、测试、代码规范）
 - `docs/development-plan.md` — 开发计划、遗留问题与功能完善路线图
+- `engine/` — SBCL AutoLISP 运行时（`engine/atlisp.asd`），实验性跨校验器
 
 ## 安全
 

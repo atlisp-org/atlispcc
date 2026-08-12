@@ -539,17 +539,17 @@ JUMP func_entry
 | `encode_op_u8(op, val)` | 2 字节 `op val:1` | `encode_op_u8(0x05, 1)` → `05 01` |
 | `encode_op_s32(op, val)` | 5 字节 `op val:4` | `encode_op_s32(0x57, 10)` → `57 0a 00 00 00` |
 | `encode_bb(op, a, b)` | 3 字节 `op a b` | `encode_bb(0x07, 1, 2)` → `07 01 02` |
-| `encode_usubr(argc, idx, flags)` | 5 字节 | `encode_usubr(1, 2, 0)` → `35 01 02 00 00` |
-| `encode_usubr3(argc, idx)` | 3 字节 | `encode_usubr3(1, 2)` → `35 01 02` |
-| `encode_func(argc, idx, flags)` | 6 字节 | `encode_func(1, 3, 0)` → `51 01 03 00 00 00` |
-| `encode_func3(argc, idx)` | 3 字节 | `encode_func3(1, 3)` → `51 01 03` |
+| `encode_usubr(argc, idx, flags)` | 5 字节（大文件宽格式） | `encode_usubr(1, 2, 3)` → `35 01 02 00 03` |
+| `encode_usubr3(argc, idx)` | 3 字节（小文件 stub） | `encode_usubr3(1, 2)` → `35 01 02` |
+| `encode_func(argc, idx, flags)` | 6 字节（大文件宽格式） | `encode_func(1, 3, 1)` → `51 01 03 00 01 00` |
+| `encode_func3(argc, idx)` | 3 字节（小文件 stub） | `encode_func3(1, 3)` → `51 01 03` |
 | `encode_defun(gvar, offset)` | 5 字节 | `encode_defun(1, 0)` → `14 01 00 00 00` |
 | `encode_eval(argc, flag)` | 3 字节 | `encode_eval(1, 0)` → `34 01 00` |
 | `encode_real(value)` | 可变 | `encode_real(3.14)` → `3b 33 2e 31 34 00` |
 
 ---
 
-## 验证状态（2026-08-04）
+## 验证状态（2026-08-12）
 
 对操作码定义与编码的完整验证结果：
 
@@ -558,26 +558,33 @@ JUMP func_entry
 - 79 个 CAD golden/参考 FAS 反汇编**无未知 opcode**（`UNK_` 计数为 0）
 - 16 个 CAD golden + 15 个自产物 `disasm → asm` 往返 **seg0 字节级一致**
 - 全部编码函数输出与文档一致（`encode_usubr3`/`encode_func3`/`encode_op_*` 等 12 项抽查全对）
-- 13/15 的 t-series 与 CAD 编译器**逐字节一致**（seg0 + seg1 资源项均一致）
+- **`CAD_T_SERIES_IDENTICAL` 25 项**与 CAD 编译器**逐字节一致**（seg0 + seg1 资源项均一致）
+  （t01-t18 + t22_activex + andor/and2/or2/andval + chinese + qsingle）
 - 关键语义 opcode 实测正确：`JMP32_IFNOT(0x67)` stub 条件跳转、`COND_OR(0x68)` cond 编译、
   `CLEAR_ARGS(0x19)` stub 3 字节 `19 <argc:2> <00>`、`USUBR(0x35)`/`FUNC(0x51)` stub 3 字节
+- **大文件宽格式**（v0.1.19+，nsyms>256）：5 字节 `USUBR`（`35 <argc> <idx16> <flags=3>`）
+  与 6 字节 `FUNC`（`51 <argc> <idx16> <flags=1> 00`）——`encode_usubr`/`encode_func`，
+  flags 内联原 `00 03` 清理（atlisp_u.lsp 502 函数实测）
 
 **GET_LOCAL 二义性**：`0x05`（短）与 `0x5c`（宽）均为局部变量读取，但操作数宽度不同；
 `0x5c` 的规范名称为 `GET_LOCAL_WIDE`（与 `0x05` 的 `GET_LOCAL` 区分），汇编 `GET_LOCAL_WIDE N`
 强制发 `5c <u16>`，往返无损。
 
-**资源码补充**（2026-08-05 转正 t12/t14 后）：
+**资源码补充**（t12/t14 转正后）：
 - `2a`（CONS）兼作 **dotted 常量收尾**——`'(1 . 2)` 以单字节 `2a` 结束，普通列表才用
   `39 <count>`（t12_quote 修复：`_emit_const` 对 dotted 常量输出 `2a`）
 - `56` 单符号块**保留大小写**——命令模块注册的 `vl-ACAD-defun` 编码为 `Vl-ACAD-defun`
-  （t14_command 修复），区别于 `5b` 的大写化
+  （t14_command 修复）、`_al-bind-alist`/`kwote` 同样走 0x56（t11/i18n），区别于 `5b` 的大写化
 - `35`/`51`（FUNC_REF）亦出现于资源/模块代码——命令模块代码用其调用 `vl-ACAD-defun`
-  注册 c: 命令（t14_command）
+  注册 c: 命令（t14_command）；大文件模块代码用 `51` 宽形式
+- **module_id 槽**（t12 链式 quote）：函数表 GVARINIT 的 module_id 槽存结构化
+  LIST/CONS 常量（`build_module_id_slots`，`core/fas_core.py`）——反编译器据此还原
+  `'(a b c)`/`'(1 . 2)` 等常量，`_gvar_item` 越界查询
 
-**遗留差异非 opcode 问题**：t10/t11 与 CAD 的差异**不在操作码编码**，而在：
-- seg1 资源段符号槽顺序/构建（t10 混合模式）
-- codegen 缺 `_al-bind-alist` 局部变量绑定序列（t11：CAD 用 `PUSH_G+FUNC`，我们直接
-  `PUSH_INT8+SETQ_G`——操作码均合法，只是生成策略不同）
+**遗留差异非 opcode 问题**：t10/t11 的早期差异**已解决**（2026-08-05/06 转正）：
+- seg1 资源段符号槽顺序（t10 混合模式）→ 已对齐，i18n 原文件 byte-identity
+- `_al-bind-alist` 局部变量绑定序列（t11）→ codegen `_emit_al_bind_alist` 已实现
+  （`PUSH_G <const>; FUNC 1; NIL; PUSH_NIL; NIL; POP`），与 CAD 一致
 
 资源段指令（`0x43` GVARINIT、`0x55`/`0x56`/`0x5b` 符号/字符串、`0x3a` DEFCODE、`0x1c`
 INIT_DONE、`0x35`/`0x51` FUNC_REF）不属于字节码 OPCODES 表，由
