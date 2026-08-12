@@ -661,46 +661,55 @@ atlispcc 编译产物与 engine 求值结果互相对照，验证编译器语义
 
 ## 17.1 目标
 
-以 v0.1.22（真实 @lisp 文件编译推进 + engine 冒烟全绿）为基线，按三条主线收敛：
-真实包全面落地（P0）→ 残留正确性（P1）→ engine/工具链收尾（P2）。
+以 v0.1.22（真实 @lisp 文件编译推进 + engine 冒烟全绿 + asm 宽格式闭环）为基线，
+按三条主线收敛：真实包全面落地（P0）→ engine 对拍补全（P1）→ 工具链收尾（P2）。
 
-## 17.2 P0 — 真实 @lisp 包全面落地（延续 v0.1.22 主线）
+## 17.2 已完成（2026-08-12 复核）
+
+| 项 | 内容 | 状态 |
+|----|------|------|
+| P1-1 | §3.6 链接器多函数 CAD 注册 | ✅ 2026-08-08 根治（3 份 CAD golden 逐字节一致） |
+| P1-2 | §12 T2 `/ 局部变量` 声明清单对齐 | ✅ §12 T1-T7 全部完成 |
+| P1-3 | §12 T3 c: 命令参数语义 | ✅ 有意设计，文档标注 |
+| P1-4 | §12 T4-T5 setq 重排治理 | ✅ 完成（t11 module_id 槽 / t12 dotted） |
+| P2-3a | asm 大文件宽格式（nsyms>256） | ✅ 2026-08-12 闭环：`_detect_compact` 宽解析 + 5/6 字节 USUBR/FUNC 汇编；37 样本 seg0+nsyms 往返逐字节一致（`a6c0844`） |
+| P2-3b | 纯顶层 selfcontained nsyms | ✅ 空函数不注册 + `.nsyms` 覆盖（set5/setcmp/setqa 还原） |
+
+## 17.3 P0 — 真实 @lisp 包全面落地
 
 | 项 | 内容 | 验收 |
 |----|------|------|
 | P0-1 | kernel/lib 剩余 @lisp 包逐个编译验证（同型缺陷：gvar 槽映射、-lambda- 内嵌、cond 双 POP、ads-cmd、大小写敏感槽） | CAD 真机清单 25→30 项 |
-| P0-2 | `engine/` 与 CAD 对拍：`scripts/cad_verify.py` t-series 同源用例在 engine 复跑 | 双轨结果一致 |
-| P0-3 | 真机缺陷修复后锁入 byte-identity 回归 + pytest 全量 | 348 cases + 新增不回归 |
+| P0-2 | 真机缺陷修复后锁入 byte-identity 回归 + pytest 全量 | 350 cases + 新增不回归 |
+| P0-3 | atlisp_u 偶发 `参数太少`（`@::compat1` foreach 边界原子）定位修复 | 加载返回值稳定 |
 
-## 17.3 P1 — 残留正确性
-
-| 项 | 内容 | 验收 |
-|----|------|------|
-| P1-1 | §3.6 链接器多函数 CAD 只注册首个函数（根因已定位到 DEFCODE 注册路径） | 3 份 CAD golden byte-identity 扩展 |
-| P1-2 | §12 T2：`/ 局部变量` 声明清单与源码对齐（t16/t17/t11） | 反编译清单行对齐源码 |
-| P1-3 | §12 T3：c: 命令参数本地化语义澄清（t14） | 反编译 `c:` 参数名可读 |
-| P1-4 | §12 T4-T5：setq 重排治理（t11/t12 artifact） | 反编译置数顺序与源码一致 |
-
-## 17.4 P2 — engine 与工具链收尾
+## 17.4 P1 — engine 与 CAD 对拍
 
 | 项 | 内容 | 验收 |
 |----|------|------|
-| P2-1 | §16.3 engine 补全：foreach/repeat/quote 载体、`/ 局部变量`、`&optional`/`&rest`、`_al-bind-alist`、异常语义 | engine 冒烟用例扩展 |
-| P2-2 | ZELX 复杂文件压缩（D1，`tools/zelx_build.py` vs LispConverter 大文件逐字节） | 复杂 zelx byte-identity |
-| P2-3 | `unzelx` 健壮性、链接器多格式/宽槽 >255 边界 | 无崩溃 + 逐字节一致 |
+| P1-1 | engine 对拍：`scripts/cad_verify.py` t-series 同源用例在 engine 复跑 | 双轨结果一致 |
+| P1-2 | engine 补全：foreach/repeat 精细、`/ 局部变量`、`&optional`/`&rest`、`_al-bind-alist`、异常语义 | engine 冒烟用例扩展 |
 
-## 17.5 验收标准
+## 17.5 P2 — 工具链收尾
+
+| 项 | 内容 | 验收 |
+|----|------|------|
+| P2-1 | ZELX 复杂文件压缩（D1，`tools/zelx_build.py` vs LispConverter 大文件逐字节） | 复杂 zelx byte-identity（阻塞：需 ZWCAD 环境） |
+| P2-2 | `unzelx` 健壮性、链接器多格式/宽槽 >255 边界复核 | 无崩溃 + 逐字节一致 |
+| P2-3 | 多 CAD 平台矩阵（ZWCAD/GStarCAD/BricsCAD） | 平台真机验证（远期） |
+
+## 17.6 验收标准
 
 - `./scripts/run_tests.sh` 全过（py_compile + pytest + disasm→asm 往返 + byte-identity）
-- 18 份 CAD golden byte-identity 不变，新增样本继续转正
+- 25 项 CAD golden byte-identity 不变，新增样本继续转正
 - CAD 真机（AutoCAD 24.1s）清单 >=25 项全过
 - `engine/` 冒烟：`al-eval-source` 覆盖 t-series 主语义无回归
 
-## 17.6 涉及文件
+## 17.7 涉及文件
 
 - `compiler/{codegen,resource_builder,cad_symbols,linker}.py`
 - `compiler/cli.py`、`compiler/_gvar_map.py`
-- `decompiler/fas4_decompiler.py`
+- `decompiler/fas4_decompiler.py`、`asm/assembler.py`、`asm/opcodes.py`
 - `engine/src/{reader,eval,builtins,env,values,main}.lisp`
 - `tools/zelx_build.py`、`scripts/cad_verify.py`
 - `tests/`（新增回归 + atlisp_u/kernel 产物）
