@@ -343,3 +343,48 @@ nsyms = len(entries) - 模块注册符号数 + 1
 3. 在文件尾找 `CRUNCH_MARKER` 定位密钥，回溯校验得 key
 4. 匹配 `(\d+) (\d+) \$` 得 seg1 长度与 items，切出加密数据
 5. 用 `decrypt_stream(seg1, key)` 解密得到资源流明文
+
+---
+
+## 7. 探索文档索引（v0.1.18+）
+
+> 说明：本节是文档索引，指向各探索/设计文档，不重复内容。下表列出的
+> 文档与 FAS4 格式/工具链直接相关，详细结论见原文。
+
+| 文档 | 主题 | 状态 |
+|------|------|------|
+| `docs/compilation-process.md` | 编译流程（lexer/parser/analyzer/codegen/reference/优化） | [实现] |
+| `docs/cad-stub-format.md` | CAD 紧凑 stub 格式（DEFUN 头/符号槽/资源段） | [规范] |
+| `docs/zelx-format.md` | ZELX/`!ZAS` 容器与 W4LZ 压缩（逆向 LispConverter.exe） | [推断] |
+| `docs/lasm.md` | Lisp Assembly 语言（反汇编输出/汇编输入） | [实现] |
+| `docs/opcodes.md` | FAS4 操作码表 | [规范] |
+| `docs/opcode-comparison.md` | AutoCAD vs ZWCAD 操作码对照（重编译而非重映射） | [推断] |
+| `docs/cad-testing.md` | CAD 真机测试方法（cad_verify.py / 快照 / 对话框 killer） | [实现] |
+| `docs/feature-plan.md` | 语言特性补全计划（P0 set/eval/apply/cond-T …） | [实现] |
+| `docs/development-plan.md` | 主开发计划：§3.x 根因、§9-§12 各阶段探索结论 | [实现] |
+| `docs/progress-report.md` | 滚动进度报告（每周期指标/成果/遗留） | [实现] |
+
+### 关键格式结论（v0.1.18–v0.1.21）
+
+- 实数常量编译为资源段 REAL 槽（CAD byte-identity 逐字节一致）。
+- 超范围整数字面量按截断实数处理（`PUSH_INT32` 有符号解码一致）。
+- 链式 quote 常量解码：函数表 GVARINIT `module_id` 槽 + dotted 对渲染（t12）。
+- 紧凑 stub DEFUN 反汇编显示 argc 原始字节（`14 argc argc argc 00`）。
+- 大小写：vla-/vlax- 前缀保留原大小写，方法名首字母大写；值位置 `T`/`t` 注册符号槽。
+- 大文件宽格式：符号槽 >255 用 5 字节 USUBR（`35 argc idx16 flags=3`）、
+  6 字节 FUNC（`51 argc idx16 flags=1 00`）；小文件保持 3 字节。
+- commands+顶层混合：`compiler/_gvar_map.py` 解析 seg1 模块注册段，`_offset_slots`
+  二次生成模块代码按实际槽位修正 USUBR/PUSH_G/FUNC（atlisp_u.lsp 502 函数）。
+- `top_level_count` 由收集器 `module_reg_count` 推导（避免高估）。
+- 链接器输出与 CAD golden 逐字节一致。
+- 反汇编每行前显示指令原始十六进制字节列。
+
+### engine/（SBCL AutoLISP 运行时，v0.1.21+ 开始）
+
+`engine/` 是一个实验性 SBCL/ASDF 运行库（`atlisp.asd`，`src/{packages,values,
+reader,env,eval,builtins,main}.lisp`），用于脱离 CAD 环境执行 AutoLISP 源码。
+
+- 值模型：AutoLISP 数据映射到 CL 原生值（nil/t/int/double-float/string/AL 包符号/cons）。
+- `al-eval-source` / `al-run-file` / `al-repl` 为公共 API（`:atlisp` 包导出）。
+- 与 FAS4 关系：作为跨校验器（同一源码：编译器产物 vs 引擎求值结果），
+  不参与 FAS 字节码编解码。

@@ -1212,3 +1212,35 @@ FAS。此前该文件解析即失败（`'(defun)` 裸引用关键字），编译
 - 已知残余：加载返回值偶发一次 `参数太少`（`@::compat1` foreach 处理某边界
   原子），不影响任何功能——包已完整可用
 - 版本 `0.1.21` 已发布 PyPI
+
+---
+
+# 16. engine/（SBCL AutoLISP 运行时）探索（v0.1.21+）
+
+## 16.1 目标
+
+建立独立于 CAD/FAS 的 AutoLISP 求值环境，作为**跨校验器**：同一源码经
+atlispcc 编译产物与 engine 求值结果互相对照，验证编译器语义正确性。
+
+## 16.2 当前状态
+
+- `engine/atlisp.asd`：ASDF 系统，`src/{packages,values,reader,env,eval,builtins,main}.lisp`
+- 公共 API（`:atlisp` 导出）：`al-eval-source` / `al-run-file` / `al-repl`
+- 值模型：AutoLISP 数据映射到 CL 原生值（nil/t/int/double-float/string/AL 包符号/cons）
+- 冒烟基线（`al-eval-source`）：算术/defun/apply/list/dotted pair/if/while/cond/
+  foreach/strcat/动态作用域/function-lambda/length/logand/fix 全部通过
+- 关键修复记录：
+  - reader：转义符 `#\)`→`#\\`（第 51 行）；`scan-token` loop 补 `do`；
+    `parse-list` 重写（原 `:rparen`/`:dot` 分支 return 使死代码，普通表恒 nil、
+    dotted 丢数据——改 `case` + `nreverse`/`rplacd`，删 `al-splice`）
+  - builtins：`length` 用 `(loop for x in l count t)`（`always`+`count` 非法）；
+    `al-bitop` 用 `(lambda (x) (floor x))`（defsubr 不产生 CL 函数，`#'fix` 未定义）
+  - eval：`al-eval-special` ECASE 键改双冒号 `al::QUOTE`…`al::DEFUN`
+    （`al:` 单冒号要求导出，AL 包 `:use` 空不导出，READ error）
+
+## 16.3 后续方向（未排期）
+
+- foreach/repeat/quote 常量载体细化、`/ 局部变量`、&optional/&rest
+- `al-bind` 等内建补齐、迭代器/异常（auto error handling）语义
+- CAD 真机对拍：`scripts/cad_verify.py` 同源用例在 engine 复跑
+- 后续回到 P1/P2 主线（T2-T4、链接器、ZELX）
