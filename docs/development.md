@@ -259,7 +259,7 @@ python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 FAS4 输出格式与 AutoCAD 编译器一致：
 - seg0 = 函数字节码（`<nsyms> $...`），seg1 = 资源段（常量/符号/函数索引）
 - 紧凑 stub 格式 `total_size = len(seg0) + 1`（CAD 实测恒等：cross/m2/m3/multi/sh/lambda_test 六份产物；seg0 = `<nsyms> $` 后的纯字节码）；自包含格式 `total_size = len(seg0_payload)`。`FasWriter.write(..., compact=True)` 走前者（CLI/链接器/紧凑汇编）
-- **汇编器（`asm/assembler.py`）同时支持两种布局**：`.lasm` 头部的 `.format compact|selfcontained` 指令选择布局与 stub 编码（USUBR/FUNC 3 字节、PUSH_VALUE[0] 单字节、CLEAR_ARGS `19 <argc> 00`）；缺省按指令特征自动判定。`disasm → asm` 往返 seg0 逐字节一致，紧凑产物可在 CAD 加载执行。**限制**：汇编器 compact 模式仅支持 3 字节 USUBR/FUNC，对 nsyms>256 的宽格式文件（5/6 字节）会截断——宽格式大文件请用 CLI compile/link 生成，避免 disasm→asm 往返
+- **汇编器（`asm/assembler.py`）同时支持两种布局**：`.lasm` 头部的 `.format compact|selfcontained` 指令选择布局与 stub 编码（USUBR/FUNC 3 字节、PUSH_VALUE[0] 单字节、CLEAR_ARGS `19 <argc> 00`）；缺省按指令特征自动判定。`disasm → asm` 往返 seg0 逐字节一致，紧凑产物可在 CAD 加载执行。**宽格式**（nsyms>256）：`_detect_compact` 自动用宽解析（5/6 字节 USUBR/FUNC），大文件 seg0+nsyms 往返逐字节一致（atlisp_u 回归）；seg1 资源段不随 `.lasm` 携带
 - 紧凑 stub 生成规则（与 CAD 逐字节一致）：中间 setq 无 POP、尾 setq 先 DUP、无 else 的 `if` 补 PUSH_NIL、有参函数末尾 `19 <argc> 00`（CLEAR_ARGS）
 - **大文件宽格式**（nsyms>256）：5 字节 USUBR `35 <argc> <idx16> <flags=3>`、6 字节 FUNC `51 <argc> <idx16> <flags=1> 00`（`asm/opcodes.py` `encode_usubr`/`encode_func`，flags 内联原 `00 03` 清理；atlisp_u.lsp 502 函数实测）
 - seg1 使用滚动 XOR 加密（`find_key`/`decrypt_stream`），尾部含密钥长度字节 + 密钥 + `;fas4 crunch` 标记

@@ -253,3 +253,58 @@ def test_multiline_string_roundtrip():
         for p in (lsp_path, fas_path, out_path):
             if os.path.exists(p):
                 os.unlink(p)
+
+
+def test_wide_subr_large_file_roundtrip():
+    """大文件（nsyms>256）宽格式 USUBR/FUNC 往返：seg0+nsyms 逐字节一致。
+
+    回归：asm 此前 compact 模式仅支持 3 字节 USUBR/FUNC，对 nsyms>256 的
+    宽格式（5/6 字节）文件会截断索引，导致 disasm→asm 往返 seg0 错位。
+    """
+    repo = os.path.join(os.path.dirname(__file__), "..")
+    src = os.path.normpath(os.path.join(repo, "tests", "atlisp_u.fas"))
+    if not os.path.exists(src):
+        return  # 大文件样本缺失时跳过
+    out_path = os.path.join(tempfile.gettempdir(), "atlisp_u_wide_rt.fas")
+    try:
+        lasm_text = disassemble_fas(src)
+        # 大文件须判定为紧凑 stub 且含宽格式 USUBR（3 操作数）
+        assert ".format compact" in lasm_text
+        assert "USUBR 1, [2440], 3" in lasm_text or re_wide_usubr(lasm_text)
+        assemble_lasm(lasm_text, out_path)
+        assert _seg0(src) == _seg0(out_path)
+        from decompiler.fas4_decompiler import Fas4Parser
+        o = Fas4Parser().parse(src)
+        n = Fas4Parser().parse(out_path)
+        assert o.nsyms == n.nsyms
+    finally:
+        if os.path.exists(out_path):
+            os.unlink(out_path)
+
+
+def re_wide_usubr(text: str) -> bool:
+    """检查 .lasm 是否含宽格式 USUBR（USUBR <argc>, <sym>, <flags>）。"""
+    import re
+    return bool(re.search(r"USUBR \d+, [^,]+,\s*\d+", text))
+
+
+def test_pure_top_level_selfcontained_nsyms():
+    """纯顶层 selfcontained 文件 nsyms 随 .nsyms 指令还原（set5/setcmp/setqa）。"""
+    repo = os.path.join(os.path.dirname(__file__), "..")
+    for name in ("set5_cad.fas", "setcmp_cad.fas", "setqa_cad.fas"):
+        src = os.path.normpath(os.path.join(repo, "tests", "cad", name))
+        if not os.path.exists(src):
+            continue
+        out_path = os.path.join(tempfile.gettempdir(), f"{name}_rt.fas")
+        try:
+            lasm_text = disassemble_fas(src)
+            assert ".format selfcontained" in lasm_text
+            assemble_lasm(lasm_text, out_path)
+            from decompiler.fas4_decompiler import Fas4Parser
+            o = Fas4Parser().parse(src)
+            n = Fas4Parser().parse(out_path)
+            assert o.nsyms == n.nsyms
+            assert o.bytecode == n.bytecode
+        finally:
+            if os.path.exists(out_path):
+                os.unlink(out_path)

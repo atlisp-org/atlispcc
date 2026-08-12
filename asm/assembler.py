@@ -9,7 +9,9 @@ from asm.opcodes import (
     OPCODE_TO_NAME,
     encode_instruction,
     encode_op_u16,
+    encode_usubr,
     encode_usubr3,
+    encode_func,
     encode_func3,
 )
 from compiler.symbol_table import SymbolTable
@@ -30,6 +32,9 @@ def _detect_compact(fas) -> bool:
     反编译器共享的 ``is_compact_stub`` 对多函数紧凑 stub 会误判为自包含
     （UNK 平局且 function_catalog 非空时退回自包含）。这里用
     UNK 计数 + DEFUN 头 argc 编码独立判定，保证 .lasm 格式标记正确。
+
+    大文件（nsyms>256）用宽格式 USUBR/FUNC（5/6 字节），须用
+    ``short_subr=False`` 解析才正确（短解析会把宽指令拆错产生 UNK）。
     """
     from decompiler.fas4_decompiler import Disassembler, is_compact_stub
 
@@ -37,6 +42,31 @@ def _detect_compact(fas) -> bool:
     if not bc:
         return False
     sym_count = len(getattr(fas, "symbol_slots", []) or [])
+    nsyms = getattr(fas, "nsyms", 0)
+
+    def _defuns_argc(insts):
+        # 紧凑 stub 的 DEFUN 头为 argc 编码 `14 <argc> <argc> <argc> 0`；
+        # foreach/repeat 函数为 `14 <argc+1> <argc> <argc> 0`（b1=argc+1，t16/t17 实测）；
+        # 内嵌 `-lambda-`（kwote 机制）亦 b1=argc+1（0 参 lambda → `14 01 00 00 00`）。
+        offsets = [i.offset for i in insts if i.op_name == "DEFUN"]
+        if not offsets:
+            return None
+        for off in offsets:
+            if off + 5 > len(bc) or bc[off] != 0x14:
+                continue
+            a, b_, c, d = bc[off + 1], bc[off + 2], bc[off + 3], bc[off + 4]
+            if d == 0:
+                # 普通紧凑：`14 <argc>x3`；foreach/repeat/内嵌 -lambda-：
+                # `14 <argc+1> <argc> <argc>`（b1=argc+1）。
+                if not (a == b_ == c or (b_ == c and a == c + 1)):
+                    return False
+            elif d == 1:
+                if not (a == b_ == c):
+                    return False
+            else:
+                return False
+        return True
+
     try:
         i3 = Disassembler(short_subr=True).disassemble(bc, 0, sym_count=sym_count or None)
         i6 = Disassembler(short_subr=False).disassemble(bc, 0, sym_count=sym_count or None)
@@ -47,30 +77,20 @@ def _detect_compact(fas) -> bool:
         return sum(1 for i in insts if i.op_name.startswith("UNK_"))
 
     c3, c6 = _unk(i3), _unk(i6)
-    if c3 != c6:
-        return c3 < c6
-
-    def _defuns_argc(insts):
-        # 紧凑 stub 的 DEFUN 头为 argc 编码 `14 <argc> <argc> <argc> 0`；
-        # foreach/repeat 函数为 `14 <argc+1> <argc> <argc> 0`（b1=argc+1，t16/t17 实测）。
-        offsets = [i.offset for i in insts if i.op_name == "DEFUN"]
-        if not offsets:
-            return None
-        for off in offsets:
-            if off + 5 > len(bc) or bc[off] != 0x14:
-                continue
-            a, b_, c, d = bc[off + 1], bc[off + 2], bc[off + 3], bc[off + 4]
-            if d == 0:
-                # 普通紧凑：`14 <argc>x3`；foreach/repeat：`14 <argc+1> <argc> <argc>`
-                # （b1=argc+1，t16/t17 实测；foreach/repeat 必有参数，argc>=1）。
-                if not (a == b_ == c or (b_ == c and c >= 1 and a == c + 1)):
-                    return False
-            elif d == 1:
-                if not (a == b_ == c):
-                    return False
-            else:
-                return False
-        return True
+    # 宽格式大文件 stub：短解析拆错宽指令 → c3 多、c6 少/零。
+    # 小文件 stub：短解析正确（c3 少）、宽解析把 3 字节当 6 字节拆错（c6 多）。
+    # 自包含：短解析拆错长指令（c3 多）、宽解析正确（c6 少）——但自包含文件
+    # 的函数目录/结构由 mvar 表区分，此处先排除掉 UNK 为 0 的宽解析（自包含
+    # 也用宽编码，二者易混淆），再用 DEFUN 头 argc 编码作最终判定。
+    if c3 > 0 and c6 == 0:
+        # 短解析有 UNK 而宽解析干净：必为大文件 stub（紧凑）或自包含。
+        # 自包含的 DEFUN 头是 gvar 编码（`14 <gv:2> <off:2>`），紧凑 stub 是
+        # argc 编码；用宽解析的 DEFUN 头判定。
+        r = _defuns_argc(i6)
+        if r is not None:
+            return r
+    elif c6 > 0 and c3 == 0:
+        return True  # 短解析干净：小文件 stub
 
     r = _defuns_argc(i3)
     if r is not None:
@@ -202,7 +222,10 @@ def disassemble_fas(fas_path: str) -> str:
     parser = Fas4Parser()
     fas = parser.parse(fas_path)
     compact = _detect_compact(fas)
-    disasm = Disassembler(short_subr=compact)
+    # 大文件（nsyms>256）紧凑 stub 用宽格式 USUBR/FUNC（5/6 字节），
+    # 须以 short_subr=False 解析；小文件用 3 字节短格式。
+    wide = compact and getattr(fas, "nsyms", 0) > 256
+    disasm = Disassembler(short_subr=not wide)
     instructions = disasm.disassemble(fas.bytecode, fas.nsyms,
                                       sym_count=len(fas.symbol_slots) if compact else None)
     cfa = ControlFlowAnalyzer(instructions, fas.function_catalog,
@@ -336,7 +359,7 @@ def assemble_lasm(lasm_text: str, output_path: str) -> str:
     fmt = fmt_dir if fmt_dir in ("compact", "selfcontained") else _detect_format(functions)
     if fmt == "compact":
         return _assemble_compact(output_path, symbols_list, symbol_types, functions, nsyms_dir)
-    return _assemble_selfcontained(output_path, symbols_list, symbol_types, functions)
+    return _assemble_selfcontained(output_path, symbols_list, symbol_types, functions, nsyms_dir)
 
 
 def assemble_lasm_zelx(lasm_text: str, output_path: str) -> str:
@@ -390,7 +413,8 @@ def _register_slot(symtab: SymbolTable, typ: str, display: str) -> int:
 
 def _assemble_selfcontained(output_path: str, symbols_list: List[str],
                             symbol_types: List[str],
-                            functions: List[Tuple[str, int, List[str]]]) -> str:
+                            functions: List[Tuple[str, int, List[str]]],
+                            nsyms_dir: Optional[int] = None) -> str:
     """自包含格式汇编：符号表直接编址，total_size = len(seg0_payload)。"""
     symtab = SymbolTable()
     for i, sym in enumerate(symbols_list):
@@ -415,6 +439,10 @@ def _assemble_selfcontained(output_path: str, symbols_list: List[str],
             bc = _asm_instr(line, symtab, symbols_list)
             if bc:
                 fb.extend(bc)
+        # 空体函数（纯顶层文件的合成入口，如 set5 的 `c:main`）：seg0 无字节码，
+        # 不注册为真实函数（否则 nsyms 多 1）。
+        if not fb and not function_bytes:
+            continue
         function_bytes.append(bytes(fb))
         function_names.append(fname)
 
@@ -434,7 +462,11 @@ def _assemble_selfcontained(output_path: str, symbols_list: List[str],
     resource = ResourceBuilder(symtab)
     seg1 = resource.build(func_offsets)
     writer = FasWriter(symtab)
-    writer.write(output_path, seg0, seg1)
+    # 支持 .nsyms 指令覆盖（纯顶层 selfcontained 的 nsyms = 模块注册符号数）。
+    if nsyms_dir is not None:
+        writer.write(output_path, seg0, seg1, nsyms=nsyms_dir)
+    else:
+        writer.write(output_path, seg0, seg1)
     return output_path
 
 
@@ -444,12 +476,20 @@ def _assemble_compact(output_path: str, symbols_list: List[str], symbol_types: L
     """紧凑 stub 汇编：与 CAD 编译器一致的符号槽/加密/stub 布局。
 
     - 符号按资源注册顺序（symbol_slots）编址，entries = 全部槽 - 末尾函数注册名
-    - 指令使用 stub 编码（USUBR/FUNC 3 字节，PUSH_VALUE[0] 单字节）
+    - 指令使用 stub 编码（小文件 USUBR/FUNC 3 字节、PUSH_VALUE[0] 单字节；
+      大文件 nsyms>256 用 5/6 字节宽格式）
     - 输出 compact stub：``total_size = len(seg0_payload) - 2``
     """
     func_names = [n for n, _i, _b in functions if n != "__init__"]
     n_func = len(func_names)
     entries = symbols_list[: len(symbols_list) - n_func] if n_func else symbols_list
+
+    if nsyms_dir is not None:
+        fas_nsyms = nsyms_dir
+    else:
+        fas_nsyms = len(entries) - n_func + 1
+    # 大文件（nsyms>256）紧凑 stub 用宽格式 USUBR/FUNC（5/6 字节）
+    wide = fas_nsyms > 256
 
     symtab = SymbolTable()
     for i, sym in enumerate(entries):
@@ -465,7 +505,7 @@ def _assemble_compact(output_path: str, symbols_list: List[str], symbol_types: L
         off = len(seg0)
         fb = bytearray()
         for line in body_lines:
-            bc = _asm_instr(line, symtab, symbols_list, compact=True)
+            bc = _asm_instr(line, symtab, symbols_list, compact=True, wide=wide)
             if bc:
                 fb.extend(bc)
         seg0.extend(fb)
@@ -473,10 +513,6 @@ def _assemble_compact(output_path: str, symbols_list: List[str], symbol_types: L
 
     symtab.function_offsets = dict(func_offsets)
 
-    if nsyms_dir is not None:
-        fas_nsyms = nsyms_dir
-    else:
-        fas_nsyms = len(entries) - n_func + 1
     # 顶层表达式符号数：nsyms = len(entries) - (n_func + top_level_count) + 1
     top_level_count = max(0, len(entries) - n_func - fas_nsyms + 1)
 
@@ -566,11 +602,13 @@ def _split_ops(text: str) -> List[str]:
     return [p.strip() for p in result]
 
 
-def _asm_instr(line: str, symtab: SymbolTable, symbols: List[str], compact: bool = False) -> Optional[bytes]:
+def _asm_instr(line: str, symtab: SymbolTable, symbols: List[str], compact: bool = False, wide: bool = False) -> Optional[bytes]:
     """Parse one assembly instruction line and encode to bytes.
 
     ``compact`` 为紧凑 stub 格式时使用 CAD 编码：
-    - USUBR/FUNC 为 3 字节（``35 <argc> <idx8>`` / ``51 <argc> <idx8>``）
+    - USUBR/FUNC 为 3 字节（``35 <argc> <idx8>`` / ``51 <argc> <idx8>``）；
+      大文件（``wide=True``，nsyms>256）用 5/6 字节宽格式
+      （``35 <argc> <idx16> <flags=3>`` / ``51 <argc> <idx16> <flags=1> 00``）
     - PUSH_VALUE[0] 为单字节 ``03``；idx>0 仍为 ``03 <u16>``
     """
     content = _strip_hex_bytes(_ADDR_PREFIX.sub("", line))
@@ -599,11 +637,23 @@ def _asm_instr(line: str, symtab: SymbolTable, symbols: List[str], compact: bool
                 int(o) & 0xFF for o in operands
             )
         if mnemonic == "USUBR" and operands:
+            if wide:
+                # 大文件宽格式：`35 <argc> <idx16> <flags=3>`
+                flags = int(operands[2]) if len(operands) > 2 else 3
+                return encode_usubr(int(operands[0]), int(operands[1]) if len(operands) > 1 else 0, flags)
             return encode_usubr3(int(operands[0]), int(operands[1]) if len(operands) > 1 else 0)
         if mnemonic == "FUNC" and operands:
+            if wide:
+                # 大文件宽格式：`51 <argc> <idx16> <flags=1> 00`
+                flags = int(operands[2]) if len(operands) > 2 else 1
+                return encode_func(int(operands[0]), int(operands[1]) if len(operands) > 1 else 0, flags)
             return encode_func3(int(operands[0]), int(operands[1]) if len(operands) > 1 else 0)
         if mnemonic == "PUSH_VALUE" and operands and int(operands[0]) == 0:
-            return bytes([0x03])
+            # 小文件（3 字节 stub）中调用后清理占位 `00 03` 的 PUSH_VALUE[0]
+            # 为单字节 `03`。大文件宽格式下 PUSH_VALUE[0] 是 3 字节 `03 00 00`
+            # （CAD 大文件实测），压缩为单字节会丢字节，保持 3 字节。
+            if not wide:
+                return bytes([0x03])
 
     return encode_instruction(mnemonic, operands)
 
@@ -630,6 +680,10 @@ def _parse_ops(text: str, symtab: SymbolTable) -> List:
                     break
             else:
                 raise ValueError(f"Cannot resolve string operand: {val}")
+        elif p.lstrip('-').isdigit():
+            # 纯整数操作数（DEFUN argc 编码、INIT_ARGS 等）优先解析为整数，
+            # 避免与符号表中纯数字名的槽索引冲突。
+            result.append(int(p))
         elif p in symtab.name_to_idx:
             result.append(symtab.name_to_idx[p])
         elif p.startswith("[") and p.endswith("]") and p[1:-1].isdigit():
