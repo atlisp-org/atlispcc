@@ -36,7 +36,19 @@ class Parser:
     def parse(self) -> Program:
         forms = []
         while self.peek()[0] != 'EOF':
-            forms.append(self.parse_form())
+            form = self.parse_form()
+            # `#-sbcl <form>`：Common Lisp 读者条件（"非 sbcl 时读取下一 form"）。
+            # 本编译器面向 AutoLISP（非 SBCL），故消费 `#-...` 标记、保留其后的
+            # 形式；`#+sbcl` 反之（跳过下一 form）。@lisp 包用 `#-sbcl` 包裹
+            # CL 兼容层代码（tests/atlisp_u.lsp 顶部），此前被当作普通符号
+            # 编译进模块代码，CAD 加载报"参数太少"。
+            if isinstance(form, Symbol) and form.name.startswith('#-'):
+                continue
+            if isinstance(form, Symbol) and form.name.startswith('#+'):
+                # 非 SBCL 环境：跳过下一 form。
+                self.parse_form()
+                continue
+            forms.append(form)
         return Program(forms=forms)
 
     def parse_form(self, quoted: bool = False) -> Node:

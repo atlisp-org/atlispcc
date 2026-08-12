@@ -418,18 +418,24 @@ class ResourceBuilder:
         else:
             for entry_type, entry_val in entries[1:]:
                 self._push_entry(out, (entry_type, entry_val))
-        if stub_format and "-lambda-" in func_offsets:
-            # kwote 内嵌 `-lambda-`：在 GVARINIT(0, nsyms) 前置 DEFCODE，
+        if stub_format and nested_offs:
+            # kwote/立即应用内嵌 `-lambda-`：在 GVARINIT(0, nsyms) 前置 DEFCODE，
             # 使大 GVARINIT 的 module_id 解出 FUNC 而非裸符号
             # （ref i18n-cad 实测）：GET_LOCAL 0 + INT32 offset +
-            # SYMBOL -lambda- + DEFCODE。
-            off = func_offsets["-lambda-"]
-            if -128 <= off <= 127:
-                out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
-            else:
-                out += b"\x5c\x00\x00" + res_int32(off)
-            out += b"\x5b" + self._enc("-lambda-") + b"\x00\x00"
-            out += b"\x3a"
+            # SYMBOL -lambda- + DEFCODE。每个内嵌 lambda 独立 DEFCODE，
+            # 按 seg0 偏移**逆序**发射（CAD 实测：先发射的 lambda 被 GVARINIT
+            # 后弹出，分配更高槽——t3 槽 18、t4 槽 17、t5 槽 16，nsyms=19）。
+            lam_offsets = sorted(
+                (off for k, off in func_offsets.items() if ResourceBuilder._is_lambda_key(k)),
+                reverse=True,
+            )
+            for off in lam_offsets:
+                if -128 <= off <= 127:
+                    out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
+                else:
+                    out += b"\x5c\x00\x00" + res_int32(off)
+                out += b"\x5b" + self._enc("-lambda-") + b"\x00\x00"
+                out += b"\x3a"
         out += b"\x5c\x00\x00"
         if stub_format:
             # CAD: 函数注册 GVARINIT st_init = 注册符号数 + 1 = len(entries) - skip_first + 1。
@@ -459,8 +465,13 @@ class ResourceBuilder:
                 else:
                     out += b"\x5c\x00\x00" + res_int32(off)
                 # CAD `-lambda-`（内嵌函数）保留小写（`-LAMBDA-` 是错的）；
-                # 其余函数名统一大写。
-                name_enc = self._enc(fname) if str(fname) == "-lambda-" else self._enc_sym(fname)
+                # 其余函数名统一大写。多 `-lambda-` 用 `-lambda-#N` 目录键，
+                # 编码仍为 `-lambda-`。
+                name_enc = (
+                    self._enc("-lambda-")
+                    if ResourceBuilder._is_lambda_key(fname)
+                    else self._enc_sym(fname)
+                )
                 out += b"\x5b" + name_enc + b"\x00\x00"
                 # CAD 只有最后一个 DEFCODE 追加 01（stub 格式）。
                 out += b"\x3a\x01" if fi == len(func_names) - 1 else b"\x3a"
@@ -537,6 +548,12 @@ class ResourceBuilder:
     @staticmethod
     def _entry_name(entry: Tuple[str, Any]) -> str:
         return str(entry[1])
+
+    @staticmethod
+    def _is_lambda_key(name) -> bool:
+        """判断目录键是否为内嵌 `-lambda-`（含多 `-lambda-` 键 `-lambda-#N`）。"""
+        s = str(name)
+        return s == "-lambda-" or s.startswith("-lambda-#")
 
     @staticmethod
     def _code_ref_bytes(length: int) -> bytes:

@@ -119,13 +119,13 @@ def _ast_contains_loop(node) -> bool:
         return True
     if isinstance(node, Node):
         for val in vars(node).values():
-            if isinstance(val, Node):
-                if _ast_contains_loop(val):
-                    return True
-            elif isinstance(val, (list, tuple)):
-                for it in val:
-                    if isinstance(it, Node) and _ast_contains_loop(it):
-                        return True
+            if _ast_contains_loop(val):
+                return True
+        return False
+    if isinstance(node, (list, tuple)):
+        for it in node:
+            if _ast_contains_loop(it):
+                return True
     return False
 
 
@@ -328,7 +328,12 @@ class CodeGenerator:
                         # `> C B A`——源码第 i 个参数 → 槽 nsyms-1-i）。
                         idx = self.nsyms - 1 - self.local_slots[name]
                     else:
-                        idx = self.nsyms - len(self.current_func_args) + self.local_slots[name]
+                        # 多函数参数读取：用参数的真实符号槽（get_or_add），
+                        # `_patch_usubr_idx` 凭 `sym_of(idx) ∈ cur_args` 识别
+                        # 并改写为 gvar 槽。此前用 `codegen_nsyms - argc + i`
+                        # 占位，会与真实符号槽碰撞（lambda_body 实测 `t` 槽
+                        # == codegen_nsyms-argc，被参数分支误判 → "函数错误: nil"）。
+                        idx = self.symtab.get_or_add(name)
                 else:
                     idx = self.symtab.get_or_add(name)
                 buf.emit(encode_op_u16(PUSH_VALUE, idx))
@@ -383,9 +388,17 @@ class CodeGenerator:
 
         elif isinstance(node, ListExpr):
             if node.items and isinstance(node.items[0], LambdaNode):
+                # `((lambda ...) args)` 立即应用：编译为
+                # `(apply '(lambda ...) (list args...))`（USUBR 调 apply）。
+                # 显式 `(apply '(lambda ...) (list ...))` 在 CAD 真机全通过
+                # （apply_forms/t11-t13 实测：cond/if/while 体、`t` 参数、
+                # 引用外层参数均正常）。FUNC 版报"函数错误: ="，缺 cleanup
+                # 报"函数错误: -1962934012"；CAD 嵌套 -lambda- DEFUN 方案需
+                # 多 `-lambda-` 目录 + 槽修正（catalog 仅支持 1 个），暂不用。
                 self._emit_expr(buf, QuotedExpr(expr=self._lambda_list(node.items[0])))
                 self._emit_expr(buf, Call(name="list", args=node.items[1:]))
-                self._emit_func3(buf, 2, self.symtab.get_or_add("apply"))
+                self._emit_usubr(buf, 2, self.symtab.get_or_add("apply"))
+                self._emit_subr_cleanup(buf)
                 return
             if node.dotted is not None:
                 self._emit_expr(buf, node.dotted)
@@ -1091,10 +1104,31 @@ class CodeGenerator:
         if not self.stub_format or not isinstance(node, LambdaNode):
             self._emit_quoted(buf, node)
             return
-        argc = len(node.args)
+        lam_idx = self._emit_nested_lambda(buf, node)
         kwote_idx = self.symtab.get_or_add("kwote")
-        lam_idx = self.symtab.get_or_add("-lambda-")
-        label_after = f"_kwote_{buf.pos()}_{len(self._nested_lambdas)}"
+        buf.emit(encode_op_u16(PUSH_G, lam_idx))
+        self._emit_func3(buf, 1, kwote_idx)
+        buf.emit(encode_op_noarg(0x00))
+        buf.emit(encode_op_noarg(PUSH_NIL))
+        buf.emit(encode_op_noarg(0x00))
+
+    def _emit_nested_lambda(self, buf: BytecodeBuffer, node: LambdaNode) -> int:
+        """发射内嵌 `-lambda-` DEFUN（CAD kwote/立即调用共用）。
+
+        返回 `-lambda-` 符号槽（PUSH_G 引用用）。发射序列：
+        ``JUMP label; 14 <argc><argc><argc> 00; 体...; CLEAR_ARGS; 16; label:``。
+        内嵌 DEFUN 由模块加载器预定义（运行时不执行）。
+        """
+        argc = len(node.args)
+        # 每个内嵌 `-lambda-` 独立符号槽（CAD 实测：t3 槽 18、t4 槽 17、
+        # t5 槽 16，nsyms=19，各自独立 DEFCODE 登记）。首个用 get_or_add
+        # （保持单 kwote 文件 i18n/t20 的槽位与 golden 逐字节一致），
+        # 后续用 add_force 追加重复槽。
+        if "-lambda-" in self.symtab.name_to_idx:
+            lam_idx = self.symtab.add_force("-lambda-")
+        else:
+            lam_idx = self.symtab.get_or_add("-lambda-")
+        label_after = f"_lambda_{buf.pos()}_{len(self._nested_lambdas)}"
         jmp_pos = buf.pos()
         buf.emit(encode_op_s32(JUMP, 0))
         buf.add_patch(jmp_pos + 1, label_after, 4)
@@ -1129,11 +1163,7 @@ class CodeGenerator:
             # generate_function 的 catalog 偏移（atlisp_u 顶层 `(function
             # (lambda ...))` 实测 89237 > seg0，触发 "Xsubr 偏移超出模块"）。
             self._nested_lambdas.append((nested_start, nested_end))
-        buf.emit(encode_op_u16(PUSH_G, lam_idx))
-        self._emit_func3(buf, 1, kwote_idx)
-        buf.emit(encode_op_noarg(0x00))
-        buf.emit(encode_op_noarg(PUSH_NIL))
-        buf.emit(encode_op_noarg(0x00))
+        return lam_idx
 
     def _emit_defun_header(self, buf: BytecodeBuffer, func: Defun):
         if self.stub_format:

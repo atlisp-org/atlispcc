@@ -21,3 +21,10 @@ build/
 disasm_output_utf8.txt
 D:/
 LispConverter.exe
+tests/_tmp_cad/
+tests/atlisp_u0.fas
+tests/atlisp_u_cad2.fas
+.kernel_load.py
+.tmp_cad_compile.py
+kernel_load_results.json
+load_run.log

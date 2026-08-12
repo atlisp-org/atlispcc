@@ -106,7 +106,15 @@ def to_const(node):
             items.append(c)
         return ('LIST', tuple(items))
     if isinstance(node, LambdaNode):
-        params = ('LIST', tuple(('SYMBOL', a) for a in node.args))
+        if node.args:
+            params = ('LIST', tuple(('SYMBOL', a) for a in node.args))
+        else:
+            # 空参数表 `(lambda () ...)`：CAD 以 NIL 表示（与 to_const(ListExpr)
+            # 对空列表的处理一致），否则与 _lambda_list 生成的 ListExpr 常量键
+            # 不一致，get_const_idx 找不到 → 退化为运行时逐符号 BUILD_LIST，
+            # 引用的符号被按值压栈（topsetq `(set '@::acadver (lambda () ...))`
+            # 实测 @::acadver 被绑成 @::*acadver* 的值 24.1）。
+            params = ('NIL',)
         body = tuple(to_const(b) for b in node.body)
         if any(b is None for b in body):
             return None
@@ -407,6 +415,8 @@ class CadSymbolCollector:
             for name, force in reversed(refs):
                 self.add(name, force=force)
             self.module_reg_count = len(self.names)
+        # 混合模式（defun + 顶层）：函数体符号若与模块注册符号同名需重复槽。
+        module_reg_names = set(self.names)
 
         # 3. 函数体符号：字节码引用序正序收集，逆序注册；参数最后（共享不特殊处理）。
         #    CAD 单函数参数槽逆序（实测 simple3/t13：`+ Z Y X`、`> C B A`——
@@ -428,7 +438,11 @@ class CadSymbolCollector:
                 if force:
                     seen_forced.add(name)
             for name, force in reversed(deduped):
-                self.add(name, force=force)
+                # 混合模式（defun + 顶层）：函数体符号若与模块注册符号同名，需作为
+                # 重复槽强制再注册（base-function `(set item item)` 的 SET 在模块段
+                # 与函数体段各一次，CAD 实测；t10_init `*VERSION* PRINC` 同）。
+                # 纯函数文件模块注册仅函数名，函数体符号本就独立（force 不影响）。
+                self.add(name, force=force or name in module_reg_names)
             # CAD `/ 局部变量`：注入 `_al-bind-alist` 助手符号与局部变量引用
             # 常量 `(quote (locals...))`，紧跟函数体符号之后、参数之前
             # （t11_localvars 实测：`+ <= I RESULT _al-bind-alist (RESULT I) N`）。
@@ -454,14 +468,25 @@ class CadSymbolCollector:
         顶层 form 里的用户函数名调用（force=True）不另发槽——并入 defun
         槽（p04 实测 form4 调用 @::codepage2lang 不占顶层组）。
         """
-        forms_all = [f for f in program.forms
-                     if not isinstance(f, (Defpackage, InPackage))]
+        # InPackage `(in-package :@)`：CAD 在模块代码发射
+        # `PUSH_VALUE :@; FUNC_REF in-package`，符号 `in-package`/`:@` 也注册进
+        # 模块注册域（base-function/platform-api 实测 IN-PACKAGE/:@ 槽位紧跟
+        # use-package 的 :AUTOLISP 之后）。插入源码原位参与逆序注册。
+        forms_all = []
+        for f in program.forms:
+            if isinstance(f, (Defpackage, InPackage)):
+                if isinstance(f, InPackage):
+                    forms_all.append(f)
+            else:
+                forms_all.append(f)
         n = len(forms_all)
         reads, targets = [], []
-        for i, form in enumerate(forms_all):
+        for form in forms_all:
             r, t = set(), set()
             if isinstance(form, Defun):
                 t.add(form.name)
+            elif isinstance(form, InPackage):
+                r.update(("in-package", form.name))
             else:
                 self._form_read_target(form, r, t, set())
             reads.append(r)
@@ -519,7 +544,10 @@ class CadSymbolCollector:
 
     def _form_read_target(self, node, reads, targets, arg_names, in_quote=False):
         """收集 form 的 读(value)/setq目标(target) 符号集合（模块归属用）。"""
-        if isinstance(node, Symbol):
+        if isinstance(node, InPackage):
+            reads.add('in-package')
+            reads.add(node.name)
+        elif isinstance(node, Symbol):
             if node.name not in arg_names:
                 reads.add(node.name)
         elif isinstance(node, Call):
@@ -589,6 +617,13 @@ class CadSymbolCollector:
         if isinstance(node, Symbol):
             if node.name not in arg_names and not self._seen(out, node.name):
                 out.append((node.name, False))
+        elif isinstance(node, InPackage):
+            # `(in-package :@)` → `PUSH_VALUE :@; FUNC_REF in-package`：
+            # 引用序 `:@` 先、`in-package` 后（CAD 模块代码实测）。
+            if not self._seen(out, node.name):
+                out.append((node.name, False))
+            if not self._seen(out, 'in-package'):
+                out.append(('in-package', False))
         elif isinstance(node, Call):
             for a in node.args:
                 self._collect_byteorder(a, out, arg_names, in_quote)

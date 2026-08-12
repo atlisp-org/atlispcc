@@ -279,6 +279,75 @@ def _lower_multi_kwote(forms):
     return [rewrite(f) for f in forms]
 
 
+def _lower_immediate_lambda(forms):
+    """把 `((lambda (a b) body...) args...)` 立即调用改写为显式
+    `(apply '(lambda (a b) body...) (list args...))`。
+
+    CAD 编译器对 `((lambda ...) args)` 用「内嵌 -lambda- DEFUN + EVAL」，
+    需要多 `-lambda-` 目录 + 槽修正（当前 catalog 仅支持 1 个，多 lambda
+    时 CAD 真机报"参数太少"）。而显式 `(apply '(lambda ...) (list ...))`
+    走成熟的引用常量路径，CAD 真机全通过（t8-t12 实测：cond/if/while 体、
+    `t` 参数、引用外层参数均正常）。改写在 cad_symbols/codegen 之前进行，
+    使槽位注册与显式 apply 完全一致。
+    """
+
+    def rewrite(node):
+        from compiler.ast_nodes import ListExpr as _LE, LambdaNode as _LN, QuotedExpr as _Q
+
+        if isinstance(node, _LE):
+            node.items = [rewrite(i) for i in node.items]
+            if node.dotted is not None:
+                node.dotted = rewrite(node.dotted)
+            if node.items and isinstance(node.items[0], _LN):
+                lam = node.items[0]
+                lam.body = [rewrite(b) for b in lam.body]
+                lam_list = _LE(
+                    items=[Symbol("lambda"), _LE(items=[Symbol(a) for a in lam.args])] + lam.body
+                )
+                args_list = [rewrite(a) for a in node.items[1:]]
+                return Call(
+                    name="apply",
+                    args=[_Q(expr=lam_list), Call(name="list", args=args_list)],
+                )
+            return node
+        if isinstance(node, Call):
+            node.args = [rewrite(a) for a in node.args]
+            return node
+        if isinstance(node, Setq):
+            node.pairs = [(rewrite(t), None if v is None else rewrite(v)) for t, v in node.pairs]
+            return node
+        if isinstance(node, IfNode):
+            node.cond = rewrite(node.cond)
+            node.then = rewrite(node.then)
+            if node.else_expr is not None:
+                node.else_expr = rewrite(node.else_expr)
+            return node
+        if isinstance(node, Progn):
+            node.forms = [rewrite(f) for f in node.forms]
+            return node
+        if isinstance(node, Cond):
+            node.clauses = [tuple(rewrite(x) for x in c) for c in node.clauses]
+            return node
+        if isinstance(node, Defun):
+            node.body = [rewrite(b) for b in node.body]
+            return node
+        if isinstance(node, (WhileNode, ForeachNode, RepeatNode)):
+            node.body = [rewrite(b) for b in node.body]
+            if isinstance(node, WhileNode) and node.cond is not None:
+                node.cond = rewrite(node.cond)
+            elif isinstance(node, RepeatNode) and node.count is not None:
+                node.count = rewrite(node.count)
+            elif isinstance(node, ForeachNode) and node.list_expr is not None:
+                node.list_expr = rewrite(node.list_expr)
+            return node
+        if isinstance(node, LambdaNode):
+            node.body = [rewrite(b) for b in node.body]
+            return node
+        return node
+
+    return [rewrite(f) for f in forms]
+
+
 def _collect_builtins_for_stub(symtab, node):
     """stub 模式下将调用到的内建函数注册为符号槽（CAD stub 用符号槽编址调用）。"""
     from compiler.ast_nodes import (
@@ -385,7 +454,6 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     for idx, v in enumerate(fg):
         if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
             gvar_map.setdefault(str(v[1]).upper(), idx)
-
     def _strip_list_markers(v):
         """symtab 常量结构 → fg 表可比较形式（规范化大小写/INT/REAL/LIST）。
 
@@ -436,6 +504,17 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             return str(symtab.entries[idx][1]).upper()
         return None
 
+    # 每个内嵌 `-lambda-` 条目 → 它在所有 `-lambda-` 条目中的序号（0 起）。
+    # CAD 立即调用/多 kwote 每个嵌套 lambda 独立槽：lambda i 的 gvar 槽 =
+    # nsyms - i（t3=nsyms-1、t4=nsyms-2、t5=nsyms-3），PUSH_G 操作数 =
+    # gvar 槽 - 1 = nsyms - 1 - i。
+    lam_order: dict = {}
+    _li = 0
+    for _ei, _e in enumerate(symtab.entries):
+        if _e[0] == "SYMBOL" and str(_e[1]).upper() == "-LAMBDA-":
+            lam_order[_ei] = _li
+            _li += 1
+
     out = bytearray()
     multi = bool(func_args) and len(func_args) > 1
     func_iter = iter(func_args or [])
@@ -456,17 +535,19 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         # 参数读取 PUSH_VALUE（仅多函数）
         elif multi and inst.op_name == "PUSH_VALUE" and inst.size == 3 and cur_args is not None and inst.operands:
             idx = inst.operands[0]
-            argc = len(cur_args)
-            # codegen 参数读取槽 = codegen_nsyms - argc + i（多函数正序），
-            # 反解参数序号须用 codegen_nsyms 而非 fas_nsyms（后者含 -lambda- 槽）。
-            base = codegen_nsyms if codegen_nsyms is not None else nsyms
-            i = idx - base + argc
-            if 0 <= i < len(cur_args):
-                arg = cur_args[i]
-                new_idx = gvar_slot(arg) - 1 - offset
-                if 0 <= new_idx <= 0xFFFF:
-                    out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
-                    continue
+            # 多函数参数读取：codegen 用参数真实符号槽（get_or_add）发射，
+            # 凭 sym_of(idx) 是否在 cur_args 识别（此前用 codegen_nsyms-argc+i
+            # 占位，会与真实符号槽碰撞——lambda_body 实测 `t` 槽 == 占位值，
+            # 被误判为参数 → "函数错误: nil"）。非参数（如 `t`）走常规符号映射。
+            _sym = sym_of(idx)
+            if _sym and cur_args and _sym in [a.upper() for a in cur_args]:
+                i = [a.upper() for a in cur_args].index(_sym)
+                if 0 <= i < len(cur_args):
+                    arg = cur_args[i]
+                    new_idx = gvar_slot(arg) - 1 - offset
+                    if 0 <= new_idx <= 0xFFFF:
+                        out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                        continue
         # 其余符号引用：统一用 gvar 槽 - 1。多函数的普通符号走 gvar_map；
         # CONST/STRING 常量引用（PUSH_G 操作数 = gvar 槽 - 1）在单函数
         # 也需修正（codegen 原始槽 = symtab idx，gvar 槽 = idx+1，
@@ -491,10 +572,13 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                         out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                         continue
                 if sym == "-LAMBDA-":
-                    # kwote 内嵌 `-lambda-`：不参与资源段符号注册，引用槽固定为
-                    # 符号槽末尾（gvar 槽 = nsyms，操作数 = nsyms - 1，i18n-cad
-                    # 实测 `PUSH_G[91]`，nsyms=92）。
-                    new_idx = nsyms - 1
+                    # kwote/立即调用内嵌 `-lambda-`：不参与资源段符号注册，按
+                    # 其在所有 `-lambda-` 条目中的序号编址（lambda i 槽 =
+                    # nsyms - i，操作数 = nsyms - 1 - i；i18n-cad 单 kwote
+                    # 实测 `PUSH_G[91]`，nsyms=92；lambda_body 多 lambda
+                    # 实测 t3→18、t4→17、t5→16，nsyms=19）。
+                    _li = lam_order.get(inst.operands[0], 0)
+                    new_idx = nsyms - 1 - _li
                     if 0 <= new_idx <= 0xFFFF:
                         opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
                         out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
@@ -546,15 +630,20 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     # 项，i18n 实测 `""` fg[44] → 操作数 42 = gvar-1-offset）则按
                     # gvar 槽映射；否则（单函数/表外）注册于符号槽末尾
                     # （gvar 槽 = nsyms，操作数 = nsyms-1，t15 实测）。
-                    if multi:
-                        strval = symtab.entries[idx0][1]
-                        gkey = str(strval).upper()
-                        if gkey in gvar_map:
-                            new_idx = gvar_map[gkey] - 1 - offset
-                        else:
-                            new_idx = nsyms - 1
+                    strval = symtab.entries[idx0][1]
+                    gkey = str(strval).upper()
+                    if gkey in gvar_map:
+                        new_idx = gvar_map[gkey] - 1 - offset
+                    elif multi:
+                        # 多函数表外字符串：注册于符号槽末尾（gvar 槽 = nsyms）。
+                        new_idx = nsyms - 1
                     else:
-                        new_idx = None
+                        # 单函数：函数体字符串若不在 fg（有顶层 form 时符号注册
+                        # 被顶层组占用，fg 仅含函数表符号），CAD 同样注册于符号槽
+                        # 末尾，操作数 = nsyms - 1（pf5 `(getenv "HOME")` 实测
+                        # HOME 操作数 2 = nsyms-1）。无顶层 form 的纯函数文件
+                        # （t06 等）字符串已在 fg，走上方 gvar_map 分支。
+                        new_idx = nsyms - 1
                 else:
                     new_idx = None
                 if new_idx is not None and 0 <= new_idx <= 0xFFFF:
@@ -671,6 +760,17 @@ def _build_cad_module_code(
         # （CAD 模块代码实测 `0b 06` / `01 0a`，i18n-cad）。
         cg._module_mode = True
         handled = False
+
+        def _slot_gv(idx):
+            """symtab idx → 实际 gvar 槽（gvar_map 可用时）；否则 idx+1。"""
+            if _gvar and _symtab is not None and 0 <= idx < len(_symtab.entries):
+                _t, _v = _symtab.entries[idx]
+                if _t in ("SYMBOL", "STRING"):
+                    _s = _gvar.get(str(_v).upper())
+                    if _s is not None:
+                        return _s
+            return idx + 1
+
         if isinstance(form, Setq):
             # 多对 setq：CAD 输出全部 pair。中间 pair 用
             # `PUSH_<值>; SETQ_G`（无 DUP），最后一个 pair 用
@@ -712,18 +812,38 @@ def _build_cad_module_code(
                             # 非引号符号值：CAD 用 PUSH_VALUE（setcmp
                             # `(setq _ @::_)` 实测 `03 <槽+1>`）；字符串/引用
                             # 符号（QuotedExpr）用 PUSH_G。
-                            pre += bytes([0x03]) + struct.pack("<H", v_idx + 1)
+                            pre += bytes([0x03]) + struct.pack("<H", _slot_gv(v_idx))
                         else:
-                            pre += bytes([0x09]) + struct.pack("<H", v_idx + 1)  # PUSH_G
+                            pre += bytes([0x09]) + struct.pack("<H", _slot_gv(v_idx))  # PUSH_G
                         v_ok = True
                 if not v_ok:
                     break
                 if i == n - 1:
                     pre += b"\x0b"  # DUP（仅在最后一对）
-                pre += bytes([0x06]) + struct.pack("<H", t_idx + 1)  # SETQ_G
+                pre += bytes([0x06]) + struct.pack("<H", _slot_gv(t_idx))  # SETQ_G
                 pairs_bc += pre
             else:
                 return bytes(pairs_bc)
+        if isinstance(form, InPackage):
+            # `(in-package :@)`：CAD 编译为 `PUSH_VALUE <pkg符号槽>; FUNC_REF in-package`
+            # （pf3/platform-api/base-function 实测模块代码 `03 <pkg+1>; 35 01 <inpkg+1> 03`）。
+            # 此前 InPackage 被完全丢弃，导致包上下文未建立、且符号槽整体少 2
+            # （IN-PACKAGE/:@ 未注册），单函数含顶层文件（base-function/setup）的
+            # 参数/符号槽引用偏移，CAD 真机加载报"要绑定的对象不正确"。
+            from compiler.ast_nodes import InPackage as _InPkg
+            from compiler.cad_symbols import is_const_entry
+
+            pkg_sym = _InPkg(name=form.name)
+            pkg_idx = symtab.name_to_idx.get(form.name)
+            if pkg_idx is None:
+                pkg_idx = symtab.get_or_add(form.name)
+            in_pkg_idx = symtab.name_to_idx.get("in-package")
+            if in_pkg_idx is None:
+                in_pkg_idx = symtab.get_or_add("in-package")
+            out_pkg = _slot_gv(pkg_idx)
+            out_inp = _slot_gv(in_pkg_idx)
+            return bytes([0x03]) + struct.pack("<H", out_pkg) + \
+                bytes([0x35, 0x01]) + struct.pack("<H", out_inp) + bytes([0x03])
         fb = BytecodeBuffer()
         cg._emit_expr(fb, form, _tail=tail)
         fb.resolve()
@@ -735,7 +855,7 @@ def _build_cad_module_code(
             # 需定位真正的 SETQ_G 指令偏移。
             from decompiler.fas4_decompiler import Disassembler
 
-            _dis = Disassembler(short_subr=True)
+            _dis = Disassembler(short_subr=not (len(symtab.entries) > 256))
             try:
                 _insts = _dis.disassemble(bc, len(symtab.entries), sym_count=len(symtab.entries))
             except Exception:
@@ -916,10 +1036,15 @@ def _collect_symbol_nodes(node):
         Progn,
         LambdaNode,
         Cond,
+        InPackage,
     )
 
     if isinstance(node, Symbol) or isinstance(node, String):
         yield node
+    elif isinstance(node, InPackage):
+        # `(in-package :@)` → 符号 `in-package` + 包名 `:@`（CAD 模块代码引用）。
+        yield Symbol("in-package")
+        yield Symbol(node.name)
     elif isinstance(node, Call):
         yield Symbol(node.name)
         for a in node.args:
@@ -1034,8 +1159,17 @@ def _collect_kwote_lambda_args(node):
             else:
                 yield from _collect_kwote_lambda_args(clause)
     elif isinstance(node, ListExpr):
-        for item in node.items:
-            yield from _collect_kwote_lambda_args(item)
+        # `((lambda (a b) ...) args...)` 立即应用：内嵌 `-lambda-` DEFUN 参数
+        # （与 kwote 同机制，CAD 实测按源码顺序紧跟所在函数之后）。
+        if node.items and isinstance(node.items[0], LambdaNode):
+            yield list(node.items[0].args)
+            for e in node.items[0].body:
+                yield from _collect_kwote_lambda_args(e)
+            for item in node.items[1:]:
+                yield from _collect_kwote_lambda_args(item)
+        else:
+            for item in node.items:
+                yield from _collect_kwote_lambda_args(item)
         if node.dotted is not None:
             yield from _collect_kwote_lambda_args(node.dotted)
     elif isinstance(node, ForeachNode):
@@ -1079,6 +1213,8 @@ def cmd_compile(
     program.forms = _lower_nested_defuns(program.forms)
     # 多 `(function (lambda ...))`（>1）改写为引用数据 `'(lambda ...)`
     program.forms = _lower_multi_kwote(program.forms)
+    # `((lambda ...) args)` 立即调用改写为显式 `(apply '(lambda ...) (list ...))`
+    program.forms = _lower_immediate_lambda(program.forms)
 
     package_table = parser_obj.packages
 
@@ -1146,7 +1282,9 @@ def cmd_compile(
             symtab.get_or_add(sym)
 
     # 顶层表达式符号（defun 之外）：CAD 把它们的符号并入模块注册段。
-    other_forms = [f for f in program.forms if not isinstance(f, (Defun, Defpackage, InPackage))]
+    # InPackage `(in-package :@)` 也编译进模块代码（PUSH_VALUE :@; FUNC_REF
+    # in-package，CAD 实测），故保留在 other_forms 中；Defpackage 仍过滤。
+    other_forms = [f for f in program.forms if not isinstance(f, (Defun, Defpackage))]
     # 顶层 form 数（CAD seg1 头 items 公式用），区别于符号数 top_level_count。
     top_form_count = len(other_forms)
     from compiler.ast_nodes import Symbol as _Sym
@@ -1204,6 +1342,10 @@ def cmd_compile(
     top_level_bc = BytecodeBuffer()
     codegen._module_mode = True
     for form in other_forms:
+        if isinstance(form, InPackage):
+            # `(in-package :@)` 由 _build_cad_module_code 单独发射
+            # （PUSH_VALUE :@; FUNC_REF in-package），此处跳过占位生成。
+            continue
         codegen._emit_expr(top_level_bc, form)
         if isinstance(form, Setq):
             top_level_bc.emit(ENCODE_POP)
@@ -1222,9 +1364,11 @@ def cmd_compile(
             # generate_function 生成，仅需追加 END_DEFUN 分隔）。
             all_bytecode.emit(bytes([0x16]))
 
-    # 内嵌 `(function (lambda ...))` DEFUN（kwote 机制）：偏移相对所在函数
-    # 字节码缓冲，需转换为 seg0 绝对偏移。每个内嵌 DEFUN 独立登记为
-    # `-lambda-` 目录项，供函数目录（func-ranges）与 DEFCODE 注册使用。
+    # 内嵌 `(function (lambda ...))` / `((lambda ...) args)` DEFUN（kwote/
+    # 立即应用机制）：偏移相对所在函数字节码缓冲，需转换为 seg0 绝对偏移。
+    # 每个内嵌 DEFUN 用独立 `-lambda-` 目录键（`-lambda-`、`-lambda-#2`、…，
+    # CAD 实测每个嵌套 lambda 独立槽 + DEFCODE，逆序弹出分配末尾槽）。
+    # 这些键仅用于函数目录（func-ranges）与 DEFCODE 注册，不参与模块注册。
     nested_ends = {}
     nested_list = []
     for name, off in list(func_offsets.items()):
@@ -1232,8 +1376,8 @@ def cmd_compile(
             n_start = off + rel_start
             n_end = off + rel_end
             nested_list.append((n_start, n_end))
-    for n_start, n_end in nested_list:
-        func_offsets["-lambda-"] = n_start
+    for i, (n_start, n_end) in enumerate(nested_list):
+        func_offsets[f"-lambda-#{i + 1}" if i else "-lambda-"] = n_start
         nested_ends[n_start] = n_end
 
     for name, offset in func_offsets.items():
@@ -1271,9 +1415,12 @@ def cmd_compile(
                     _first_defun_pos = _i
                 _last_defun_pos = _i
         # 首个 defun 之前的顶层语句数（模块全局初始化，CAD 在其后立即注册
-        # 第一个函数，i18n/p04 实测）。
+        # 第一个函数，i18n/p04 实测）。InPackage `(in-package :@)` 已并入
+        # other_forms（模块代码发射 PUSH_VALUE :@; FUNC_REF in-package），
+        # 计入 globals 组，使其排在函数注册 JUMP 之前（CAD base-function/
+        # platform-api 实测 use-package/in-package 均在函数注册前）。
         _n_globals = (
-            sum(1 for _f in program.forms[:_first_defun_pos] if not isinstance(_f, (_Defun, _Defpackage, _InPackage)))
+            sum(1 for _f in program.forms[:_first_defun_pos] if not isinstance(_f, (_Defun, _Defpackage)))
             if _first_defun_pos >= 0
             else len(other_forms)
         )
