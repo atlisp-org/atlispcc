@@ -493,8 +493,23 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     seg0 引用（gvar 槽 - 1）整体再偏移 1。此时应使用 gvar 槽 - 2（i18n 实测
     PKG-NAME fg[88]→参数槽 86、ASSOC fg[90]→USUBR 88）。t01 等无 kwote 文件
     fas_nsyms==codegen_nsyms，保持 gvar 槽 - 1。
+
+    注意：offset 仅当所有 `-lambda-` 槽都集中在 symtab.entries **末尾**时才
+    生效（t20/i18n 单 kwote 实测 gvar 槽 - 2 真机通过）。多 kwote 文件
+    （@lisp_u 89 槽）`-lambda-` 穿插在普通符号之间，无法用统一偏移补偿，
+    此时 offset=0（CAD 实测 `nsyms-codegen_nsyms` 过大导致 USUBR/FUNC 索引
+    整体错位、加载报参数太少）。
     """
-    offset = 0  # kwote 多槽时 nsyms-codegen_nsyms 过大导致 USUBR/FUNC 索引整体错位（CAD 加载报参数太少）
+    offset = 0
+    if codegen_nsyms is not None and nsyms > codegen_nsyms:
+        _trailing_lam = 0
+        for _e in reversed(symtab.entries):
+            if isinstance(_e, tuple) and len(_e) == 2 and _e[0] == "SYMBOL" and str(_e[1]).upper() == "-LAMBDA-":
+                _trailing_lam += 1
+            else:
+                break
+        if _trailing_lam == nsyms - codegen_nsyms:
+            offset = nsyms - codegen_nsyms
     try:
         from core.fas_core import build_mvar_tables
 
