@@ -61,6 +61,53 @@ def _flatten_top_level_forms(forms):
     return out
 
 
+def _hoist_conditional_defuns(forms):
+    """把条件/嵌套位置的 defun 提升为顶层独立函数（CAD 编译方式）。
+
+    源码形如 `(if cond (defun f () ...))`、`(if cond (progn (defun f ...) ...))`。
+    CAD 编译器把其中的 defun 无条件提取为顶层独立函数（进 seg0 + 函数目录 +
+    DEFCODE 注册），if 只保留非 defun 表达式；无剩余表达式时整个 if 移除。
+    这与 `_lower_nested_defuns`（改写为 setq lambda 数据）不同：提升后函数
+    有真实定义（`fboundp` 成立），与 CAD 产物一致。仅提取顶层 if 内的 defun，
+    defun 体内的嵌套 defun 仍交给 `_lower_nested_defuns` 处理。
+    """
+    from compiler.ast_nodes import IfNode as _If, Progn as _Prog
+
+    def _extract(expr, out):
+        """从表达式子树提取 defun 提升到 out，返回（剩余表达式 or None）。"""
+        if isinstance(expr, Defun):
+            out.append(expr)
+            return None
+        if isinstance(expr, _Prog):
+            remaining = []
+            for f in expr.forms:
+                rest = _extract(f, out)
+                if rest is not None:
+                    remaining.append(rest)
+            if not remaining:
+                return None
+            if len(remaining) == 1:
+                return remaining[0]
+            return _Prog(forms=remaining)
+        if isinstance(expr, _If):
+            then = _extract(expr.then, out)
+            els = _extract(expr.else_expr, out) if expr.else_expr is not None else None
+            if then is None and els is None:
+                return None
+            return _If(cond=expr.cond, then=then, else_expr=els)
+        return expr
+
+    out = []
+    for f in forms:
+        if isinstance(f, _If):
+            rest = _extract(f, out)
+            if rest is not None:
+                out.append(rest)
+        else:
+            out.append(f)
+    return out
+
+
 def _lower_nested_defuns(forms):
     """把非顶层位置的 defun（条件/嵌套函数定义）改写为 setq 引用的 lambda 数据。
 
@@ -1349,7 +1396,11 @@ def cmd_compile(
 
     # 顶层 `(progn ...)`（@lisp 包整体包裹模式）展开后再提取 defun/顶层表达式
     program.forms = _flatten_top_level_forms(program.forms)
-    # 条件/嵌套 defun（`(if c (defun f () ...))`）改写为 `(setq f '(lambda ...))`
+    # 条件/嵌套 defun（`(if c (defun f () ...))`）：先按 CAD 方式把顶层 if 内的
+    # defun 提升为独立函数（无条件编译，if 只保留非 defun 表达式），剩余的非顶层
+    # 嵌套 defun（defun 体内）再由 _lower_nested_defuns 改写为 setq lambda。
+    program.forms = _hoist_conditional_defuns(program.forms)
+    # 嵌套 defun（`(defun f () (defun g () ...))`）改写为 `(setq g '(lambda ...))`
     program.forms = _lower_nested_defuns(program.forms)
     # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：CAD 用内嵌 `-lambda-`
     # SUBR（seg0 紧凑 stub + DEFCODE 注册为可调用函数），模块代码
@@ -1360,8 +1411,11 @@ def cmd_compile(
     top_lambda_binds = _collect_top_lambda_binds(program.forms) if not _defuns_now else []
     if top_lambda_binds:
         program.forms = _rewrite_top_lambda_binds(program.forms)
-    # 多 `(function (lambda ...))`（>1）改写为引用数据 `'(lambda ...)`
-    program.forms = _lower_multi_kwote(program.forms)
+    # 多 `(function (lambda ...))`（>1）走 CAD kwote 原生路径：每个 kwote 编译为
+    # 独立 `-lambda-` 内嵌 DEFUN（`-lambda-#N` 目录键 + DEFCODE 注册，见
+    # codegen._emit_nested_lambda / resource_builder）。`_lower_multi_kwote` 仅作为
+    # 后备保留（单 kwote 文件不受影响，多 kwote 走原生）。
+    # program.forms = _lower_multi_kwote(program.forms)
     # `((lambda ...) args)` 立即调用改写为显式 `(apply '(lambda ...) (list ...))`
     program.forms = _lower_immediate_lambda(program.forms)
 

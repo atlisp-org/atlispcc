@@ -196,7 +196,38 @@ class ResourceBuilder:
         self.data = bytearray()
 
     def _enc(self, s: str) -> bytes:
-        return str(s).encode(self.encoding, errors="replace")
+        return self._enc_with_escape(s).encode(self.encoding, errors="replace")
+
+    @staticmethod
+    def _enc_with_escape(s: str) -> str:
+        """把源字符串中当前编码无法表示的字符（如 emoji）转义为 CAD 形式。
+
+        CAD 编译器在 Windows（系统 ANSI/GBK 代码页）上编译时，把源码里无法
+        用 ANSI 表示的字符（如 `✅` U+2705、`❌` U+274C）转义为 AutoLISP
+        ``\\U+XXXX`` 转义序列存入资源段（CAD 产物实测 `\n\\U+2705 `）。而
+        中文等 GBK 可表示字符保持原样。这里用 GBK 作为参照编码模拟 CAD 行为：
+        对 GBK 无法编码的字符输出 ``\\U+XXXX``，保证 Linux(UTF-8) 下编译产物
+        与 CAD(Windows/GBK) 的字符串字节一致。已含 ``\\`` 转义前缀的字符
+        （如 ``\\n`` 字面）不受影响。
+        """
+        out = []
+        i = 0
+        n = len(s)
+        while i < n:
+            ch = s[i]
+            if ch == "\\" and i + 1 < n:
+                # 已是转义序列（`\n`/`\"`/`\\`/`\U+` 等）：原样保留
+                out.append(ch)
+                out.append(s[i + 1])
+                i += 2
+                continue
+            try:
+                ch.encode("gbk")
+                out.append(ch)
+            except UnicodeEncodeError:
+                out.append("\\U+%04X" % ord(ch))
+            i += 1
+        return "".join(out)
 
     def _enc_sym(self, s: str) -> bytes:
         """编码符号名：CAD 符号统一大写（AutoLISP 大小写不敏感）。
