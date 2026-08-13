@@ -516,14 +516,32 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         rg, fg = build_mvar_tables(seg1, nsyms)
     except Exception:
         return seg0
+    # 符号与字符串分表：`fg` 表里 SYMBOL `>` 与 STRING `">"` 可能同 key
+    # （符号大写、字符串大小写敏感），单一 gvar_map 靠 setdefault 先到先得，
+    # 若字符串先注册会占用符号槽，USUBR/FUNC 引用指向字符串 → CAD
+    # `(">" 24.1 20.1)` ill-fun。符号用 gvar_map（优先于字符串），字符串用
+    # str_map（符号 `>` 与字符串 `">"` 各自独立槽，互不抢占）。
     gvar_map: dict = {}
+    str_map: dict = {}
     for idx, v in enumerate(fg):
         if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
             # 符号名统一大写（AutoLISP 大小写不敏感）；字符串大小写敏感
             # （base-function 实测 `"date"`（timestamp）与 `"DATE"`（sleep）
             # 是两个不同槽，`.upper()` 会错误合并）。
             key = str(v[1]).upper() if v[0] == "SYMBOL" else str(v[1])
-            gvar_map.setdefault(key, idx)
+            if v[0] == "SYMBOL":
+                # 符号优先：仅当 key 空或已被字符串占用时才写入；符号之间
+                # 保持先到先得（递归函数名有重复槽，语义与旧 setdefault 一致）。
+                prev = gvar_map.get(key)
+                if prev is None or not (
+                    isinstance(prev, int)
+                    and 0 <= prev < len(fg)
+                    and isinstance(fg[prev], tuple)
+                    and fg[prev][0] == "SYMBOL"
+                ):
+                    gvar_map[key] = idx
+            else:
+                str_map.setdefault(key, idx)
     # `command` 内建 SUBR 在资源段注册名为 `ads-cmd`（base-function CAD 实测），
     # symtab 收集的符号名是 `command`。别名对齐使 FUNC/USUBR 分支能命中。
     if "ADS-CMD" in gvar_map:
@@ -578,7 +596,6 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     def gvar_slot(name: str) -> int:
         # 资源段符号名已大写（_enc_sym），参数名为小写，查找时统一大写。
         return gvar_map.get(str(name).upper(), nsyms)
-
     def sym_of(idx: int):
         if 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] in ("SYMBOL", "STRING"):
             v = symtab.entries[idx][1]
@@ -735,8 +752,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     # （gvar 槽 = nsyms，操作数 = nsyms-1，t15 实测）。
                     strval = symtab.entries[idx0][1]
                     gkey = str(strval)  # 字符串大小写敏感（`"date"`/`"DATE"` 异槽）
-                    if gkey in gvar_map:
-                        new_idx = gvar_map[gkey] - 1 - offset
+                    if gkey in str_map:
+                        new_idx = str_map[gkey] - 1 - offset
                     elif multi:
                         # 多函数表外字符串：注册于符号槽末尾（gvar 槽 = nsyms）。
                         new_idx = nsyms - 1
@@ -1800,27 +1817,24 @@ def cmd_compile(
     # 顶层函数调用会引用错误槽位（atlisp_u 实测 @::poll-wxid 应为 114 而非
     # 248）。用第一轮 seg1 重建 gvar 表，重映射符号引用后二次生成模块代码。
     if n_cmds and other_forms:
+        # 模块代码符号引用须用 CAD 实际的 gvar 槽（= 模块注册段记录序，从 1
+        # 连续），由 build_module_gvar_map 直接扫描模块注册段得到。不能用
+        # build_mvar_tables 的 rg/fg 表：其 GVARINIT 槽位基准与 CAD 布局不同
+        # （atlisp_u 实测 SET 应 1409 而 build_mvar_tables 给 1008，导致模块
+        # 代码 `(set 'defconstant ...)` 首实参读到数字、CAD 加载报 symbolp
+        # 类型错误）。
+        gvar_map = None
         try:
-            from core.fas_core import build_mvar_tables
+            from compiler._gvar_map import build_module_gvar_map
 
-            _rg, _fg = build_mvar_tables(seg1, fas_nsyms)
-            gvar_map = {}
-            # 模块代码符号引用：优先 resource_gvars（rg 表，GVARINIT table 0 槽），
-            # 符号不在 rg 表时回退 function_gvars（fg 表，table 1 槽）——不同符号
-            # 分布在不同表（vl-load-com 在 rg、fasext 在 fg），CAD 的 gvar 空间是
-            # 两者的并集。仅用 rg 会让不在 rg 的符号 fallback 到 symtab_idx+1
-            # （错位到 .fas 字符串槽 → `(set 'fasext ...)` 变 `(set ".fas" ...)`）。
-            for _i, _v in enumerate(_rg):
-                if isinstance(_v, tuple) and len(_v) == 2 and _v[0] in ("SYMBOL", "STRING"):
-                    _key = str(_v[1]).upper() if _v[0] == "SYMBOL" else str(_v[1])
-                    gvar_map.setdefault(_key, _i)
-            for _i, _v in enumerate(_fg):
-                if isinstance(_v, tuple) and len(_v) == 2 and _v[0] in ("SYMBOL", "STRING"):
-                    _key = str(_v[1]).upper() if _v[0] == "SYMBOL" else str(_v[1])
-                    gvar_map.setdefault(_key, _i)
+            gvar_map = dict(build_module_gvar_map(seg1))
         except Exception:
             gvar_map = None
         if gvar_map:
+            # 模块注册段外的符号（函数体符号、DEFCODE 区的 -lambda- 等）不在
+            # build_module_gvar_map 中，仍按 symtab_idx+1 编址；fasext 等顶层
+            # 表达式符号若出现在模块注册段中（atlisp_u 实测在 1217），
+            # build_module_gvar_map 已覆盖，不会 fallback 错位。
             module_code = _build_cad_module_code(
                 top_level_code,
                 symtab,

@@ -363,3 +363,39 @@ def test_compile_atlisp_u_fixture():
     finally:
         if os.path.exists(out):
             os.unlink(out)
+
+
+def test_compile_symbol_string_collision():
+    """回归：符号 `>`（内建 subr）与字符串 `">"` 在 fg 表同 key 时，
+    USUBR/FUNC 引用必须指向 SYMBOL 槽而非 STRING 槽，否则 CAD
+    `(">" 24.1 20.1)` ill-fun 错误（@lisp_u 真机暴露，2026-08-13）。"""
+    from core.fas_core import parse_fas4, build_mvar_tables
+    from decompiler.fas4_decompiler import Disassembler
+
+    src = '''(defun test-cmp (a b) (> a b))
+(defun test-eq (a b) (= a b))
+(defun use-str () (if (= (car nil) ">") 1 2))
+'''
+    out = _tmp('symstr.fas')
+    try:
+        cmd_compile(src, out)
+        p = parse_fas4(out)
+        rg, fg = build_mvar_tables(p['res_data_decrypted'], p['nsyms'])
+        insts = Disassembler(short_subr=p['nsyms'] <= 256).disassemble(
+            p['bytecode'], p['nsyms']
+        )
+        bad = []
+        for inst in insts:
+            if inst.op_name in ('USUBR', 'FUNC') and len(inst.operands) >= 2:
+                t = inst.operands[1] + 1  # 操作数 = gvar 槽 - 1
+                if 0 <= t < len(fg) and isinstance(fg[t], tuple) and len(fg[t]) == 2 and fg[t][0] == 'STRING':
+                    bad.append((inst.offset, inst.op_name, inst.operands, fg[t]))
+        assert bad == [], f'USUBR/FUNC 引用了 STRING 槽: {bad}'
+        # 符号 `>` 与字符串 `">"` 都在资源段注册（各自独立槽）
+        gt_sym = any(isinstance(v, tuple) and len(v) == 2 and v[0] == 'SYMBOL' and str(v[1]).upper() == '>' for v in fg)
+        gt_str = any(isinstance(v, tuple) and len(v) == 2 and v[0] == 'STRING' and str(v[1]) == '>' for v in fg)
+        assert gt_sym, 'SYMBOL `>` 未在资源段注册'
+        assert gt_str, '字符串 ">" 未在资源段注册'
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)
