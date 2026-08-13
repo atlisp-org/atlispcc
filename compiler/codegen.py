@@ -1295,9 +1295,14 @@ class CodeGenerator:
         if self.stub_format:
             buf.emit(encode_op_u16(PUSH_G, const_idx))
             self._emit_func3(buf, 1, al_idx)
-            buf.emit(encode_op_noarg(0x00))  # NIL
-            buf.emit(encode_op_noarg(PUSH_NIL))  # PUSH_NIL
-            buf.emit(encode_op_noarg(0x00))  # NIL
+            if not self.wide_subr:
+                # 小文件 3 字节 FUNC：CAD 追加 `NIL; PUSH_NIL; NIL` 清理
+                # （t11_localvars golden 实测）。大文件 6 字节 FUNC flags=1
+                # 已内联清理语义（CAD atlisp_u 实测 `FUNC; POP`，无
+                # `NIL; PUSH_NIL; NIL`，同 `_emit_subr_cleanup` 的 wide 逻辑）。
+                buf.emit(encode_op_noarg(0x00))  # NIL
+                buf.emit(encode_op_noarg(PUSH_NIL))  # PUSH_NIL
+                buf.emit(encode_op_noarg(0x00))  # NIL
             buf.emit(encode_op_noarg(POP))  # POP
         else:
             buf.emit(encode_op_u16(PUSH_G, const_idx))

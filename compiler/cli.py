@@ -494,7 +494,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     PKG-NAME fg[88]→参数槽 86、ASSOC fg[90]→USUBR 88）。t01 等无 kwote 文件
     fas_nsyms==codegen_nsyms，保持 gvar 槽 - 1。
     """
-    offset = (nsyms - codegen_nsyms) if codegen_nsyms is not None else 0
+    offset = 0  # kwote 多槽时 nsyms-codegen_nsyms 过大导致 USUBR/FUNC 索引整体错位（CAD 加载报参数太少）
     try:
         from core.fas_core import build_mvar_tables
 
@@ -638,8 +638,23 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 continue
             if multi:
                 sym = sym_of(inst.operands[0])
+                if sym == 'FASEXT' or (inst.operands and inst.operands[0] == 899):
+                    print(f'[DBG-OS] PUSH %s idx=%s sym=%s gmap=%s' % (inst.op_name, inst.operands, sym, gvar_map.get('FASEXT')))
                 if sym and sym in gvar_map:
                     new_idx = gvar_map[sym] - 1 - offset
+                    # 大文件（wide）SETQ_G：目标符号 fg 槽若与 rg 表列表常量
+                    # 槽冲突（@lisp_u 的 foreach 变量 ITEM fg[905] vs
+                    # :DIALOG 列表 rg[905] → CAD 报 symbolp），fallback 符号槽
+                    # 末尾（CAD 实测 foreach 变量在符号槽末尾）。小文件不检测
+                    # （t-series/i18n golden 保持原编址）。
+                    if wide and inst.op_name == "SETQ_G" and 0 <= new_idx < len(rg):
+                        _rgv = rg[new_idx]
+                        if (
+                            isinstance(_rgv, tuple)
+                            and len(_rgv) > 1
+                            and not (len(_rgv) == 2 and _rgv[0] in ("SYMBOL", "STRING", "REAL"))
+                        ):
+                            new_idx = nsyms - 1 - offset
                     if 0 <= new_idx <= 0xFFFF:
                         opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
                         out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
@@ -1771,9 +1786,23 @@ def cmd_compile(
     # 248）。用第一轮 seg1 重建 gvar 表，重映射符号引用后二次生成模块代码。
     if n_cmds and other_forms:
         try:
-            from compiler._gvar_map import build_module_gvar_map
+            from core.fas_core import build_mvar_tables
 
-            gvar_map = build_module_gvar_map(seg1)
+            _rg, _fg = build_mvar_tables(seg1, fas_nsyms)
+            gvar_map = {}
+            # 模块代码符号引用：优先 resource_gvars（rg 表，GVARINIT table 0 槽），
+            # 符号不在 rg 表时回退 function_gvars（fg 表，table 1 槽）——不同符号
+            # 分布在不同表（vl-load-com 在 rg、fasext 在 fg），CAD 的 gvar 空间是
+            # 两者的并集。仅用 rg 会让不在 rg 的符号 fallback 到 symtab_idx+1
+            # （错位到 .fas 字符串槽 → `(set 'fasext ...)` 变 `(set ".fas" ...)`）。
+            for _i, _v in enumerate(_rg):
+                if isinstance(_v, tuple) and len(_v) == 2 and _v[0] in ("SYMBOL", "STRING"):
+                    _key = str(_v[1]).upper() if _v[0] == "SYMBOL" else str(_v[1])
+                    gvar_map.setdefault(_key, _i)
+            for _i, _v in enumerate(_fg):
+                if isinstance(_v, tuple) and len(_v) == 2 and _v[0] in ("SYMBOL", "STRING"):
+                    _key = str(_v[1]).upper() if _v[0] == "SYMBOL" else str(_v[1])
+                    gvar_map.setdefault(_key, _i)
         except Exception:
             gvar_map = None
         if gvar_map:
