@@ -1472,13 +1472,15 @@ def cmd_compile(
     program.forms = _hoist_conditional_defuns(program.forms)
     # 嵌套 defun（`(defun f () (defun g () ...))`）改写为 `(setq g '(lambda ...))`
     program.forms = _lower_nested_defuns(program.forms)
-    # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：CAD 用内嵌 `-lambda-`
-    # SUBR（seg0 紧凑 stub + DEFCODE 注册为可调用函数），模块代码
-    # ``PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set``。有 defun 的混合
-    # 文件 CAD 用引用数据，不改写。改写为 kwote 标记使符号收集跳过 lambda
-    # CONST（否则产生 `LAMBDA` 槽，CAD 无此槽）。
+    # 顶层 `(set/setq 'sym (lambda ...))`：CAD 用内嵌 `-lambda-` SUBR（seg0 紧凑
+    # stub + DEFCODE 注册为可调用函数），模块代码
+    # ``PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set``。有 defun 的混合文件
+    # 同样适用（@lisp_u 实测 @::fasext/@::vlx 顶层 lambda 在 CAD 为 SUBR 可调用，
+    # 此前被 `not _defuns_now` 跳过 → atlispcc 产物绑定为引用数据 LIST，
+    # `(@::fasext ...)` 报"函数错误: (LAMBDA ...)"）。改写为 kwote 标记使符号
+    # 收集跳过 lambda CONST（否则产生 `LAMBDA` 槽，CAD 无此槽）。
     _defuns_now = [f for f in program.forms if isinstance(f, Defun)]
-    top_lambda_binds = _collect_top_lambda_binds(program.forms) if not _defuns_now else []
+    top_lambda_binds = _collect_top_lambda_binds(program.forms)
     if top_lambda_binds:
         program.forms = _rewrite_top_lambda_binds(program.forms)
     # 多 `(function (lambda ...))`（>1）走 CAD kwote 原生路径：每个 kwote 编译为
@@ -1845,6 +1847,22 @@ def cmd_compile(
     # module_code）模块注册段用标准 module_entries 顺序（CAD atlisp_u 实测
     # 65 项无 vl-ACAD-defun 前置）。
     _rb_commands = n_cmds if not other_forms else 0
+    _top_lambda_body_syms = None
+    if top_lambda_binds:
+        from compiler.ast_nodes import Symbol as _Sym
+
+        _syms = []
+        for _sym, _lam in top_lambda_binds:
+            _last = _lam.body[-1] if _lam.body else None
+            _nm = getattr(_last, "name", None)
+            if not isinstance(_nm, str) or not _nm:
+                _nm = None
+                for _f in reversed(_lam.body):
+                    if isinstance(_f, _Sym):
+                        _nm = _f.name
+                        break
+            _syms.append(_nm or _sym)
+        _top_lambda_body_syms = _syms
     seg1 = resource.build(
         func_offsets,
         module_code=module_code,
@@ -1853,7 +1871,7 @@ def cmd_compile(
         top_level_count=top_level_count,
         commands=_rb_commands,
         nested_ends=nested_ends,
-        top_lambda_body_syms=([_lam.body[-1].name for _, _lam in top_lambda_binds] if top_lambda_binds else None),
+        top_lambda_body_syms=_top_lambda_body_syms,
         module_func_count=_mr_func_count,
     )
     # commands + 顶层混合模式：模块注册把函数名逆序置前、顶层符号在后，
@@ -1931,7 +1949,7 @@ def cmd_compile(
         top_level_count=top_level_count,
         commands=_rb_commands,
         nested_ends=nested_ends,
-        top_lambda_body_syms=([_lam.body[-1].name for _, _lam in top_lambda_binds] if top_lambda_binds else None),
+        top_lambda_body_syms=_top_lambda_body_syms,
         module_func_count=_mr_func_count,
     )
     sec2_items = count_resource_records(seg1)
