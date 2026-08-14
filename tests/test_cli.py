@@ -482,3 +482,26 @@ def test_compile_atlisp_u_module_reg_bounded():
     finally:
         if os.path.exists(out):
             os.unlink(out)
+
+
+def test_vlax_for_expanded_to_foreach():
+    """回归：`(vlax-for var coll body...)` 须展开为 foreach 迭代（ForeachNode），
+    不得编译成对未定义 `vlax-for` 函数的调用（运行时错误）。
+
+    @lisp_u 中 vlax-for 用于遍历 ActiveX 集合（CUIX 菜单组、screensize 等）；
+    修复前编译产物把 `vlax-for` 当普通函数 USUBR 调用（无此函数 → CAD 报
+    "函数错误"）。修复后经 parser 展开为 ForeachNode，复用 foreach stub 协议，
+    符号表中不再出现 VLAX-FOR。"""
+    src = os.path.join('tests', 'atlisp_u.lsp')
+    if not os.path.exists(src):
+        pytest.skip('missing atlisp_u.lsp fixture')
+    out = _tmp('vlax_for.fas')
+    try:
+        cmd_compile(src, out)
+        parser = Fas4Parser()
+        fas = parser.parse(out)
+        vla = [s for s in fas.symbol_slots if str(s[1]).upper() == 'VLAX-FOR']
+        assert not vla, 'vlax-for 不应作为符号/函数调用存在（应展开为 foreach）'
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)

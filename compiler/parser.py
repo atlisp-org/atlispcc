@@ -125,6 +125,16 @@ class Parser:
                 list_expr = self.parse_form(quoted)
                 body = self._parse_forms_until_rparen(quoted)
                 return ForeachNode(var=var, list_expr=list_expr, body=body)
+            elif name == 'vlax-for':
+                # `(vlax-for var collection body...)`：CAD 编译为 ActiveX 集合
+                # 枚举循环（collect-init/next/release SUBR 协议）。VLISP 的
+                # foreach 语义同样迭代集合，故按 ForeachNode 展开（复用
+                # byte-identity 验证过的 foreach stub 协议）。若后续需与 CAD
+                # collect-* 协议逐字节一致，可在此标记 vlax 迭代并另发字节码。
+                var = self.parse_form(quoted)
+                list_expr = self.parse_form(quoted)
+                body = self._parse_forms_until_rparen(quoted)
+                return ForeachNode(var=var, list_expr=list_expr, body=body)
             elif name == 'repeat':
                 count = self.parse_form(quoted)
                 body = self._parse_forms_until_rparen(quoted)
