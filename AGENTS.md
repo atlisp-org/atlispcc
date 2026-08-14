@@ -262,6 +262,22 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
     小文件保持 3 字节（golden 逐字节不变）
   - `top_level_count` 由收集器 `module_reg_count` 推导（避免顶层表达式引用
     函数体符号时的高估）
+  - **@lisp_u 真机加载打通**（2026-08-14，对拍 CAD 编译 `~/@lisp/@lisp_u.lsp`，
+    加载链逐层修复后**模块代码完整执行、核心函数可调用**）：
+    - 模块注册**全部函数**（CAD 实测 1339 符号/544 函数，非"尾块 48"）；
+      `module_func_count` 截断（7beeddf 引入）导致模块代码 USUBR 错槽
+    - **模块代码槽引用 = 资源 gvar 表(rg)**：CAD 实测 `USUBR(0,1036)` →
+      rg[1036]=VL-LOAD-COM，操作数 = rg 索引（`build_module_gvar_map` 的
+      模块注册位 ≠ rg 槽，@lisp_u VL-LOAD-COM 注册位 1450 vs rg[1029]）
+    - `in-package`/`use-package`：CAD 视为编译期指令，模块代码**不发射**
+      函数调用（发射 USUBR 解析为 CL::IN-PACKAGE → 函数错误）；符号仍注册
+    - **setq 值 = 函数符号 → PUSH_G**（`(setq @::unschedule-task
+      @::string-to-list)` 实测）；**set 值 = 函数符号 → PUSH_VALUE**
+      （`(set 'type-of cl::type-of)` 实测，PUSH_G 只压符号运行时报
+      "函数错误: CL::TYPE-OF"）——setq/set 编码不同
+    - 参数绑定按名解析（`symtab.function_offsets` offset→name），弃用全局
+      func_iter 顺序对齐（大文件 kwote lambda 收集与 -lambda- 生成数不匹配
+      致 iter 错位，@::load-locale 参数被错配为他函数参数）
 - i18n 混合模式拆件 p01-p07 全部 byte-identity（`tests/cad/i18n_split/`，seg0+seg1+nsyms
   对齐 CAD golden，2026-08-06）✅
   - p04-p07 关键修复：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）；
