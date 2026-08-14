@@ -14,7 +14,7 @@ import struct
 def build_module_gvar_map(seg1_decrypted: bytes):
     """返回 {符号名大写: gvar槽} 与 {字符串值大写: gvar槽}。"""
     data = seg1_decrypted
-    gvar = {}
+    gvar: dict = {}
     i = 5  # 跳过 `14 01 01 01 00` 模块头
     slot = 1
     # 代码引用（32/33 + 2a + 39）占据栈底 1 项，但 gvar 槽从 1 起（槽 0 是它）

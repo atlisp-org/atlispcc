@@ -123,7 +123,7 @@ def main() -> int:
         for fp in _glob_lsp(args.samples):
             samples.append((os.path.basename(fp)[:30], fp))
 
-    results = {}
+    results: dict = {}
     big_tmp = tempfile.TemporaryDirectory()
     big_fas = None
     if args.big > 0:

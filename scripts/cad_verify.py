@@ -92,7 +92,7 @@ CASES = [
 ]
 
 # 已知功能缺陷（混合模式，§8.C2 待修）：t10 的 get-version/hello 符号错位
-KNOWN_ISSUES = {
+KNOWN_ISSUES: dict = {
     # 2026-08-05: t10_init 已随 byte-identity 转正，从此处移除
 }
 

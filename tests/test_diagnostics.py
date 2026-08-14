@@ -12,6 +12,34 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+
+def _python_exe():
+    """返回可用于 subprocess 的控制台版 Python 解释器。
+
+    `pythonw.exe`（GUI 子系统）无标准控制台句柄，spawn 子进程时
+    `subprocess.run(capture_output=True)` 的 DuplicateHandle 会偶发
+    OSError（Windows）。解析为同目录的 `python.exe` 规避。
+    """
+    exe = sys.executable
+    base, name = os.path.split(exe)
+    if name.lower() == "pythonw.exe":
+        cand = os.path.join(base, "python.exe")
+        if os.path.exists(cand):
+            return cand
+    return exe
+
+
+def _subprocess_run(args, **kw):
+    """pythonw 下 spawn 子进程的稳定封装：显式 stdin=DEVNULL + 关闭句柄继承。
+
+    pytest 捕获输出后首个子进程创建管道时，pythonw 进程的继承句柄表
+    可能为空，`DuplicateHandle` 偶发 `OSError: [WinError 6] 句柄无效`。
+    `stdin=DEVNULL` 让子进程不继承父进程捕获中的 stdin 句柄。
+    """
+    kw.setdefault("stdin", subprocess.DEVNULL)
+    kw.setdefault("close_fds", True)
+    return subprocess.run(args, **kw)
+
 from compiler.dep_analysis import (
     build_from_fas,
     build_from_lsp,
@@ -184,8 +212,8 @@ def test_roundtrip_parse_error_reports_failure():
 
 
 def test_roundtrip_cli_subprocess():
-    result = subprocess.run(
-        [sys.executable, "-m", "compiler.cli", "roundtrip", os.path.join(ROOT, "tests", "fun.lsp")],
+    result = _subprocess_run(
+        [_python_exe(), "-m", "compiler.cli", "roundtrip", os.path.join(ROOT, "tests", "fun.lsp")],
         capture_output=True,
         text=True,
     )
@@ -194,9 +222,9 @@ def test_roundtrip_cli_subprocess():
 
 
 def test_roundtrip_cli_keep_flag():
-    result = subprocess.run(
+    result = _subprocess_run(
         [
-            sys.executable,
+            _python_exe(),
             "-m",
             "compiler.cli",
             "roundtrip",
@@ -213,8 +241,8 @@ def test_roundtrip_cli_keep_flag():
 def test_roundtrip_cli_fail_returns_one(tmp_path):
     bad = tmp_path / "bad.lsp"
     bad.write_text("(defun a () (princ", encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, "-m", "compiler.cli", "roundtrip", str(bad)],
+    result = _subprocess_run(
+        [_python_exe(), "-m", "compiler.cli", "roundtrip", str(bad)],
         capture_output=True,
         text=True,
     )

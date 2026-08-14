@@ -36,6 +36,17 @@ def _validate(source: str) -> tuple:
     return (False, errs) if errs else (True, [])
 
 
+def _decompile(golden: str) -> str:
+    """反编译 CAD golden 到临时文件（避免污染 tests/cad 源码树）。"""
+    tmp = tempfile.NamedTemporaryFile(suffix='.lsp', mode='w', delete=False)
+    tmp.close()
+    try:
+        return Fas4Decompiler().decompile(golden, tmp.name)
+    finally:
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)
+
+
 def compile_and_decompile(src: str) -> str:
     """Compile Lisp source to FAS in memory and decompile back."""
     parser = Parser(src)
@@ -362,7 +373,7 @@ def test_t01_golden_multi_func_arg_names():
     golden = os.path.join(os.path.dirname(__file__), 'cad', 't01_math_cad.fas')
     if not os.path.exists(golden):
         pytest.skip('t01_math_cad.fas golden not present')
-    result = Fas4Decompiler().decompile(golden, None)
+    result = _decompile(golden)
     assert '(defun add (a b)' in result
     assert '(defun multiply (a b)' in result
     assert 'arg_' not in result
@@ -590,7 +601,7 @@ def test_t08_golden_shared_arg_names():
     golden = os.path.join(os.path.dirname(__file__), 'cad', 't08_apply_mapcar_cad.fas')
     if not os.path.exists(golden):
         pytest.skip('t08_apply_mapcar_cad.fas golden not present')
-    result = Fas4Decompiler().decompile(golden, None)
+    result = _decompile(golden)
     assert '(defun sum-list (lst)' in result
     assert '(defun double-all (lst)' in result
     assert 'arg_' not in result
@@ -601,7 +612,7 @@ def test_t07_golden_shared_arg_names():
     golden = os.path.join(os.path.dirname(__file__), 'cad', 't07_list_cad.fas')
     if not os.path.exists(golden):
         pytest.skip('t07_list_cad.fas golden not present')
-    result = Fas4Decompiler().decompile(golden, None)
+    result = _decompile(golden)
     assert '(defun get-first (lst)' in result
     assert '(defun get-rest (lst)' in result
     assert '(defun pair (a b)' in result
@@ -618,7 +629,7 @@ def test_t12_golden_global_setq_not_localized():
     golden = os.path.join(os.path.dirname(__file__), 'cad', 't12_quote_cad.fas')
     if not os.path.exists(golden):
         pytest.skip('t12_quote_cad.fas golden not present')
-    result = Fas4Decompiler().decompile(golden, None)
+    result = _decompile(golden)
     assert '(defun test-quote ()' in result
     assert 'test-quote (/ lst' not in result
     assert "(setq lst '(a b c))" in result, f'chain deferred quote lost: {result}'
@@ -645,7 +656,7 @@ def test_t16_golden_foreach_arg_and_structure():
     golden = os.path.join(os.path.dirname(__file__), 'cad', 't16_foreach_cad.fas')
     if not os.path.exists(golden):
         pytest.skip('t16_foreach_cad.fas golden not present')
-    result = Fas4Decompiler().decompile(golden, None)
+    result = _decompile(golden)
     assert '(defun sum-foreach (lst' in result
     assert '(foreach x lst' in result
 
@@ -655,7 +666,7 @@ def test_t17_golden_repeat_arg_and_structure():
     golden = os.path.join(os.path.dirname(__file__), 'cad', 't17_repeat_cad.fas')
     if not os.path.exists(golden):
         pytest.skip('t17_repeat_cad.fas golden not present')
-    result = Fas4Decompiler().decompile(golden, None)
+    result = _decompile(golden)
     assert '(defun repeat-count (n' in result
     assert '(repeat n' in result
 
@@ -671,7 +682,7 @@ def test_qsingle_golden_deferred_quoted_list():
     golden = os.path.join(os.path.dirname(__file__), 'cad', 'qsingle_cad.fas')
     if not os.path.exists(golden):
         pytest.skip('tests/cad/qsingle_cad.fas golden not present')
-    result = Fas4Decompiler().decompile(golden, None)
+    result = _decompile(golden)
     assert '(defun a ()' in result
     assert "'(1 2 3)" in result
     assert "'a" not in result
@@ -792,7 +803,7 @@ def test_t11_locals_decl_and_setq_order():
     golden = os.path.join(os.path.dirname(__file__), 'cad', 't11_localvars_cad.fas')
     if not os.path.exists(golden):
         pytest.skip('t11_localvars_cad.fas golden not present')
-    result = Fas4Decompiler().decompile(golden, None)
+    result = _decompile(golden)
     ok, errs = _validate(result)
     assert ok, f'Validation failed: {errs}'
     assert '(defun sum-to-n (n / result i)' in result, f'signature lost / locals:\n{result}'

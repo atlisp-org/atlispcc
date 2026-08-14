@@ -3,6 +3,7 @@ import os
 import json
 import argparse
 import struct
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -123,7 +124,7 @@ def _lower_nested_defuns(forms):
     from compiler.cad_symbols import strip_docstring
 
     def _as_lambda(f: Defun) -> _Q:
-        all_args = [Symbol(a) for a in f.args]
+        all_args: list = [Symbol(a) for a in f.args]
         all_args += [Symbol(a) for a in f.optional]
         if f.rest:
             all_args += [Symbol("&rest"), Symbol(f.rest)]
@@ -479,7 +480,7 @@ def _subr_bytes(opcode: int, argc: int, idx: int, flags: int = 3, wide: bool = F
     return bytes([opcode, argc & 0xFF, idx & 0xFF])
 
 
-def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: int = None) -> bytes:
+def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: Optional[int] = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
     CAD 实测逆向：
@@ -620,6 +621,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     cur_args = None
     arg_i = 0
     for inst in insts:
+        new_idx: Optional[int] = None
         if inst.op_name == "DEFUN":
             cur_args = next(func_iter, None) if func_args else None
             arg_i = 0
@@ -653,12 +655,6 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         # 操作数 = idx——i18n_v2 实测 ANSI 表 symtab idx 4 → 操作数 3）。
         # 注意：CAD stub 中调用后的占位 PUSH_VALUE[0] 是单字节 `03`（size=1），
         # 并非符号引用，必须跳过，否则被扩展成 3 字节破坏字节一致性。
-        # 其余符号引用：统一用 gvar 槽 - 1。多函数的普通符号走 gvar_map；
-        # CONST/STRING 常量引用（PUSH_G 操作数 = gvar 槽 - 1）在单函数
-        # 也需修正（codegen 原始槽 = symtab idx，gvar 槽 = idx+1，
-        # 操作数 = idx——i18n_v2 实测 ANSI 表 symtab idx 4 → 操作数 3）。
-        # 注意：CAD stub 中调用后的占位 PUSH_VALUE[0] 是单字节 `03`（size=1），
-        # 并非符号引用，必须跳过，否则被扩展成 3 字节破坏字节一致性。
         if inst.op_name in ("PUSH_VALUE", "PUSH_G", "SETQ_G") and inst.operands and inst.size == 3:
             # 参数绑定 PUSH_G（DEFUN 后 argc 个）：多函数由上方分支修正并
             # continue（不到此处）；单函数 codegen 已输出正确槽（nsyms-1）。
@@ -670,8 +666,6 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 continue
             if multi:
                 sym = sym_of(inst.operands[0])
-                if sym == 'FASEXT' or (inst.operands and inst.operands[0] == 899):
-                    print(f'[DBG-OS] PUSH %s idx=%s sym=%s gmap=%s' % (inst.op_name, inst.operands, sym, gvar_map.get('FASEXT')))
                 if sym and sym in gvar_map:
                     new_idx = gvar_map[sym] - 1 - offset
                     # 大文件（wide）SETQ_G：目标符号 fg 槽若与 rg 表列表常量
@@ -838,7 +832,7 @@ def _build_cad_module_code(
     n_post_forms: int = 0,
     n_globals: int = 0,
     gvar_map: object = None,
-    top_lambda_slots: object = None,
+    top_lambda_slots: Optional[dict] = None,
 ) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
@@ -1469,8 +1463,8 @@ def cmd_compile(
     package_table = parser_obj.packages
 
     need_stats = show_analysis or bool(report_json)
-    stats = None
-    stats2 = None
+    stats: Optional[dict] = None
+    stats2: Optional[dict] = None
 
     if need_stats:
         stats = analyze(program)
@@ -1497,7 +1491,9 @@ def cmd_compile(
     if opt_level:
         program = optimize(program, level=opt_level)
         if need_stats:
+            assert stats is not None
             stats2 = analyze(program)
+            assert stats2 is not None
             if show_analysis:
                 print(f"=== After O{opt_level} Optimization ===")
                 print(f'  Functions:          {stats2["functions"]} (was {stats["functions"]})')
@@ -1508,12 +1504,12 @@ def cmd_compile(
     symtab = SymbolTable(package_table=package_table)
     defun_forms = [f for f in program.forms if isinstance(f, Defun)]
     # 纯 &rest（min=0）：CAD 实测不收集 rest（b4=01 需至少一个必填参数）
-    for f in defun_forms:
-        if f.rest and not f.args and not f.optional:
+    for _defun in defun_forms:
+        if _defun.rest and not _defun.args and not _defun.optional:
             print(
-                f"Warning: function '{f.name}' uses bare &rest (min args = 0); "
+                f"Warning: function '{_defun.name}' uses bare &rest (min args = 0); "
                 f"CAD does not collect rest args for min=0 — consider adding "
-                f"a required param, e.g. (defun {f.name} (x &rest {f.rest}))",
+                f"a required param, e.g. (defun {_defun.name} (x &rest {_defun.rest}))",
                 file=sys.stderr,
             )
     from compiler.cad_symbols import derive_symbol_names, is_const_entry
@@ -1800,9 +1796,9 @@ def cmd_compile(
     # func_args 顺序须与 seg0 DEFUN 顺序一致：顶层 defun 参数 + 各函数内嵌
     # kwote `-lambda-` 参数（紧随所在函数之后，i18n-cad 实测）。
     all_func_args = []
-    for f in defun_forms:
-        all_func_args.append(_all_params(f))
-        for la in _collect_kwote_lambda_args(f):
+    for _defun in defun_forms:
+        all_func_args.append(_all_params(_defun))
+        for la in _collect_kwote_lambda_args(_defun):
             all_func_args.append(la)
 
     # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
@@ -1892,6 +1888,7 @@ def cmd_compile(
     print(f"Compiled to {output}")
 
     if report_json:
+        assert stats is not None
         report = {
             "tool": "atlispcc",
             "command": "compile",
@@ -1931,8 +1928,8 @@ def cmd_compile(
                 "symbol_table_entries": stats2["symbol_table_entries"],
                 "functions_detail": stats2["functions_detail"],
             }
-        with open(report_json, "w", encoding="utf-8") as f:
-            json.dump(report, f, indent=2, ensure_ascii=False)
+        with open(report_json, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2, ensure_ascii=False)
         print(f"Report written to {report_json}")
 
     return output

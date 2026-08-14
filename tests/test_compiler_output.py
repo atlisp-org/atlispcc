@@ -308,7 +308,7 @@ CAD_T_SERIES_IDENTICAL = [
 
 #: t-series sources with KNOWN remaining byte diffs (see docs/development-plan.md 8.C1).
 #: Kept as xfail regression: when a gap is fixed, move it to CAD_T_SERIES_IDENTICAL.
-CAD_T_SERIES_DIFF = []
+CAD_T_SERIES_DIFF: list = []
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 

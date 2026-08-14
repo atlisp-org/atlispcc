@@ -2,7 +2,7 @@
 
 import os
 import sys
-from typing import List, Dict, Tuple, Set, Any
+from typing import List, Dict, Tuple, Set, Any, Optional
 
 from decompiler.fas4_decompiler import Fas4Parser, Disassembler
 from compiler.symbol_table import SymbolTable
@@ -92,7 +92,7 @@ def _warn(msg: str) -> None:
     print(f"WARNING: {msg}", file=sys.stderr)
 
 
-def _patch_operands(inst, file_sym_map: Dict[int, int], file_sym_slot_map: Dict[int, int] = None) -> List:
+def _patch_operands(inst, file_sym_map: Dict[int, int], file_sym_slot_map: Optional[Dict[int, int]] = None) -> List:
     name = inst.op_name
     ops = list(inst.operands)
     if not ops:

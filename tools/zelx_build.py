@@ -221,6 +221,8 @@ def rolling_xor(data: bytes, key: bytes) -> bytes:
 
 
 def parse_fas(path: str):
+    from core.fas_core import decrypt_stream, find_key
+
     f = open(path, "rb").read()
     from core.fas_core import find_fas4_magic
     hpos, magic = find_fas4_magic(f)
@@ -232,13 +234,10 @@ def parse_fas(path: str):
     s1s = term + 4; j = f.find(b" $", s1s)
     parts = f[s1s:j].split(); seg1len = int(parts[0]); items = int(parts[1])
     seg1_enc = f[j + 2:j + 2 + seg1len]
-    pos = f.find(b"\n;fas4 crunch\n;")
-    fkey = None
-    for rl in range(6, 12):
-        ks = pos - rl; ke = pos + 15
-        if f[ks - 1] == (ke - ks):
-            fkey = f[ks:ke]; break
-    seg1 = rolling_xor(seg1_enc, fkey)
+    fkey = find_key(f)
+    if fkey is None:
+        raise ValueError("Cannot find FAS4 XOR key")
+    seg1 = decrypt_stream(seg1_enc, fkey)
     return dict(seg0=seg0, seg1=seg1, nsyms=nsyms, items=items)
 
 

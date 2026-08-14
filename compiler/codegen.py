@@ -1,4 +1,5 @@
 import struct
+from contextlib import contextmanager
 from typing import List, Optional, Dict, Any, Set, Tuple
 from compiler.ast_nodes import (
     Node,
@@ -295,8 +296,6 @@ class CodeGenerator:
             with self._value_ctx():
                 self._emit_expr(buf, arg)
             buf.emit(encode_usubr(1, idx))
-
-    from contextlib import contextmanager
 
     @contextmanager
     def _value_ctx(self):
@@ -1020,7 +1019,7 @@ class CodeGenerator:
         buf.add_patch(jmp_back + 1, label_loop, 4)
         buf.label(label_end)
 
-    def _emit_quoted(self, buf: BytecodeBuffer, node: Optional[Node], skip_reg: set = None):
+    def _emit_quoted(self, buf: BytecodeBuffer, node: Optional[Node], skip_reg: Optional[Set] = None):
         if skip_reg is None:
             skip_reg = set()
         # CAD 紧凑 stub：引用字面量注册为资源段常量，字节码只发一条 PUSH_G。
@@ -1095,9 +1094,9 @@ class CodeGenerator:
                 self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         elif isinstance(node, IfNode):
-            items = [Symbol("if"), node.cond, node.then or Symbol("nil")]
+            items = [Symbol("if"), node.cond or Symbol("nil"), node.then or Symbol("nil")]
             if node.else_expr is not None:
-                items.append(node.else_expr)
+                items = items + [node.else_expr]
             for item in reversed(items):
                 self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
@@ -1120,12 +1119,12 @@ class CodeGenerator:
                 self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         elif isinstance(node, WhileNode):
-            items = [Symbol("while"), node.cond] + node.body
+            items = [Symbol("while"), node.cond or Symbol("nil")] + node.body
             for item in reversed(items):
                 self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         elif isinstance(node, ForeachNode):
-            items = [Symbol("foreach"), node.var, node.list_expr] + node.body
+            items = [Symbol("foreach"), node.var or Symbol("nil"), node.list_expr or Symbol("nil")] + node.body
             for item in reversed(items):
                 self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
@@ -1136,7 +1135,7 @@ class CodeGenerator:
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         elif isinstance(node, Defun):
             # 引用数据里的 `(defun name (args) body...)`：还原为数据列表
-            arg_items = [Symbol(a) for a in node.args]
+            arg_items: List[Node] = [Symbol(a) for a in node.args]
             if node.optional:
                 arg_items += [Symbol("&optional")] + [Symbol(a) for a in node.optional]
             if node.rest:

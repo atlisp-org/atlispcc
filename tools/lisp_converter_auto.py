@@ -13,12 +13,14 @@ import os
 import sys
 import time
 import argparse
+from typing import Optional
 
 try:
     import uiautomation as auto
 except ImportError:  # 非 Windows / 未装 uiautomation：模块仍可导入，仅运行时需要
     auto = None
 
+u32: Optional[ctypes.WinDLL] = None
 try:
     u32 = ctypes.windll.user32
     u32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
