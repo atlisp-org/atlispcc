@@ -480,7 +480,8 @@ def _subr_bytes(opcode: int, argc: int, idx: int, flags: int = 3, wide: bool = F
     return bytes([opcode, argc & 0xFF, idx & 0xFF])
 
 
-def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: Optional[int] = None) -> bytes:
+def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: Optional[int] = None,
+                     params_by_name: Optional[dict] = None, lambda_args_by_func: Optional[dict] = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
     CAD 实测逆向：
@@ -617,13 +618,33 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
 
     out = bytearray()
     multi = bool(func_args) and len(func_args) > 1
-    func_iter = iter(func_args or [])
+    # 按函数名解析 DEFUN 参数（robust）：外层 defun 经 symtab.function_offsets
+    # 的 offset→name 定位，-lambda- DEFUN 归其所在函数。此前用全局 func_iter
+    # 顺序对齐，@lisp_u 508 函数 + 多 kwote 时 _collect_kwote_lambda_args 与
+    # codegen -lambda- 生成数不匹配导致 iter 错位（@::load-locale 参数被错配为
+    # 他函数参数 → 体内符号全乱、CAD 加载报"参数太少"）。
+    params_by_name = params_by_name or {}
+    lambda_args_by_func = lambda_args_by_func or {}
+    name_by_offset = {}
+    for _n, _o in (symtab.function_offsets.items() if hasattr(symtab, "function_offsets") else []):
+        name_by_offset[_o] = str(_n).upper()
     cur_args = None
+    cur_func = None
+    lambda_idx = 0
     arg_i = 0
     for inst in insts:
         new_idx: Optional[int] = None
         if inst.op_name == "DEFUN":
-            cur_args = next(func_iter, None) if func_args else None
+            fname = name_by_offset.get(inst.offset)
+            if fname is not None:
+                cur_func = fname
+                cur_args = params_by_name.get(fname)
+                lambda_idx = 0
+            else:
+                # 内嵌 `-lambda-` DEFUN：取所在函数收集的 kwote lambda 参数
+                _la = lambda_args_by_func.get(cur_func, []) if cur_func else []
+                cur_args = _la[lambda_idx] if lambda_idx < len(_la) else None
+                lambda_idx += 1
             arg_i = 0
         # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
         if multi and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
@@ -966,25 +987,18 @@ def _build_cad_module_code(
             else:
                 return bytes(pairs_bc)
         if isinstance(form, InPackage):
-            # `(in-package :@)`：CAD 编译为 `PUSH_VALUE <pkg符号槽>; FUNC_REF in-package`
-            # （pf3/platform-api/base-function 实测模块代码 `03 <pkg+1>; 35 01 <inpkg+1> 03`）。
-            # 此前 InPackage 被完全丢弃，导致包上下文未建立、且符号槽整体少 2
-            # （IN-PACKAGE/:@ 未注册），单函数含顶层文件（base-function/setup）的
-            # 参数/符号槽引用偏移，CAD 真机加载报"要绑定的对象不正确"。
-            from compiler.ast_nodes import InPackage as _InPkg
-            from compiler.cad_symbols import is_const_entry
-
-            pkg_sym = _InPkg(name=form.name)
-            pkg_idx = symtab.name_to_idx.get(form.name)
-            if pkg_idx is None:
-                pkg_idx = symtab.get_or_add(form.name)
-            in_pkg_idx = symtab.name_to_idx.get("in-package")
-            if in_pkg_idx is None:
-                in_pkg_idx = symtab.get_or_add("in-package")
-            out_pkg = _slot_gv(pkg_idx)
-            out_inp = _slot_gv(in_pkg_idx)
-            return bytes([0x03]) + struct.pack("<H", out_pkg) + \
-                bytes([0x35, 0x01]) + struct.pack("<H", out_inp) + bytes([0x03])
+            # `(in-package :@)`：CAD 编译为编译期指令，模块代码**不发射**函数
+            # 调用（@lisp_u 实测模块代码无 IN-PACKAGE USUBR；发射 `USUBR(1,
+            # IN-PACKAGE)` 会解析为 `CL::IN-PACKAGE` → "函数错误: CL::IN-PACKAGE"）。
+            # 符号 IN-PACKAGE/:@ 仍经 _collect_symbol_nodes 注册（槽位对齐，
+            # base-function 修复记录）。发射 PUSH_NIL 占位语句保持语句栈平衡
+            # （_emit_stmts 每语句后补 POP）。
+            return bytes([0x01])  # PUSH_NIL（值由 _emit_stmts 的 POP 丢弃）
+        if isinstance(form, Call) and str(form.name).lower() == "use-package":
+            # `(use-package :autolisp)`：同 in-package，CAD 模块代码不发射函数
+            # 调用（发射 USUBR 会解析为 CL::USE-PACKAGE → 函数错误）。符号
+            # USE-PACKAGE/:AUTOLISP 仍注册（槽位对齐）。
+            return bytes([0x01])  # PUSH_NIL 占位
         # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，CAD `-lambda-` SUBR）：
         # 模块代码 `PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set`，不经
         # kwote/引用常量（CAD 实测 bootstrap）。`-lambda-` 槽由 seg0 生成阶段
@@ -1806,10 +1820,19 @@ def cmd_compile(
 
     # func_args 顺序须与 seg0 DEFUN 顺序一致：顶层 defun 参数 + 各函数内嵌
     # kwote `-lambda-` 参数（紧随所在函数之后，i18n-cad 实测）。
+    # 参数槽修正采用按名解析（params_by_name / lambda_args_by_func），
+    # 不再依赖扁平列表顺序对齐（@lisp_u 大文件 iter 会错位）。
     all_func_args = []
+    params_by_name: dict = {}
+    lambda_args_by_func: dict = {}
     for _defun in defun_forms:
-        all_func_args.append(_all_params(_defun))
-        for la in _collect_kwote_lambda_args(_defun):
+        _fn = normalize_vla_name(_defun.name)
+        _pa = _all_params(_defun)
+        all_func_args.append(_pa)
+        params_by_name[_fn.upper()] = _pa
+        _las = [list(la) for la in _collect_kwote_lambda_args(_defun)]
+        lambda_args_by_func[_fn.upper()] = _las
+        for la in _las:
             all_func_args.append(la)
 
     # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
@@ -1837,24 +1860,36 @@ def cmd_compile(
     # 无顶层表达式时等于实际 gvar 槽（@lisp_u 无 c: 命令，n_cmds=0，此前被
     # `n_cmds and other_forms` 跳过导致 in-package/函数槽错位，2026-08-14）。
     if other_forms:
-        # 模块代码符号引用须用 CAD 实际的 gvar 槽（= 模块注册段记录序，从 1
-        # 连续），由 build_module_gvar_map 直接扫描模块注册段得到。不能用
-        # build_mvar_tables 的 rg/fg 表：其 GVARINIT 槽位基准与 CAD 布局不同
-        # （atlisp_u 实测 SET 应 1409 而 build_mvar_tables 给 1008，导致模块
-        # 代码 `(set 'defconstant ...)` 首实参读到数字、CAD 加载报 symbolp
-        # 类型错误）。
+        # 模块代码符号引用须用资源 gvar 表（table0/rg）的索引——CAD 实测
+        # 模块代码 `USUBR(0, 1036)` → rg[1036]=VL-LOAD-COM，操作数 = rg 索引。
+        # build_module_gvar_map 的"模块注册段记录序"与此不一致（@lisp_u 实测
+        # VL-LOAD-COM 模块注册位 1450 vs rg[1029]），会导致模块代码调用错槽 →
+        # CAD 加载报"参数太少"。函数体用 fg（table1），模块代码用 rg（table0），
+        # 两表独立（2026-08-14 对拍确认）。
         gvar_map = None
         try:
-            from compiler._gvar_map import build_module_gvar_map
+            from core.fas_core import build_mvar_tables as _bmt
 
-            gvar_map = dict(build_module_gvar_map(seg1))
+            _rg, _fg = _bmt(seg1, fas_nsyms)
+            gvar_map = {}
+            for _idx, _v in enumerate(_rg):
+                if isinstance(_v, tuple) and len(_v) == 2 and _v[0] in ("SYMBOL", "STRING"):
+                    _key = str(_v[1]).upper() if _v[0] == "SYMBOL" else str(_v[1])
+                    if _v[0] == "SYMBOL":
+                        _prev = gvar_map.get(_key)
+                        if _prev is None or not (
+                            isinstance(_prev, int) and 0 <= _prev < len(_rg)
+                            and isinstance(_rg[_prev], tuple) and _rg[_prev][0] == "SYMBOL"
+                        ):
+                            gvar_map[_key] = _idx
+                    else:
+                        gvar_map.setdefault(_key, _idx)
+            if not gvar_map:
+                gvar_map = None
         except Exception:
             gvar_map = None
         if gvar_map:
-            # 模块注册段外的符号（函数体符号、DEFCODE 区的 -lambda- 等）不在
-            # build_module_gvar_map 中，仍按 symtab_idx+1 编址；fasext 等顶层
-            # 表达式符号若出现在模块注册段中（atlisp_u 实测在 1217），
-            # build_module_gvar_map 已覆盖，不会 fallback 错位。
+            # rg 未覆盖的符号（常量、函数体符号等）按 symtab_idx+1 编址回退。
             module_code = _build_cad_module_code(
                 top_level_code,
                 symtab,
@@ -1868,7 +1903,10 @@ def cmd_compile(
                 gvar_map=gvar_map,
                 top_lambda_slots=top_lambda_slots,
             )
-    seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args, codegen_nsyms=codegen_nsyms)
+    seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args,
+                            codegen_nsyms=codegen_nsyms,
+                            params_by_name=params_by_name,
+                            lambda_args_by_func=lambda_args_by_func)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(
         func_offsets,
