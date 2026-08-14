@@ -854,6 +854,7 @@ def _build_cad_module_code(
     n_globals: int = 0,
     gvar_map: object = None,
     top_lambda_slots: Optional[dict] = None,
+    real_map: Optional[dict] = None,
 ) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
@@ -1060,7 +1061,7 @@ def _build_cad_module_code(
                     _setq_off = _i.offset
             if _setq_off is not None:
                 bc = bc[:_setq_off] + b"\x0b" + bc[_setq_off:]
-        return _offset_slots(bc, len(symtab.entries), gvar_map=_gvar, symtab=_symtab)
+        return _offset_slots(bc, len(symtab.entries), gvar_map=_gvar, symtab=_symtab, real_map=real_map)
 
     def _emit_stmts(forms, last_no_pop: bool):
         """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。"""
@@ -1147,7 +1148,7 @@ def _is_empty_quote(node) -> bool:
     return isinstance(node, QuotedExpr) and isinstance(node.expr, ListExpr) and not node.expr.items
 
 
-def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None) -> bytes:
+def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: Optional[dict] = None) -> bytes:
     """把字节码中的符号槽引用 +1（CAD 模块代码用 gvar 槽 = 符号槽+1）。
 
     处理 PUSH_G(0x09)/PUSH_VALUE(0x03)/SETQ_G(0x06)/USUBR(0x35) 的符号槽。
@@ -1175,6 +1176,9 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None) -> bytes:
             _t, _v = symtab.entries[idx]
             if _t in ("SYMBOL", "STRING"):
                 return gvar_map.get(str(_v).upper())
+            if _t == "REAL" and real_map is not None:
+                # 实数常量：按值匹配资源段 REAL 槽（fg，与函数体 real_map 同基准）
+                return real_map.get(float(_v))
         return None
 
     out = bytearray()
@@ -1867,6 +1871,7 @@ def cmd_compile(
         # CAD 加载报"参数太少"。函数体用 fg（table1），模块代码用 rg（table0），
         # 两表独立（2026-08-14 对拍确认）。
         gvar_map = None
+        real_map = None
         try:
             from core.fas_core import build_mvar_tables as _bmt
 
@@ -1884,6 +1889,15 @@ def cmd_compile(
                             gvar_map[_key] = _idx
                     else:
                         gvar_map.setdefault(_key, _idx)
+            # 实数常量：模块代码顶层 setq 的 REAL 值按值匹配 fg 槽
+            # （与函数体 real_map 同基准；@lisp_u 顶层 `(setq @::*seconds-per-day*
+            # 86400.0)` 实测 fg[2604]，此前 fallback symtab_idx+1 越界 → CAD
+            # segfault 0xC0000005）。注意：fg 槽是函数 gvar 表索引，模块代码
+            # PUSH_G 是否可用需对拍——若 runtime 只用 table0，则此表仅供参考。
+            real_map = {}
+            for _idx, _v in enumerate(_fg):
+                if isinstance(_v, tuple) and len(_v) == 2 and _v[0] == "REAL":
+                    real_map.setdefault(float(_v[1]), _idx)
             if not gvar_map:
                 gvar_map = None
         except Exception:
@@ -1902,6 +1916,7 @@ def cmd_compile(
                 n_globals=_n_globals,
                 gvar_map=gvar_map,
                 top_lambda_slots=top_lambda_slots,
+                real_map=real_map,
             )
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args,
                             codegen_nsyms=codegen_nsyms,
