@@ -25,7 +25,7 @@ from asm.opcodes import (
     encode_eval,
     encode_real,
 )
-from decompiler.fas4_decompiler import is_compact_stub
+from decompiler.fas4_decompiler import is_compact_stub, use_short_subr
 
 
 def _fas_is_stub(fas) -> bool:
@@ -203,7 +203,7 @@ def _extract_functions(fas) -> List[Tuple[str, int]]:
         if stub_funcs:
             return stub_funcs
 
-    disassembler = Disassembler(short_subr=is_stub)
+    disassembler = Disassembler(short_subr=use_short_subr(fas.bytecode, fas.nsyms, fas.function_catalog, len(fas.symbol_slots)))
     insts = disassembler.disassemble(fas.bytecode, fas.nsyms,
                                      sym_count=len(fas.symbol_slots) if is_stub else None)
     funcs: List[Tuple[str, int]] = []

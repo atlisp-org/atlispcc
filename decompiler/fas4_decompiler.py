@@ -95,6 +95,19 @@ def is_compact_stub(bytecode: bytes, function_catalog: list, sym_count: int = 0)
     return _is_compact_stub_cached(bytes(bytecode), int(sym_count or 0), bool(function_catalog))
 
 
+def use_short_subr(bytecode: bytes, nsyms: int, function_catalog: list, sym_count: int = 0) -> bool:
+    """USUBR/FUNC 是否用 3 字节短格式。
+
+    紧凑 stub 格式下，小文件（nsyms<=256）用 3 字节 `35 <argc> <idx8>`；
+    大文件（nsyms>256）即使 compact stub 也用 5/6 字节宽格式
+    （`35 <argc> <idx16> <flags>`，与 codegen wide_subr = nsyms>256 一致）。
+    若大文件误用 short_subr=True，会把 5/6 字节 USUBR/FUNC/PUSH_VALUE
+    错位解析为 OP_1A/OP_1B/OP_38/OP_40/OP_10 等伪指令（@lisp_u nsyms=2667
+    实测 210 个伪指令）。
+    """
+    return is_compact_stub(bytecode, function_catalog, sym_count) and nsyms <= 256
+
+
 class Fas4Parser:
     def decode_text(self, raw: bytes) -> str:
         from core.fas_core import decode_fas_text
@@ -3109,15 +3122,12 @@ class Fas4Decompiler:
     def decompile(self, filepath: str, output_path: Optional[str] = None) -> str:
         parser = Fas4Parser()
         fas = parser.parse(filepath)
-        disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots)))
+        _stub = is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots))
+        disasm = Disassembler(short_subr=use_short_subr(fas.bytecode, fas.nsyms, fas.function_catalog, len(fas.symbol_slots)))
         instructions = disasm.disassemble(
             fas.bytecode,
             fas.nsyms,
-            sym_count=(
-                len(fas.symbol_slots)
-                if is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots))
-                else None
-            ),
+            sym_count=len(fas.symbol_slots) if _stub else None,
         )
         cf = ControlFlowAnalyzer(instructions, fas.function_catalog, function_names=extract_stub_function_names(fas))
         functions = cf.find_functions()

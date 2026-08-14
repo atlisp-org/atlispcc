@@ -72,6 +72,7 @@ def decompile_bytes(seg0, seg1, symtab) -> str:
         ControlFlowAnalyzer,
         LispGenerator,
         is_compact_stub,
+        use_short_subr,
     )
 
     fas_path = os.path.join(
@@ -84,7 +85,7 @@ def decompile_bytes(seg0, seg1, symtab) -> str:
         decomp_parser = Fas4Parser()
         fas = decomp_parser.parse(fas_path)
         disasm = Disassembler(
-            short_subr=is_compact_stub(fas.bytecode, fas.function_catalog)
+            short_subr=use_short_subr(fas.bytecode, fas.nsyms, fas.function_catalog)
         )
         instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
         cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)

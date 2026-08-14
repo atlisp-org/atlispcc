@@ -39,7 +39,7 @@ from compiler.fas_writer import FasWriter
 from compiler.analyzer import analyze
 from compiler.linker import link_fas
 from compiler.vlx_builder import build_vlx
-from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
+from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub, use_short_subr
 from tools.validate import validate_file
 
 ENCODE_POP = bytes([0x0A])
@@ -1941,7 +1941,7 @@ def cmd_compile(
 def cmd_decompile(source: str, output: str = "") -> str:
     parser_obj = Fas4Parser()
     fas = parser_obj.parse(source)
-    disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+    disasm = Disassembler(short_subr=use_short_subr(fas.bytecode, fas.nsyms, fas.function_catalog))
     instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
     cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
     functions = cfa.find_functions()

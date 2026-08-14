@@ -73,12 +73,13 @@ def build_from_fas(source: str) -> Dict:
         Disassembler,
         ControlFlowAnalyzer,
         is_compact_stub,
+        use_short_subr,
         extract_stub_function_names,
     )
 
     parser_obj = Fas4Parser()
     fas = parser_obj.parse(source)
-    disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+    disasm = Disassembler(short_subr=use_short_subr(fas.bytecode, fas.nsyms, fas.function_catalog))
     instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
     # 紧凑 stub 格式：从资源段 DEFCODE 绑定序列解析真实函数名（如 FIB），
     # 否则 find_functions 返回合成名（c:fn0），无法与调用目标匹配。
