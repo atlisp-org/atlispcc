@@ -391,7 +391,7 @@ nsyms = len(entries) - 模块注册符号数 + 1
 |------|-----------|----------------------|
 | 生成 | `stub_format=False` | `stub_format=True`（默认 CLI） |
 | seg0 END_DEFUN | 有（`16`） | 无（函数间 `16` 分隔，CLEAR_ARGS 由 codegen 生成） |
-| DEFUN 头 | `14 <gvar_ref:2> <offset:2>` | `14 <argc>x3 00`（变参 b4=01；循环函数 b1=argc+1） |
+| DEFUN 头 | `14 <gvar_ref:2> <offset:2>` | `14 <argc>x3 00`（变参 b4=01；循环函数 b1=argc+直接体并发循环深度） |
 | 符号寻址 | function_gvars 间接 | 符号槽直接（gvar 槽 = 符号槽 + 1，操作数 = gvar 槽 - 1） |
 | USUBR/FUNC | 5/6 字节 | 3 字节（小文件）；**nsyms>256 时 5/6 字节宽格式** |
 | GET_LOCAL | `05 <slot:1>` | `5c <slot:2>`（GET_LOCAL_WIDE） |

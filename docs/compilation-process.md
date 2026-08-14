@@ -266,7 +266,7 @@ wide_subr      = stub_format and nsyms > 256   # 大文件 5/6 字节 USUBR/FUNC
 |---|---|---|
 | `&rest` 无限参数 | `14 <min> <min> <min> 01` | b4=01，b1/b2/b3=最小必填参数数 |
 | `&optional` 有限可选 | `14 <max> <min> <max> 00` | b1=总参数，b2=必填，b3=max |
-| 普通定参 | `14 <argc> <argc> <argc> 00` | **含 foreach/repeat 时 b1=argc+1**（t16/t17 实测 `14 02 01 01 00`） |
+| 普通定参 | `14 <argc> <argc> <argc> 00` | **含 foreach/repeat 时 b1=argc+直接体并发循环深度**（单层 `14 02 01 01 00`；嵌套 2 层 `14 03 01 01 00`，嵌套 lambda/defun 内循环不计） |
 
 含循环检测由 `_ast_contains_loop(node)` 递归完成。
 

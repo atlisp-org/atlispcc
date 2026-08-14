@@ -940,9 +940,11 @@ class LispGenerator:
                     return False
                 a, b_, c, d = bc[off + 1], bc[off + 2], bc[off + 3], bc[off + 4]
                 # 有限参数：b1(参数+无名变量) == b3(大参数)；
-                # 含 foreach/repeat 的函数 b1 = argc + 1（循环占一个局部槽，t16/t17 实测）
+                # 含 foreach/repeat 的函数 b1 = argc + 1（循环占一个局部槽，t16/t17
+                # 实测）；直接体循环 + `/ 局部变量` 时 b1 = argc + 2（@lisp_u 实测
+                # add-menus `14 03 01 01 00`）。嵌套 lambda/defun 内循环不加。
                 if d == 0:
-                    if a not in (c, c + 1):
+                    if a not in (c, c + 1, c + 2):
                         return False
                 elif d == 1:
                     if not (a == b_ == c):
@@ -956,9 +958,9 @@ class LispGenerator:
                 a, b_, c, d = bc[i + 1], bc[i + 2], bc[i + 3], bc[i + 4]
                 if d == 0:
                     # 有限参数：b1(参数+无名变量) == b3(大参数)；含 foreach/repeat
-                    # 的函数 b1 = argc + 1（循环占一个局部槽，t16/t17 实测），
-                    # 与有目录分支保持一致。
-                    return a in (c, c + 1)
+                    # 的函数 b1 = argc + 1（t16/t17 实测），直接体循环+局部变量
+                    # b1 = argc + 2（@lisp_u 实测），与有目录分支保持一致。
+                    return a in (c, c + 1, c + 2)
                 if d == 1:
                     return a == b_ == c
                 return False

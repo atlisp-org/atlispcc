@@ -939,10 +939,21 @@ def _build_cad_module_code(
                         if v_idx is None:
                             break  # 复杂值 → 退回通用路径
                         if isinstance(value, Symbol):
-                            # 非引号符号值：CAD 用 PUSH_VALUE（setcmp
-                            # `(setq _ @::_)` 实测 `03 <槽+1>`）；字符串/引用
-                            # 符号（QuotedExpr）用 PUSH_G。
-                            pre += bytes([0x03]) + struct.pack("<H", _slot_gv(v_idx))
+                            # 非引号符号值：函数符号（函数别名 setq）CAD 用
+                            # PUSH_G（@lisp_u 实测 `(setq @::unschedule-task
+                            # @::string-to-list)` → `09 <槽>`）；普通变量用
+                            # PUSH_VALUE（setcmp `(setq _ @::_)` 实测
+                            # `03 <槽+1>`）。PUSH_VALUE 读函数槽得到 SUBR，
+                            # SETQ_G 绑定报"要绑定的对象不正确"。
+                            _vn = value.name
+                            _fns = symtab.function_offsets if hasattr(symtab, "function_offsets") else {}
+                            _is_func = _vn in _fns or _vn in set(func_names) or (
+                                _vn.lower() in {str(k).lower() for k in _fns}
+                            )
+                            if _is_func:
+                                pre += bytes([0x09]) + struct.pack("<H", _slot_gv(v_idx))  # PUSH_G
+                            else:
+                                pre += bytes([0x03]) + struct.pack("<H", _slot_gv(v_idx))  # PUSH_VALUE
                         else:
                             pre += bytes([0x09]) + struct.pack("<H", _slot_gv(v_idx))  # PUSH_G
                         v_ok = True
@@ -1822,7 +1833,10 @@ def cmd_compile(
     # 模块代码符号引用（USUBR/PUSH_G）的 `symtab_idx+1` 不再等于实际 gvar 槽，
     # 顶层函数调用会引用错误槽位（atlisp_u 实测 @::poll-wxid 应为 114 而非
     # 248）。用第一轮 seg1 重建 gvar 表，重映射符号引用后二次生成模块代码。
-    if n_cmds and other_forms:
+    # 凡含顶层表达式（defun+顶层混合或纯顶层）均需重映射——symtab_idx+1 只在
+    # 无顶层表达式时等于实际 gvar 槽（@lisp_u 无 c: 命令，n_cmds=0，此前被
+    # `n_cmds and other_forms` 跳过导致 in-package/函数槽错位，2026-08-14）。
+    if other_forms:
         # 模块代码符号引用须用 CAD 实际的 gvar 槽（= 模块注册段记录序，从 1
         # 连续），由 build_module_gvar_map 直接扫描模块注册段得到。不能用
         # build_mvar_tables 的 rg/fg 表：其 GVARINIT 槽位基准与 CAD 布局不同

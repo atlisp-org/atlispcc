@@ -402,12 +402,11 @@ class ResourceBuilder:
             # kwote 内嵌 `-lambda-`：不作为模块注册函数名，仅参与函数目录。
             module_func_names = [k for k in func_names_all if func_offsets.get(k) not in nested_offs]
             func_names_all = module_func_names
-            # 模块注册函数数 = 模块尾块 defun 数（cli 传入；CAD 只把模块代码
-            # 引用的尾块函数名注册进模块注册段，其余库函数名经函数体符号区
-            # 注册）。>0 时 func_names_all 裁剪到尾块（源码逆序，最后
-            # module_func_count 个）；=0 时全部函数进模块注册（纯函数/小文件）。
-            if module_func_count > 0:
-                func_names_all = func_names_all[-module_func_count:]
+            # 模块注册：全部 defun 名 + 顶层表达式符号（CAD @lisp_u 实测
+            # 模块注册 1339 个名字/544 函数，非"尾块 48"）。module_func_count
+            # 截断（7beeddf 引入）据错误的"CAD 只注册 48 个"假设，导致其余
+            # 函数不在模块注册段、模块代码 USUBR 引用错槽位 → CAD 加载报
+            # "no function definition: nil"。已移除。
             # CAD 模块注册：函数名（源码逆序）+ 顶层表达式符号，连续 SYMBOL 合并，
             # 遇 STRING 分块；PUSH_NIL + GVARINIT。
             module_entries = entries[: len(func_names_all) + top_level_count]

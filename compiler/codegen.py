@@ -145,6 +145,35 @@ def _ast_contains_loop(node) -> bool:
     return False
 
 
+def _direct_loop_depth(node, depth: int = 0) -> int:
+    """直接体中 foreach/repeat 的**最大并发嵌套深度**。
+
+    CAD 的 DEFUN 头 b1 = argc + 此深度（每个并发循环占一个列表局部槽）：
+    - sum-foreach（1 层）→ b1=argc+1（t16 实测）
+    - add-menus/remove-pkg-menu/cache-clear-all（嵌套 2 层）→ b1=argc+2
+    - dbclicked（2 个并列循环）→ b1=argc+1
+    - 循环在 lambda/defun/quoted 内 → 不计（b1=argc）
+    """
+    if isinstance(node, (ForeachNode, RepeatNode)):
+        d = depth + 1
+        for val in vars(node).values():
+            d = max(d, _direct_loop_depth(val, depth + 1))
+        return d
+    if isinstance(node, (LambdaNode, Defun, QuotedExpr)):
+        return depth  # 独立函数作用域，不穿透
+    if isinstance(node, Node):
+        d = depth
+        for val in vars(node).values():
+            d = max(d, _direct_loop_depth(val, depth))
+        return d
+    if isinstance(node, (list, tuple)):
+        d = depth
+        for it in node:
+            d = max(d, _direct_loop_depth(it, depth))
+        return d
+    return depth
+
+
 class BytecodeBuffer:
     def __init__(self):
         self.data = bytearray()
@@ -306,6 +335,11 @@ class CodeGenerator:
         finally:
             self._in_stmt_ctx = saved
 
+    def _is_function_symbol(self, name: str) -> bool:
+        """符号是否为本文件定义的函数（模块代码函数别名 setq 用 PUSH_G 判定）。"""
+        fo = getattr(self.symtab, "function_offsets", None) or {}
+        return name in fo or name.lower() in {str(k).lower() for k in fo}
+
     def _emit_stmt(self, buf: BytecodeBuffer, node: Node):
         """在语句上下文（值被丢弃）中发射一条表达式。
 
@@ -370,7 +404,13 @@ class CodeGenerator:
                         idx = self.symtab.get_or_add(name)
                 else:
                     idx = self.symtab.get_or_add(name)
-                buf.emit(encode_op_u16(PUSH_VALUE, idx))
+                # 模块代码中函数符号的"值读取"（如 `(setq alias @::func)` 的
+                # RHS）：CAD 用 PUSH_G（@lisp_u 实测），PUSH_VALUE 会读到函数槽
+                # 的 SUBR，SETQ_G 绑定报"要绑定的对象不正确"（2026-08-14）。
+                if self._module_mode and self._is_function_symbol(name):
+                    buf.emit(encode_op_u16(PUSH_G, idx))
+                else:
+                    buf.emit(encode_op_u16(PUSH_VALUE, idx))
             elif name in self.local_slots:
                 slot = self.local_slots[name]
                 if slot < 256:
@@ -1250,8 +1290,12 @@ class CodeGenerator:
                 buf.emit(bytes([0x14, total & 0xFF, argc & 0xFF, total & 0xFF, 0]))
             else:
                 # 普通定参函数：b1=总参数(=argc)，b2/b3=argc。
-                # CAD 对含 foreach/repeat 的函数 b1 加 1（t16/t17 实测 `14 02 01 01 00`）。
-                b1 = argc + (1 if _ast_contains_loop(func) else 0)
+                # CAD 对含 foreach/repeat 的函数 b1 加 1（t16/t17 实测
+                # `14 02 01 01 00`）；直接体并发循环深度（嵌套 2 层 → +2，
+                # add-menus/remove-pkg-menu/cache-clear-all 实测 `14 03 01 01 00`）；
+                # 嵌套 lambda/defun 内的循环不加（@lisp_u error-handler/
+                # screensize 实测）。
+                b1 = argc + _direct_loop_depth(func.body)
                 buf.emit(bytes([0x14, b1 & 0xFF, argc & 0xFF, argc & 0xFF, 0]))
             return
         idx = self.symtab.idx_of(func.name) or self.symtab.get_or_add(normalize_vla_name(func.name))

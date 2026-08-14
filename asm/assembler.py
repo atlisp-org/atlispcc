@@ -57,8 +57,9 @@ def _detect_compact(fas) -> bool:
             a, b_, c, d = bc[off + 1], bc[off + 2], bc[off + 3], bc[off + 4]
             if d == 0:
                 # 普通紧凑：`14 <argc>x3`；foreach/repeat/内嵌 -lambda-：
-                # `14 <argc+1> <argc> <argc>`（b1=argc+1）。
-                if not (a == b_ == c or (b_ == c and a == c + 1)):
+                # `14 <argc+1> <argc> <argc>`（b1=argc+1）；直接体循环+`/ 局部变量`
+                # b1=argc+2（@lisp_u add-menus 实测 `14 03 01 01 00`）。
+                if not (a == b_ == c or (b_ == c and a in (c + 1, c + 2))):
                     return False
             elif d == 1:
                 if not (a == b_ == c):
