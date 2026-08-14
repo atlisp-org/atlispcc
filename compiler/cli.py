@@ -1566,6 +1566,7 @@ def cmd_compile(
     # （高槽位）会严重高估（atlisp_u 实测 3036 vs 实际 342），导致模块代码
     # 函数注册 `PUSH_G b` 槽超出 gvar 表、CAD 不执行模块代码。
     from compiler.cad_symbols import module_reg_count as _mrc
+    from compiler.cad_symbols import module_reg_func_count as _mrfc
 
     if defun_forms:
         # 模块注册区 = n_funcs + top_level_count。由收集器 _register_module
@@ -1724,6 +1725,9 @@ def cmd_compile(
     # 函数符号槽编址），故 seg0 的 PUSH_VALUE 索引保持不变。
     n_cmds = 1 if any(getattr(f, "is_command", False) or str(f.name).startswith("c:") for f in defun_forms) else 0
     resource = ResourceBuilder(symtab, encoding=encoding)
+    # 模块注册函数数 = 模块尾块 defun 数（CAD 只把模块代码引用的尾块函数名
+    # 注册进模块注册段；atlisp_u 48，其余 416 个库函数名经函数体符号区注册）。
+    _mr_func_count = _mrfc(program)
     module_reg_count = len(defun_forms) + top_level_count
     fas_nsyms = len(symtab.entries) - module_reg_count + 1
     # 纯顶层文件含顶层 `-lambda-`（CAD 把内嵌 SUBR 当函数注册，nsyms 含它）。
@@ -1802,15 +1806,21 @@ def cmd_compile(
             all_func_args.append(la)
 
     # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
+    # commands 标志：仅纯命令文件（无顶层表达式，走 build_command_module_code）
+    # 用 per-命令 5b 块 + vl-ACAD-defun；commands+顶层混合模式（_build_cad_
+    # module_code）模块注册段用标准 module_entries 顺序（CAD atlisp_u 实测
+    # 65 项无 vl-ACAD-defun 前置）。
+    _rb_commands = n_cmds if not other_forms else 0
     seg1 = resource.build(
         func_offsets,
         module_code=module_code,
         total_size=len(seg0) + 1,
         stub_format=True,
         top_level_count=top_level_count,
-        commands=n_cmds,
+        commands=_rb_commands,
         nested_ends=nested_ends,
         top_lambda_body_syms=([_lam.body[-1].name for _, _lam in top_lambda_binds] if top_lambda_binds else None),
+        module_func_count=_mr_func_count,
     )
     # commands + 顶层混合模式：模块注册把函数名逆序置前、顶层符号在后，
     # 模块代码符号引用（USUBR/PUSH_G）的 `symtab_idx+1` 不再等于实际 gvar 槽，
@@ -1856,9 +1866,10 @@ def cmd_compile(
         total_size=len(seg0) + 1,
         stub_format=True,
         top_level_count=top_level_count,
-        commands=n_cmds,
+        commands=_rb_commands,
         nested_ends=nested_ends,
         top_lambda_body_syms=([_lam.body[-1].name for _, _lam in top_lambda_binds] if top_lambda_binds else None),
+        module_func_count=_mr_func_count,
     )
     sec2_items = count_resource_records(seg1)
     # 确保 items 与 CAD 编译器一致。CAD 的 items 语义：

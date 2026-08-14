@@ -3,6 +3,16 @@ from typing import List, Dict, Any, Tuple, Optional
 from core.fas_core import get_ansi_encoding
 from compiler.symbol_table import SymbolTable
 
+# VLISP 内建/关键字符号：CAD 保留特定大小写（AutoCAD 实测 @lisp_u golden）。
+# 这些符号在资源段不统一大写（AutoLISP 大小写不敏感规则对它们例外）。
+_VLISP_CASE_PRESERVE = {
+    ":vlax-false", ":vlax-true",
+    ":VLR-beginDoubleClick", ":VLR-unknownCommand",
+    "VLR-Add", "VLR-Command-Reactor", "VLR-Mouse-Reactor", "VLR-Remove",
+    "VLAX-FOR", "vlax-3d-point",
+    "end", "showhtmlmodalwindow", "sort", "startapp",
+}
+
 
 def resolve_encoding(enc: Optional[str]) -> str:
     """将 'ansi'/'auto'/'system' 解析为实际编码。"""
@@ -242,6 +252,13 @@ class ResourceBuilder:
         # （base-function CAD 实测 `(command ...)` → 符号槽 `ads-cmd`）。
         if s.lower() == "command":
             return b"ads-cmd"
+        # VLISP 内建/关键字符号保留 CAD 特定大小写（:vlax-false/:VLR-*/VLAX-FOR/
+        # vlax-3d-point/startapp 等，@lisp_u golden 实测）。按小写匹配，用 CAD
+        # 规范形式。优先于 vla-/vlax- 分支（VLAX-FOR 需大写、vlax-3d-point
+        # 需小写，均与源码大小写不同）。
+        for _canon in _VLISP_CASE_PRESERVE:
+            if s.lower() == _canon.lower():
+                return _canon.encode(self.encoding, errors="replace")
         if s.lower().startswith(("vla-", "vlax-")):
             return s.encode(self.encoding, errors="replace")
         return s.upper().encode(self.encoding, errors="replace")
@@ -274,6 +291,7 @@ class ResourceBuilder:
         commands: int = 0,
         nested_ends: Optional[Dict[int, int]] = None,
         top_lambda_body_syms: object = None,
+        module_func_count: int = 0,
     ) -> bytes:
         """构建与 AutoCAD 编译器一致的 seg1 资源流。
 
@@ -386,6 +404,12 @@ class ResourceBuilder:
             # kwote 内嵌 `-lambda-`：不作为模块注册函数名，仅参与函数目录。
             module_func_names = [k for k in func_names_all if func_offsets.get(k) not in nested_offs]
             func_names_all = module_func_names
+            # 模块注册函数数 = 模块尾块 defun 数（cli 传入；CAD 只把模块代码
+            # 引用的尾块函数名注册进模块注册段，其余库函数名经函数体符号区
+            # 注册）。>0 时 func_names_all 裁剪到尾块（源码逆序，最后
+            # module_func_count 个）；=0 时全部函数进模块注册（纯函数/小文件）。
+            if module_func_count > 0:
+                func_names_all = func_names_all[-module_func_count:]
             # CAD 模块注册：函数名（源码逆序）+ 顶层表达式符号，连续 SYMBOL 合并，
             # 遇 STRING 分块；PUSH_NIL + GVARINIT。
             module_entries = entries[: len(func_names_all) + top_level_count]

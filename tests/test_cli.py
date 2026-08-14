@@ -399,3 +399,86 @@ def test_compile_symbol_string_collision():
     finally:
         if os.path.exists(out):
             os.unlink(out)
+
+
+def _module_reg_names(fas):
+    """从解密 seg1 中提取模块注册段名字序列（`5b`/`56`/`55` 块直到模块
+    GVARINIT `01 01`）。@lisp 综合包混合模式（defun + 命令 + 顶层表达式）
+    如何被编译进 seg1 模块注册段的核心结构信号。"""
+    from core.fas_core import parse_fas4
+
+    res = parse_fas4(fas)['res_data_decrypted']
+    # 模块注册段以 `5b @::INIT`（atlisp_u）或首个大写 `5b` 块开头。
+    start = res.find(bytes([0x5B, 0x40, 0x3A, 0x3A, 0x49, 0x4E, 0x49, 0x54]))
+    if start < 0:
+        return []
+    i, protect = start, 0
+    names = []
+    while i < len(res) and protect < 12000:
+        protect += 1
+        b = res[i]
+        if b == 0x5B:
+            k = i + 1
+            while True:
+                z = res.index(0, k)
+                if z == k:
+                    break
+                names.append(res[k:z].decode('latin1'))
+                k = z + 1
+                if k >= len(res) or res[k] == 0:
+                    break
+            i = k + 1
+            if i < len(res) and res[i] == 0x00:
+                i += 1
+            continue
+        elif b == 0x56:
+            z = res.index(0, i + 1)
+            names.append(res[i + 1:z].decode('latin1'))
+            i = z + 2
+            continue
+        elif b == 0x55:
+            cnt = int.from_bytes(res[i + 1:i + 3], 'little')
+            k = i + 3
+            for _ in range(cnt):
+                ln = int.from_bytes(res[k:k + 2], 'little')
+                k += 2 + ln
+            i = k
+            continue
+        elif b == 0x01 and i + 1 < len(res) and res[i + 1] == 0x01:
+            break
+        else:
+            break
+    return names
+
+
+def test_compile_atlisp_u_module_reg_bounded():
+    """回归：atlisp_u 混合模式（476+ 函数 + 命令 + 顶层表达式）的 seg1 模块
+    注册段只含"模块代码引用函数 + 命令 + 顶层符号"，不得把全部函数
+    名登记进模块注册段（CAD @lisp_u.fas 实测模块注册 65 个名字，CC 61；
+    修复前 518）。func_names_all 按模块尾块截断，其余函数经函数体符号区
+    注册（2026-08-14 修复，逆向确认 CAD 规则：模块注册 = 最后一个顶层
+    模块级 setq 之后的 defun）。"""
+    from core.fas_core import parse_fas4
+
+    src = os.path.join('tests', 'atlisp_u.lsp')
+    if not os.path.exists(src):
+        pytest.skip('missing atlisp_u.lsp fixture')
+    out = _tmp('atlisp_u.fas')
+    try:
+        cmd_compile(src, out)
+        mod_names = _module_reg_names(out)
+        assert mod_names, '模块注册段应为空或解析失败'
+        # 命令 + 顶层引用函数必须注册（CAD 一致）
+        assert 'C:@DIAG' in mod_names or any(n.startswith('C:') for n in mod_names)
+        assert any(n.startswith('@::INIT') for n in mod_names)
+        # 核心回归：模块注册段不得膨胀为全部函数名的 5b 链。
+        # CAD @lisp_u.fas 实测 65 个名字（init 链 + 命令 + 配置符号 +
+        # RANGE 常量），CC 修复后 61。阈值取 <100，防止膨胀为全部函数名。
+        assert len(mod_names) < 100, (
+            f'module registration ballooned to {len(mod_names)} names; '
+            'CAD only registers module-code-referenced funcs + commands + '
+            'top-level symbols, not all defuns'
+        )
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)

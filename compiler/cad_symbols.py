@@ -55,6 +55,33 @@ _VLA_METHOD_MAP = {
     "vla-update": "vla-Update",
 }
 
+# `vla-get-*`/`vla-put-*` 多词方法名 → CAD 规范 CamelCase（AutoCAD ActiveX
+# 属性名；@lisp_u CAD golden 实测：modelspace→ModelSpace、insertionpoint→
+# InsertionPoint、objectname→ObjectName、textstyles→TextStyles，而
+# linetypes→Linetypes、viewports→Viewports 保持 CAD 原生写法）。键为小写
+# 方法名（不含前缀），值含前缀的规范形式。
+_VLA_GET_PROP_MAP = {
+    "modelspace": "vla-get-ModelSpace",
+    "paperspace": "vla-get-PaperSpace",
+    "insertionpoint": "vla-get-InsertionPoint",
+    "objectname": "vla-get-ObjectName",
+    "startpoint": "vla-get-StartPoint",
+    "endpoint": "vla-get-EndPoint",
+    "textstring": "vla-get-TextString",
+    "textstyles": "vla-get-TextStyles",
+    "dimstyles": "vla-get-DimStyles",
+    "menubar": "vla-get-MenuBar",
+    "menugroups": "vla-get-MenuGroups",
+    "activedocument": "vla-get-ActiveDocument",
+    "linetypes": "vla-get-Linetypes",
+    "viewports": "vla-get-Viewports",
+}
+# `vla-put-*` 变体：同一属性名（去掉前缀后）映射到 vla-put- 前缀。
+_VLA_PUT_PROP_MAP = {
+    k: "vla-put-" + v[len("vla-get-"):]
+    for k, v in _VLA_GET_PROP_MAP.items()
+}
+
 
 def normalize_vla_name(name):
     """规范化 vla- 前缀的 ActiveX 方法符号名（AutoCAD 24.1s 实测）。
@@ -71,6 +98,13 @@ def normalize_vla_name(name):
     for prefix in ("vla-get-", "vla-put-", "vla-call-", "vla-add-", "vla-insert-"):
         if name.lower().startswith(prefix):
             method = name[len(prefix):]
+            # 多词属性名用 CAD 规范 CamelCase 表（modelspace→ModelSpace 等）；
+            # 不在表中时首字母大写（count→Count）。
+            if prefix in ("vla-get-", "vla-put-"):
+                low = method.lower()
+                prop_map = _VLA_GET_PROP_MAP if prefix == "vla-get-" else _VLA_PUT_PROP_MAP
+                if low in prop_map:
+                    return prop_map[low]
             if method and method[0].islower():
                 return prefix + method[0].upper() + method[1:]
             return name
@@ -292,6 +326,9 @@ class CadSymbolCollector:
         # 应由它推导而非 `max(顶层符号槽)+1-n_funcs`——后者在顶层表达式引用
         # 函数体符号（高槽位）时会严重高估（atlisp_u 实测 3036 vs 实际 342）。
         self.module_reg_count = 0
+        # 模块注册函数名数（模块尾块 defun 数；CAD 只把模块代码引用的尾块
+        # 函数名注册进模块注册段，其余库函数名经函数体符号区注册）。
+        self.module_reg_func_count = 0
 
     def add(self, name, force=False):
         if is_const_entry(name):
@@ -556,6 +593,32 @@ class CadSymbolCollector:
                 self.add(loc)
         return self.names
 
+    def _module_tail_boundary(self, program) -> int:
+        """模块尾块边界：最后一个"模块初始化"顶层 setq 的 form 索引。
+
+        CAD 把模块尾块（module code 引用的函数：init 链 + 命令 + sync 组）
+        的函数名注册进模块注册段，之前的"库函数"仅经函数体符号区注册
+        （atlisp_u 实测模块注册 = 源 defun 索引 416-463 = `(setq @::*sync-files*'
+        ...)` 之后的全部 defun；i18n = `(setq @::*codepage* (vl-catch-all-apply
+        ...))` 之后的 defun）。判定信号 = 顶层 setq 的值非平凡（引号/列表/
+        调用/非 nil 符号）——纯 nil 的 `(setq x nil)` 不构成模块初始化边界。
+        纯函数文件（无顶层 setq）返回 -1，即全部 defun 进模块注册。
+        """
+        last = -1
+        for i, form in enumerate(program.forms):
+            if isinstance(form, Setq):
+                for _t, value in form.pairs:
+                    if isinstance(value, QuotedExpr):
+                        last = i
+                        break
+                    elif isinstance(value, Call):
+                        last = i
+                        break
+                    elif isinstance(value, Symbol) and value.name not in ("nil", "T"):
+                        last = i
+                        break
+        return last
+
     def _register_module(self, program):
         """模块注册域：按源码逆序逐 form 交错注册（defun 与顶层表达式均参与）。
 
@@ -567,16 +630,25 @@ class CadSymbolCollector:
         之前）。纯函数文件（无顶层）退化为"函数名逆序"。
         顶层 form 里的用户函数名调用（force=True）不另发槽——并入 defun
         槽（p04 实测 form4 调用 @::codepage2lang 不占顶层组）。
+
+        模块注册 defun 名限定到"模块尾块"（_module_tail_boundary 之后）：
+        CAD 只把模块代码引用的函数名注册进模块注册段（atlisp_u = 尾块 48
+        个 defun），之前的库函数名仅经函数体符号区注册（否则模块注册段
+        膨胀为全部函数名，golden 字节不一致）。
         """
         # InPackage `(in-package :@)`：CAD 在模块代码发射
         # `PUSH_VALUE :@; FUNC_REF in-package`，符号 `in-package`/`:@` 也注册进
         # 模块注册域（base-function/platform-api 实测 IN-PACKAGE/:@ 槽位紧跟
         # use-package 的 :AUTOLISP 之后）。插入源码原位参与逆序注册。
+        module_boundary = self._module_tail_boundary(program)
         forms_all = []
         for f in program.forms:
             if isinstance(f, (Defpackage, InPackage)):
-                if isinstance(f, InPackage):
-                    forms_all.append(f)
+                # Defpackage `(defpackage :theme (:use :cl) (:export :bg-color))`：
+                # CAD 注册名字/use/export 符号进模块注册段（atlisp_u 实测
+                # :BG-COLOR/:THEME 紧跟顶层 set 符号、命令之前；:C 包的
+                # export 别名在命令之后）。InPackage 同前保留。
+                forms_all.append(f)
             else:
                 forms_all.append(f)
         n = len(forms_all)
@@ -587,6 +659,10 @@ class CadSymbolCollector:
                 t.add(form.name)
             elif isinstance(form, InPackage):
                 r.update(("in-package", form.name))
+            elif isinstance(form, Defpackage):
+                r.add(form.name)
+                r.update(form.use or [])
+                r.update(form.export or [])
             else:
                 self._form_read_target(form, r, t, set())
             reads.append(r)
@@ -614,12 +690,31 @@ class CadSymbolCollector:
             return -1
 
         module_seen = set()
+        module_funcs = 0
         for i in reversed(range(n)):
             form = forms_all[i]
             if isinstance(form, Defun):
+                # 模块尾块（_module_tail_boundary 之后）的 defun 名注册进模块
+                # 注册段；之前的库函数名仍注册符号槽（保留名字可调用），但
+                # 由 resource_builder 的 module_func_count 截断不落模块注册
+                # 块（经函数体符号区注册）。
                 if _owner_of(form.name) == i and form.name not in module_seen:
                     module_seen.add(form.name)
                     self.add(form.name)
+                    if i >= module_boundary:
+                        module_funcs += 1
+            elif isinstance(form, (Defpackage, InPackage)):
+                # Defpackage/InPackage：注册符号（InPackage 注册 in-package +
+                # 包名）。Defpackage 按 CAD 模块代码引用序：export 符号先
+                # （PUSH_VALUE <export>… DEFPACKAGE），use 包次之，名字最后
+                # （atlisp_u 实测 :BG-COLOR/:THEME 顺序、:C 包 export 逆序）。
+                for s in (("in-package", form.name) if isinstance(form, InPackage)
+                          else ([(e, False) for e in reversed(form.export or [])]
+                                + [(u, False) for u in (form.use or [])]
+                                + [(form.name, False)])):
+                    if _owner_of(s[0]) == i and s[0] not in module_seen:
+                        module_seen.add(s[0])
+                        self.add(s[0])
             else:
                 form_refs = _SeenList()
                 self._collect_byteorder(form, form_refs, set())
@@ -641,6 +736,7 @@ class CadSymbolCollector:
                     elif name not in module_seen:
                         module_seen.add(name)
                         self.add(name, force=force)
+        self.module_reg_func_count = module_funcs
 
     def _form_read_target(self, node, reads, targets, arg_names, in_quote=False):
         """收集 form 的 读(value)/setq目标(target) 符号集合（模块归属用）。"""
@@ -991,3 +1087,16 @@ def module_reg_count(program) -> int:
     coll = CadSymbolCollector()
     coll.collect_program(program)
     return coll.module_reg_count
+
+
+def module_reg_func_count(program) -> int:
+    """模块注册域函数名数（模块尾块 defun 数）。
+
+    CAD 只把模块代码引用的尾块函数名注册进模块注册段（atlisp_u = 48，
+    i18n = 8），其余库函数名经函数体符号区注册。cli 用它传给
+    resource_builder 的 module_func_count，截断模块注册块的函数名；
+    codegen/top_level_count 仍按全部 defun 数（len(defun_forms)）计算。
+    """
+    coll = CadSymbolCollector()
+    coll.collect_program(program)
+    return coll.module_reg_func_count
