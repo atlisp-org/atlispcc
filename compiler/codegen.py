@@ -404,13 +404,7 @@ class CodeGenerator:
                         idx = self.symtab.get_or_add(name)
                 else:
                     idx = self.symtab.get_or_add(name)
-                # 模块代码中函数符号的"值读取"（如 `(setq alias @::func)` 的
-                # RHS）：CAD 用 PUSH_G（@lisp_u 实测），PUSH_VALUE 会读到函数槽
-                # 的 SUBR，SETQ_G 绑定报"要绑定的对象不正确"（2026-08-14）。
-                if self._module_mode and self._is_function_symbol(name):
-                    buf.emit(encode_op_u16(PUSH_G, idx))
-                else:
-                    buf.emit(encode_op_u16(PUSH_VALUE, idx))
+                buf.emit(encode_op_u16(PUSH_VALUE, idx))
             elif name in self.local_slots:
                 slot = self.local_slots[name]
                 if slot < 256:
@@ -635,7 +629,20 @@ class CodeGenerator:
     def _emit_setq_expr(self, buf: BytecodeBuffer, target: Node, value: Node):
         if isinstance(target, Symbol):
             with self._value_ctx():
-                self._emit_expr(buf, value)
+                if (
+                    self._module_mode
+                    and isinstance(value, Symbol)
+                    and self._is_function_symbol(normalize_vla_name(value.name))
+                ):
+                    # 模块代码中 setq 值 = 函数符号：CAD 用 PUSH_G（@lisp_u
+                    # 调度器别名 `(setq @::unschedule-task @::string-to-list)`
+                    # 实测 `09 <槽>`）。PUSH_VALUE 读函数槽得 SUBR，SETQ_G
+                    # 绑定报"要绑定的对象不正确"。`set` 函数的值仍用 PUSH_VALUE
+                    # （CAD compat 别名 `(set 'type-of cl::type-of)` 实测）。
+                    _idx = self.symtab.get_or_add(normalize_vla_name(value.name))
+                    buf.emit(encode_op_u16(PUSH_G, _idx))
+                else:
+                    self._emit_expr(buf, value)
             if self.stub_format:
                 if self._in_tail_context:
                     buf.emit(encode_op_noarg(DUP))
