@@ -278,6 +278,14 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
     - 参数绑定按名解析（`symtab.function_offsets` offset→name），弃用全局
       func_iter 顺序对齐（大文件 kwote lambda 收集与 -lambda- 生成数不匹配
       致 iter 错位，@::load-locale 参数被错配为他函数参数）
+    - **模块代码 REAL 常量内联 PUSH_REAL**（`(setq @::*seconds-per-day*
+      86400.0)` 等）：atlispcc 实数注册在 fg 表，模块代码(rg 上下文)读不到，
+      引用越界/空值错；setq 值 = REAL 时内联 `3b <_real_fmt> 00`（补 ".0"）。
+      CAD 用 rg 槽引用，但内联保证值正确（@::timestamp 恢复正常）
+    - **KNOWN_ISSUES**：混合文件顶层 `(setq X (lambda ...))` 的 `-lambda-`
+      SUBR 未实现（复杂 lambda 体需完整参数/USUBR 槽修正）；@lisp_u 的
+      @::fasext/@::vlx 绑定为引用数据 LIST（CAD 为可调用 SUBR），调用报
+      "函数错误: (LAMBDA ...)"——不影响加载，纯顶层文件（bootstrap 等）正常
 - i18n 混合模式拆件 p01-p07 全部 byte-identity（`tests/cad/i18n_split/`，seg0+seg1+nsyms
   对齐 CAD golden，2026-08-06）✅
   - p04-p07 关键修复：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）；

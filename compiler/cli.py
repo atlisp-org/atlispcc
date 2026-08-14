@@ -901,7 +901,7 @@ def _build_cad_module_code(
         CAD 以其求值结果作为模块代码的返回值——此时 form 内部的尾 setq
         （如 if-then 分支最后一句）需按尾上下文编译（补 DUP，p04 实测）。
         """
-        from compiler.ast_nodes import Symbol, String as _Str, Integer as _Int
+        from compiler.ast_nodes import Symbol, String as _Str, Integer as _Int, Real as _Real
 
         # gvar_map（二次生成）时：模块代码符号引用按资源流实际 gvar 槽重映射。
         _gvar = gvar_map
@@ -955,6 +955,17 @@ def _build_cad_module_code(
                         else:
                             # 超出 int32 范围：codegen 会按 REAL 编码，退回通用路径
                             break
+                        v_ok = True
+                    elif isinstance(value, _Real):
+                        # 实数常量：内联 PUSH_REAL `3b <ascii> 00`。CAD 用资源
+                        # gvar 表(rg)槽引用，但 atlispcc 实数注册在函数 gvar
+                        # 表(fg)——模块代码(rg 上下文)读不到，此前引用越界/空值错
+                        # （@::*seconds-per-day* 应为 86400.0）。内联保证值正确；
+                        # 用 _real_fmt 补 ".0"（整数值 86400.0 → "86400.0"，
+                        # 否则 CAD 按 fixnum 解析报"不适合 fixnum"）。
+                        from compiler.resource_builder import _real_fmt as _rf
+
+                        pre += b"\x3b" + _rf(float(value.value)).encode("ascii") + b"\x00"
                         v_ok = True
                     else:
                         v_idx = _slot_of(symtab, value)
@@ -1472,15 +1483,13 @@ def cmd_compile(
     program.forms = _hoist_conditional_defuns(program.forms)
     # 嵌套 defun（`(defun f () (defun g () ...))`）改写为 `(setq g '(lambda ...))`
     program.forms = _lower_nested_defuns(program.forms)
-    # 顶层 `(set/setq 'sym (lambda ...))`：CAD 用内嵌 `-lambda-` SUBR（seg0 紧凑
-    # stub + DEFCODE 注册为可调用函数），模块代码
-    # ``PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set``。有 defun 的混合文件
-    # 同样适用（@lisp_u 实测 @::fasext/@::vlx 顶层 lambda 在 CAD 为 SUBR 可调用，
-    # 此前被 `not _defuns_now` 跳过 → atlispcc 产物绑定为引用数据 LIST，
-    # `(@::fasext ...)` 报"函数错误: (LAMBDA ...)"）。改写为 kwote 标记使符号
-    # 收集跳过 lambda CONST（否则产生 `LAMBDA` 槽，CAD 无此槽）。
+    # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：CAD 用内嵌 `-lambda-`
+    # SUBR（seg0 紧凑 stub + DEFCODE 注册为可调用函数），模块代码
+    # ``PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set``。有 defun 的混合
+    # 文件 CAD 用引用数据，不改写（@lisp_u @::fasext 顶层 lambda 的 -lambda-
+    # stub 体含复杂调用需完整参数/USUBR 槽修正，暂未支持，见 KNOWN_ISSUES）。
     _defuns_now = [f for f in program.forms if isinstance(f, Defun)]
-    top_lambda_binds = _collect_top_lambda_binds(program.forms)
+    top_lambda_binds = _collect_top_lambda_binds(program.forms) if not _defuns_now else []
     if top_lambda_binds:
         program.forms = _rewrite_top_lambda_binds(program.forms)
     # 多 `(function (lambda ...))`（>1）走 CAD kwote 原生路径：每个 kwote 编译为
