@@ -102,8 +102,9 @@ def use_short_subr(bytecode: bytes, nsyms: int, function_catalog: list, sym_coun
     大文件（nsyms>256）即使 compact stub 也用 5/6 字节宽格式
     （`35 <argc> <idx16> <flags>`，与 codegen wide_subr = nsyms>256 一致）。
     若大文件误用 short_subr=True，会把 5/6 字节 USUBR/FUNC/PUSH_VALUE
-    错位解析为 OP_1A/OP_1B/OP_38/OP_40/OP_10 等伪指令（@lisp_u nsyms=2667
-    实测 210 个伪指令）。
+    错位解析出大量 `UNK_xx`（@lisp_u nsyms=2667 实测 210 个）。
+    （早期此错位会表现为 OP_1A/OP_1B/OP_38/OP_40/OP_10 等伪指令，
+    已从 OPCODES 表移除，现一律归入 UNK_。）
     """
     return is_compact_stub(bytecode, function_catalog, sym_count) and nsyms <= 256
 
@@ -161,7 +162,9 @@ class Fas4Parser:
                     items.append(item)
                     items_with_offsets.append((pos - len(sym_name) - 1, item))
             elif op == 0x43:
-                pos += 1
+                # GVARINIT `43 <var_pos:2> <st_init:2>`：5 字节整体跳过，
+                # 避免操作数字节（如 st_init=26 → `1a 00`）被误当 OP_1A 伪指令。
+                pos += 5
             elif op in (0x34, 0x35, 0x51):
                 pos += 2
                 if op in (0x35, 0x51) and pos + 2 <= len(res_data):
@@ -203,7 +206,7 @@ class Fas4Parser:
                     break
             elif op == 0x3A:
                 pos += 1
-            elif op in (0x09, 0x03, 0x06, 0x1A, 0x1B, 0x0C, 0x5E, 0x05, 0x5C, 0x5D):
+            elif op in (0x09, 0x03, 0x06, 0x0C, 0x5E, 0x05, 0x5C, 0x5D):
                 pos += 1
                 if pos + 2 <= len(res_data):
                     idx = struct.unpack("<H", res_data[pos : pos + 2])[0]
@@ -211,7 +214,7 @@ class Fas4Parser:
                     item = ("OP_" + hex(op), idx)
                     items.append(item)
                     items_with_offsets.append((start, item))
-            elif op in (0x0A, 0x01, 0x02, 0x16, 0x1C, 0x23, 0x24, 0x0B, 0x10):
+            elif op in (0x0A, 0x01, 0x02, 0x16, 0x1C, 0x23, 0x24, 0x0B):
                 item = ("OP_" + hex(op),)
                 items.append(item)
                 items_with_offsets.append((start, item))
@@ -232,7 +235,7 @@ class Fas4Parser:
                     item = ("OP_" + hex(op), target)
                     items.append(item)
                     items_with_offsets.append((start, item))
-            elif op in (0x20, 0x62, 0x63, 0x3E, 0x3F, 0x38, 0x40, 0x00):
+            elif op in (0x20, 0x62, 0x63, 0x3E, 0x3F, 0x00):
                 pos += 1
             elif op in (0x1E, 0x1F):
                 pos += 1
@@ -339,14 +342,11 @@ class Disassembler:
         0x0C: ("PUSH_G_ALT", "2"),
         0x0D: ("JMP16_IFNOT", "2"),
         0x0E: ("JMP16_IF", "2"),
-        0x10: ("OP_10", ""),
         0x14: ("DEFUN", "h"),
         0x15: ("DEFUN_ALT", "h"),
         0x16: ("END_DEFUN", ""),
         0x18: ("INIT_ARGS", "2"),
         0x19: ("CLEAR_ARGS", "2"),
-        0x1A: ("OP_1A", "2"),
-        0x1B: ("OP_1B", "2"),
         0x1C: ("INIT_DONE", ""),
         0x1E: ("ALPHA", "1"),
         0x1F: ("BETA", "1"),
@@ -361,7 +361,6 @@ class Disassembler:
         0x33: ("PUSH_INT32", "4"),
         0x34: ("EVAL", "e"),
         0x37: ("BUILD_LIST_ALT", "2"),
-        0x38: ("OP_38", ""),
         0x39: ("BUILD_LIST", "2"),
         0x3A: ("DEFCODE", ""),
         0x3B: ("PUSH_REAL", "z"),
@@ -369,7 +368,6 @@ class Disassembler:
         0x3D: ("JMP16_IF_ALT", "2"),
         0x3E: ("EXIT_IF_NOT_ZERO", ""),
         0x3F: ("EXIT_IF_ZERO", ""),
-        0x40: ("OP_40", ""),
         0x35: ("USUBR", "u"),
         0x46: ("FIX_ADD", ""),
         0x47: ("FIX_SUB", ""),
@@ -2039,9 +2037,6 @@ class LispGenerator:
                 "ALPHA",
                 "BETA",
                 "DEFCODE",
-                "OP_10",
-                "OP_38",
-                "OP_40",
             ):
                 pass
             elif name.startswith("UNK_"):

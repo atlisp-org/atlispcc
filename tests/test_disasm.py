@@ -118,18 +118,30 @@ def test_opcode_tables_in_sync():
 def test_new_opcode_decoding():
     """The added opcode entries decode with expected sizes."""
     bc = bytes([
-        0x10,                       # OP_10: 1 byte
-        0x1a, 0x34, 0x12,           # OP_1A: op + u16
+        0x0c, 0x34, 0x12,           # PUSH_G_ALT: op + u16
         0x15, 0, 0, 0, 0,           # DEFUN_ALT: op + 4 bytes
-        0x40,                       # OP_40: 1 byte
+        0x37, 0x02, 0x00,           # BUILD_LIST_ALT: op + u16
     ])
     insts = Disassembler(short_subr=False).disassemble(bc, 8)
-    assert insts[0].op_name == 'OP_10' and insts[0].size == 1
-    assert insts[1].op_name == 'OP_1A' and insts[1].size == 3
-    assert insts[1].operands == [0x1234]
-    assert insts[2].op_name == 'DEFUN_ALT' and insts[2].size == 5
-    assert insts[3].op_name == 'OP_40' and insts[3].size == 1
-    assert insts[3].offset == 9
+    assert insts[0].op_name == 'PUSH_G_ALT' and insts[0].size == 3
+    assert insts[0].operands == [0x1234]
+    assert insts[1].op_name == 'DEFUN_ALT' and insts[1].size == 5
+    assert insts[2].op_name == 'BUILD_LIST_ALT' and insts[2].size == 3
+    assert insts[2].offset == 8
+
+
+def test_phantom_opcodes_disassemble_as_unknown():
+    """伪指令字节（10/1a/1b/38/40）不是真实操作码，反汇编为 UNK_。
+
+    107 个 CAD 产物实测这些字节从不在指令边界出现（仅作其他指令的
+    操作数或符号/字符串载荷，见 docs/opcodes.md「伪指令说明」）。
+    它们已从 OPCODES 表移除，此处验证单字节出现时安全降级为 UNK_。
+    """
+    for op in (0x10, 0x1a, 0x1b, 0x38, 0x40):
+        insts = Disassembler(short_subr=False).disassemble(bytes([op]), 0)
+        assert len(insts) == 1, f'0x{op:02x} should be 1 instruction'
+        assert insts[0].op_name == f'UNK_{op:02x}', insts[0].op_name
+        assert insts[0].size == 1
 
 
 def test_parse_empty_seg0_pure_top_level(tmp_path):

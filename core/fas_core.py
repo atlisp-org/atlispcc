@@ -267,8 +267,8 @@ def parse_resource_stream(res_data: bytes) -> tuple:
                 name = decode_text(sym)
                 items.append(("SYMBOL", name))
                 symbols.append(name)
-        elif op == 0x43:  # GVar init
-            pos += 1
+        elif op == 0x43:  # GVar init: `43 <var_pos:2> <st_init:2>`（5 字节）
+            pos += 5
         elif op in (0x34, 0x35, 0x51):
             pos += 1
             if pos >= len(res_data):
@@ -311,7 +311,7 @@ def parse_resource_stream(res_data: bytes) -> tuple:
                 idx = struct.unpack("<H", res_data[pos : pos + 2])[0]
                 pos += 2
                 items.append(("GVAR_PUSH", idx))
-        elif op in (0x06, 0x1A, 0x1B, 0x0C):  # GVAR_STORE / 其他2字节索引
+        elif op in (0x06, 0x0C):  # GVAR_STORE / 其他2字节索引
             pos += 1
             if pos + 2 <= len(res_data):
                 idx = struct.unpack("<H", res_data[pos : pos + 2])[0]
@@ -358,9 +358,9 @@ def parse_resource_stream(res_data: bytes) -> tuple:
             pos += 1
             if pos < len(res_data):
                 pos += 1
-        elif op in (0x20, 0x62, 0x63, 0x3E, 0x3F, 0x38, 0x40, 0x21):
+        elif op in (0x20, 0x62, 0x63, 0x3E, 0x3F, 0x21):
             pos += 1
-        elif op in (0x0B, 0x23, 0x24, 0x10, 0x28, 0x29, 0x2A):
+        elif op in (0x0B, 0x23, 0x24, 0x28, 0x29, 0x2A):
             pos += 1
             items.append(("OP_" + hex(op),))
         else:
@@ -541,7 +541,7 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
             pos += 1
         elif op in (0x57, 0x67, 0x68, 0x69, 0x6A):
             pos += 5
-        elif op in (0x05, 0x07, 0x0C, 0x0D, 0x0E, 0x1A, 0x1B, 0x37, 0x3C, 0x3D, 0x5C, 0x5D, 0x5E):
+        elif op in (0x05, 0x07, 0x0C, 0x0D, 0x0E, 0x37, 0x3C, 0x3D, 0x5C, 0x5D, 0x5E):
             pos += 3
         elif op in (0x1E, 0x1F):
             pos += 2
@@ -705,7 +705,7 @@ def build_module_id_slots(res_data: bytes, nsyms: int) -> dict:
             pos += 1
         elif op in (0x57, 0x67, 0x68, 0x69, 0x6A):
             pos += 5
-        elif op in (0x05, 0x07, 0x0C, 0x0D, 0x0E, 0x1A, 0x1B, 0x37, 0x3C, 0x3D, 0x5C, 0x5D, 0x5E):
+        elif op in (0x05, 0x07, 0x0C, 0x0D, 0x0E, 0x37, 0x3C, 0x3D, 0x5C, 0x5D, 0x5E):
             pos += 3
         elif op in (0x1E, 0x1F):
             pos += 2

@@ -154,8 +154,6 @@ def count_resource_records(res_stream: bytes) -> int:
             0x0C,
             0x0D,
             0x0E,
-            0x1A,
-            0x1B,
             0x34,
             0x37,
             0x39,
@@ -290,7 +288,7 @@ class ResourceBuilder:
         top_level_count: int = 0,
         commands: int = 0,
         nested_ends: Optional[Dict[int, int]] = None,
-        top_lambda_body_syms: object = None,
+        top_lambda_body_syms: Optional[list] = None,
         module_func_count: int = 0,
     ) -> bytes:
         """构建与 AutoCAD 编译器一致的 seg1 资源流。
@@ -688,7 +686,7 @@ class ResourceBuilder:
         out = bytearray()
         ranges = []
         for i, (off, name) in enumerate(offsets):
-            if off in nested_offsets:
+            if off in nested_offsets and nested_ends is not None:
                 end = nested_ends[off]
             else:
                 end = total_len

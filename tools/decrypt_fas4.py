@@ -174,9 +174,8 @@ def parse_resource_stream(res_data, res_vars):
                     name = sym_name.decode('latin-1')
                 items.append(('SYMBOL', name))
                 
-        elif op == 0x43:  # Init
-            pos += 1
-            # This sets up stringtables - skip for now
+        elif op == 0x43:  # GVARINIT: `43 <var_pos:2> <st_init:2>`（5 字节）
+            pos += 5
             
         elif op == 0x34 or op == 0x35 or op == 0x51:  # Function call
             pos += 1
@@ -242,7 +241,7 @@ def parse_resource_stream(res_data, res_vars):
                 pos += 2
                 items.append(('GVAR16_PUSH', idx))
                 
-        elif op == 0x06 or op == 0x1A or op == 0x1B:  # Pop into GVar16
+        elif op == 0x06:  # Pop into GVar16
             pos += 1
             if pos + 2 <= len(res_data):
                 idx = struct.unpack('<H', res_data[pos:pos+2])[0]
@@ -407,10 +406,10 @@ def parse_resource_stream(res_data, res_vars):
         elif op == 0x3F:  # Pop and exit if zero
             pos += 1
             
-        elif op == 0x38:  # Convert
+        elif op == 0x38:  # 伪指令：0x38 在 CAD 产物中仅作 STRING/SYMBOL 载荷或操作数
             pos += 1
-            
-        elif op == 0x40:  # ???
+
+        elif op == 0x40:  # 伪指令：0x40='@'，多出现在符号名载荷
             pos += 1
             
         elif op == 0x00:  # nil/nop  
