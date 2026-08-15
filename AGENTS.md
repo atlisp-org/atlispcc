@@ -405,10 +405,13 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - **模块注册区连续 STRING 合并**（2026-08-16，platform.lsp）：resource_builder
   模块注册（module_entries 循环）连续 STRING 合并为单个 55 块（CAD
   `55 02 00 acad.pgp chs` 实测），此前每个字符串独立 `55 01` 块。
-- **platform.lsp 进度**（2026-08-16）：seg0 字节码完全一致；seg1 模块注册区/
-  DEFCODE 尾（含 `-lambda-` 槽）已对齐。残余：fg 区函数名重复槽（symtab 末尾
-  多 `@::SET-LOCALE`）、参数 VAL 计入 GVARINIT st_init（nsyms 25 vs 24）、
-  模块代码 setq-lambda 绑定 2 字节差——均集中于 resource_builder 尾部结构。
+- **platform.lsp 进度**（2026-08-16）：seg0 字节码完全一致；nsyms 对齐（24）；
+  seg1 模块注册区/DEFCODE 尾/fg 区已对齐。残余：模块代码 setq-lambda 绑定
+  （cc 用函数注册尾、CAD 用 `JUMP 0; PUSH_G <-lambda->; DUP; SETQ_G <sym>`，
+  2 字节差）。相关修复：`_module_code_ctx` 标志——模块代码（顶层表达式）里
+  的跨函数调用用模块注册槽、不分配重复符号槽（否则顶层 cond 调
+  `@::set-locale` 在 fg 区泄漏 `@::SET-LOCALE` 重复槽、VAL 与函数名合并
+  进同一 5b 块、nsyms 多 1）。
 - 文件头注释/版本戳（`;A<日期>`）随日期变化，非字节一致性目标；seg0+sec2 已全对齐
 - **CAD 模态对话框阻塞 MCP**：CAD 偶发弹出 `alert`/错误框（`#32770`）会阻塞
   `atlisp-mcp` eval。用 `python -m tools.cad_dialog_killer <pid> --watch` 自动关闭
