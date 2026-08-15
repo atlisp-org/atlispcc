@@ -304,7 +304,9 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   决定（test-cond 实测 `"chs" ... T "autocad"`——T 在结果体后、测试符号前），
   内层 else 键 t 与值位置 `T` 复用该槽。`_collect_single` 纯顶层路径仅保留
   reversed 序最后一个 force t 注册，其余 t/T 跳过；`add()` 对 t/T 统一为 `T`
-  槽（force 也不重复，T 无重复槽语义）。回归 `test_byte_identity_with_cad_golden
+  槽（纯顶层 force 也不重复）。**混合文件例外**（2026-08-16）：模块注册区
+  （顶层 cond else 键）与函数体区（函数 cond else 键）各注册一次 T 槽，见
+  下方"T 槽双注册"。回归 `test_byte_identity_with_cad_golden
   [test-cond.lsp]`。
 - **cond 子句体 / 语句上下文的 if**（2026-08-15）：`_emit_stmt` 清 `_module_mode`，
   使 cond 子句体内的 if 不按模块代码顶层 if 编译——then 分支 setq 不 DUP、
@@ -373,6 +375,40 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
     VL-CMDF 后）。
   - seg1 尾部 8 字节（密钥边界截取乱码）非 byte-identity 目标；`resource_items`
     已全对齐。
+- **混合文件（defun+顶层）顶层 `(set/setq 'sym (lambda ...))` 的 `-lambda-` 命名**
+  （2026-08-16，platform.lsp 对拍 CAD，seg0 字节码完全一致）：混合文件顶层
+  setq-lambda 不再提升为同名 defun（旧 workaround），func_offsets 键改用
+  `-lambda-`/`-lambda-#N`，使 resource_builder 的 DEFCODE 尾注册为 `-lambda-`
+  （CAD platform.lsp 实测两处 `-lambda-`，offset 大的先 DEFCODE）。相关：
+  - `_top_lambda_names` 在转换前捕获顶层 lambda 目标符号名；func_offsets 循环
+    对它们用 `-lambda-` 键登记，`_top_lambda_offsets[offset] = 原名` 供
+    `_patch_usubr_idx` 按 seg0 offset 解析参数（`params_by_name` 也按
+    `-lambda-` 键注入原名参数，`gvar_slot(arg)-1` 修正绑定槽）。
+  - `-lambda-` 键**不进** `symtab.function_offsets`/entries（`add_func_ref` 会
+    `get_or_add` 建符号槽，纯顶层 setq-lambda byte-identity 会破）。
+  - 纯顶层与混合文件统一走 `_rewrite_top_lambda_binds`（kwote 标记）入口；
+    `_convert_top_lambda_to_defuns` 保留为混合文件 seg0 stub 生成用（提升为
+    defun 后其 stub 字节与 CAD `-lambda-` stub 一致）。
+- **跨区字符串重复注册**（2026-08-16，platform.lsp）：字符串同时出现在模块区
+  （顶层表达式）与函数体区时，CAD 在两区各注册一个独立 gvar 槽（platform
+  `(setq @::*locale* "chs")` 的 `"chs"`：模块区 + `fg[20]`）。symtab 构建
+  （cli.py）对重复字符串 `add_string(force=True)` 追加重复 STRING 槽（不覆盖
+  `name_to_idx`）。
+- **`add_string` 数字字符串**（2026-08-16）：移除 `isdigit()` 特判——`(= choice
+  "1")` 的 `"1"` 是 STRING 槽（CAD 实测 `(setq x "1")` → STRING），此前误注册
+  为 SYMBOL 致 voice 等文件符号表错位。
+- **T 槽双注册**（2026-08-16，platform.lsp）：混合文件模块注册区（顶层 cond
+  else 键 `(t ...)`）与函数体区（函数 cond else 键）各注册一次 `T` 槽——CAD
+  platform.lsp 实测模块 [27] + 函数体 [43]，后者喂 fg 表 `fg[5]=T`。
+  `_register_module` 保留 reversed 序最后一个 force t 注册（其余 t/T 跳过）；
+  多函数路径按 `t_last` 在 `_name_set` 已含 T 时直接 `names.append("T")`。
+- **模块注册区连续 STRING 合并**（2026-08-16，platform.lsp）：resource_builder
+  模块注册（module_entries 循环）连续 STRING 合并为单个 55 块（CAD
+  `55 02 00 acad.pgp chs` 实测），此前每个字符串独立 `55 01` 块。
+- **platform.lsp 进度**（2026-08-16）：seg0 字节码完全一致；seg1 模块注册区/
+  DEFCODE 尾（含 `-lambda-` 槽）已对齐。残余：fg 区函数名重复槽（symtab 末尾
+  多 `@::SET-LOCALE`）、参数 VAL 计入 GVARINIT st_init（nsyms 25 vs 24）、
+  模块代码 setq-lambda 绑定 2 字节差——均集中于 resource_builder 尾部结构。
 - 文件头注释/版本戳（`;A<日期>`）随日期变化，非字节一致性目标；seg0+sec2 已全对齐
 - **CAD 模态对话框阻塞 MCP**：CAD 偶发弹出 `alert`/错误框（`#32770`）会阻塞
   `atlisp-mcp` eval。用 `python -m tools.cad_dialog_killer <pid> --watch` 自动关闭
