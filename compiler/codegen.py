@@ -230,6 +230,12 @@ class CodeGenerator:
         self._defined_funcs: set = set(defined_funcs or [])
         self._func_ref_slots: Dict[str, int] = {}
         self._module_mode: bool = False
+        # 模块代码（seg1 顶层表达式）编译上下文：与 `_module_mode` 不同，该标志
+        # 在 `_emit_stmt`（cond 子句体等语句上下文）清 `_module_mode` 时**保持
+        # 不清**——模块代码里的跨函数调用用模块注册槽，不应分配重复符号槽
+        # （platform.lsp 顶层 cond 调 `@::set-locale` CAD 实测无重复槽，否则
+        # fg 区多出 `@::SET-LOCALE` 重复槽、VAL 与函数名合并进同一 5b 块）。
+        self._module_code_ctx: bool = False
         # 语句上下文（值将被 POP 丢弃）：仅裸语句位置（函数体中间语句、
         # progn 中间语句、循环体）置位。值上下文（setq RHS、函数/算术实参）
         # 不置位——_emit_if 据此决定 then 分支尾是否兼 POP。
@@ -602,10 +608,12 @@ class CodeGenerator:
         if (
             self.stub_format
             and not self._module_mode
+            and not self._module_code_ctx
             and name in self._defined_funcs
             and name != self.current_func_name
         ):
-            # 跨函数调用：CAD 用重复符号槽（首次引用分配新槽）
+            # 跨函数调用：CAD 用重复符号槽（首次引用分配新槽）。模块代码
+            # （_module_code_ctx）里的跨函数调用用模块注册槽，不分配重复槽。
             if name not in self._func_ref_slots:
                 rep = self.symtab.next_repeat_slot(name)
                 self._func_ref_slots[name] = rep if rep >= 0 else self.symtab.add_force(name)

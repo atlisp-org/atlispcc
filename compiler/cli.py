@@ -976,6 +976,7 @@ def _build_cad_module_code(
         # 模块代码上下文：顶层 if-then 的 setq 需 DUP、无 else if 补 PUSH_NIL
         # （CAD 模块代码实测 `0b 06` / `01 0a`，i18n-cad）。
         cg._module_mode = True
+        cg._module_code_ctx = True
         handled = False
 
         def _slot_gv(idx):
@@ -1835,6 +1836,7 @@ def cmd_compile(
     #   - 无 defun 时无函数注册尾，以 END_DEFUN 结束
     top_level_bc = BytecodeBuffer()
     codegen._module_mode = True
+    codegen._module_code_ctx = True
     for form in other_forms:
         if isinstance(form, InPackage):
             # `(in-package :@)` 由 _build_cad_module_code 单独发射
