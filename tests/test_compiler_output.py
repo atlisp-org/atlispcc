@@ -290,6 +290,9 @@ CAD_GOLDEN_PAIRS = [
     # 纯顶层 cond（test-cond.lsp）：cond else 键 `(t ...)` 的 T 槽位置、模块代码
     # 语句 if 的 then setq 无 DUP / 无 else 不补 PUSH_NIL（2026-08-15 修复）。
     ('test-cond.lsp', 'cad/test_cond_cad.fas'),
+    # 纯顶层 `(setq X (lambda ...))` 多 `-lambda-`（setq-lambda.lsp）：seg0 完整
+    # compact stub + 函数目录/第二区符号/fg 表布局 + setq 绑定协议（2026-08-15）。
+    ('setq-lambda.lsp', 'cad/setq_lambda_cad.fas'),
 ]
 
 #: t-series sources whose compiled output is byte-identical to the CAD golden

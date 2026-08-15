@@ -555,7 +555,26 @@ class CadSymbolCollector:
         # 模块注册域：有 defun 时（含纯函数与混合模式）CAD 按源码逆序逐 form
         # 交错注册（顶层符号可能穿插在 defun 名前后）。纯顶层文件（无 defun）
         # 退化为：函数名字段为空 + 顶层 refs 全局逆序（setcmp/set5/setqa 实测）。
+        # 含顶层 `(set/setq 'sym (lambda ...))` 的纯顶层文件（setq-lambda.lsp）：
+        # CAD 的模块注册段（第一区）只含顶层表达式符号，`-lambda-` 体符号
+        # 单独在第二区（`-lambda-` 函数体）。故走 `_register_module` 生成模块
+        # 注册段，kwote lambda 体符号由下方单独收集。普通纯顶层文件（无 kwote
+        # lambda）仍走全局逆序（test-cond/setcmp/set5/setqa byte-identity）。
+        from compiler.ast_nodes import LambdaNode as _TLN, QuotedExpr as _TQ
+
+        _has_top_lam = any(
+            isinstance(_f, Setq)
+            and any(isinstance(_v, _TQ) and _v.kwote and isinstance(_v.expr, _TLN)
+                    for _t, _v in _f.pairs)
+            or (isinstance(_f, Call) and _f.name == "set" and len(_f.args) == 2
+                and isinstance(_f.args[1], _TQ) and _f.args[1].kwote
+                and isinstance(_f.args[1].expr, _TLN))
+            for _f in others
+        )
         if program and defuns:
+            self._register_module(program)
+            self.module_reg_count = len(self.names)
+        elif _has_top_lam:
             self._register_module(program)
             self.module_reg_count = len(self.names)
         elif others:
@@ -574,19 +593,79 @@ class CadSymbolCollector:
                             if isinstance(n, str) and n.lower() == 't' and f]
             _t_reg_idx = _t_force_idx[-1] if _t_force_idx else -1
             for i, (name, force) in enumerate(_rev):
+                # kwote 块结束标记（`__kwote_end__`）仅作收集分隔，不注册符号
+                # （多函数路径同样过滤，纯顶层路径也需过滤——setq-lambda.lsp
+                # 顶层 `(setq X (lambda ...))` 走 `_rewrite_top_lambda_binds`
+                # 产生的 kwote 标记泄漏为符号槽实测）。
+                if name == "__kwote_end__":
+                    continue
                 if isinstance(name, str) and name.lower() == 't':
                     if i != _t_reg_idx:
                         continue
                 self.add(name, force=force)
             self.module_reg_count = len(self.names)
-        # 混合模式（defun + 顶层）：函数体符号若与模块注册符号同名需重复槽。
         module_reg_names = set(self.names)
         # 大小写不敏感集合（vla- 原始名 vs 规范化名，见多函数路径注释）。
         _module_reg_upper = {str(n).upper() for n in module_reg_names}
 
-        # 3. 函数体符号：字节码引用序正序收集，逆序注册；参数最后（共享不特殊处理）。
-        #    CAD 单函数参数槽逆序（实测 simple3/t13：`+ Z Y X`、`> C B A`——
-        #    最后一个声明的参数槽最小，紧跟函数体符号）。
+        # 3b. 纯顶层 `(set/setq 'sym (lambda ...))`（kwote，CAD `-lambda-` 机制）：
+        #     CAD 把 `-lambda-` 函数体符号 + 参数放模块注册段之后的第二区
+        #     （setq-lambda.lsp CAD golden 实测 `.vls = SUBSTR - STRLEN .vlx
+        #     IS-ZWCAD STR-VLX STRCAT @::*FASEXT* FILE`——@::vlx 体在前、@::fasext
+        #     体在后，各含参数 str-vlx/file，源码逆序）。故为每个 kwote lambda
+        #     收集其 lambda 体符号（**不**排除参数，参数也要注册）+ 参数。
+        from compiler.ast_nodes import LambdaNode as _LN, QuotedExpr as _Q
+
+        _lam_seen = set()  # 3b 内部去重：跨 lambda 的重复符号（strcat）只注册一次
+        for form in reversed(others) if _has_top_lam else ():
+            _lam = None
+            if isinstance(form, Setq):
+                for _t, _v in form.pairs:
+                    if isinstance(_v, _Q) and _v.kwote and isinstance(_v.expr, _LN):
+                        _lam = _v.expr
+                        break
+            elif isinstance(form, Call) and form.name == "set" and len(form.args) == 2:
+                _v1 = form.args[1]
+                if isinstance(_v1, _Q) and _v1.kwote and isinstance(_v1.expr, _LN):
+                    _lam = _v1.expr
+            if _lam is None:
+                continue
+            # CAD `-lambda-` 体符号顺序（setq-lambda.lsp golden 实测 @::vlx 体
+            # `.vls = SUBSTR - STRLEN .vlx IS-ZWCAD` + 参数 STR-VLX + STRCAT，
+            # @::fasext 体 `@::*FASEXT* FILE`）：`_collect_byteorder` forward
+            # 逆序（去最后调用名 strcat）→ 参数 → 最后调用名（strcat，跨 lambda
+            # 去重）。用空 arg_names 收集（参数也收集，随后移末尾）。
+            refs = _SeenList()
+            for expr in _lam.body:
+                self._collect_byteorder(expr, refs, set())
+            _fwd = [(n, f) for n, f in refs if n != "__kwote_end__" and n != "kwote"]
+            # 最后调用名 = forward 末尾的符号（如 strcat，非字符串/参数）。
+            _tail_call = None
+            while _fwd and (
+                not isinstance(_fwd[-1][0], str)
+                or str(_fwd[-1][0]).startswith('"')
+                or _fwd[-1][0] in _lam.args
+            ):
+                _fwd.pop()
+            if _fwd and isinstance(_fwd[-1][0], str) and not str(_fwd[-1][0]).startswith('"'):
+                _tail_call = _fwd[-1][0]
+                _fwd = _fwd[:-1]
+            # 逆序注册体符号（去 strcat）。
+            for name, force in reversed(_fwd):
+                if isinstance(name, str) and name in _lam.args:
+                    continue  # 参数最后注册
+                if isinstance(name, str) and name in _lam_seen:
+                    continue
+                _lam_seen.add(name)
+                self.add(name, force=True)
+            # 参数（逆序）。
+            for arg in reversed(_lam.args):
+                if arg not in self._name_set:
+                    self.add(arg)
+            # 最后调用名（strcat，跨 lambda 去重）。
+            if _tail_call is not None and _tail_call not in _lam_seen:
+                _lam_seen.add(_tail_call)
+                self.add(_tail_call, force=True)
         #    递归函数名：多次自身调用共享同一个重复槽（t03 递归两次仅 1 个重复
         #    FIB 槽；fact 递归一次 1 个重复槽）。
         for f in reversed(defuns):
@@ -719,11 +798,14 @@ class CadSymbolCollector:
         ancestor = {}
 
         def _owner_of(sym):
-            if sym in owner_target:
-                return owner_target[sym]
-            if sym in owner_read:
-                return owner_read[sym]
-            return -1
+            # 符号归属到**最早出现的 form**（read 或 target 的最小 form 序）：
+            # CAD 把符号排在它首次被引用的 form 组。setq-lambda.lsp 实测
+            # `command-s` 在 form2 `(type command-s)` 首次读取、form4 才是
+            # setq 目标——CAD 槽排在 VL-CMDF（form2）之后而非 form4 组；
+            # 若仅 owner_target 优先会误排到 form4。test-cond（纯顶层 cond）
+            # 走 `_collect_single` 其他路径，不受此影响。
+            cand = [i for i in (owner_target.get(sym), owner_read.get(sym)) if i is not None]
+            return min(cand) if cand else -1
 
         module_seen = set()
         module_funcs = 0

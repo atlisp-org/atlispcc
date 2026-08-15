@@ -328,8 +328,14 @@ class ResourceBuilder:
             out += self._code_ref_bytes(mc_len)
             # 符号/字符串：按 symtab.entries 顺序（已由 cad_symbols 排为源码逆序）。
             # CAD 合并连续 SYMBOL 为单个 5b 块，遇 STRING 分块。
+            # 含顶层 `-lambda-`（top_lambda_body_syms）时，entries 末尾为第二区
+            # 体符号（CAD 把它们放函数目录之后 → fg 表），不在此注册（否则
+            # 符号表重复）。第一区符号数 = len(entries) - len(第二区)。
+            _first_n = len(entries)
+            if _only_lambda_keys and top_lambda_body_syms:
+                _first_n = len(entries) - len(top_lambda_body_syms)
             sym_buf = bytearray()
-            for entry_type, entry_val in entries:
+            for entry_type, entry_val in entries[:_first_n]:
                 if entry_type == "SYMBOL":
                     sym_buf += self._enc_sym(entry_val) + b"\x00"
                 elif entry_type == "STRING":
@@ -346,46 +352,48 @@ class ResourceBuilder:
             if sym_buf:
                 out += b"\x5b" + bytes(sym_buf) + b"\x00"
             out += b"\x01" * 2
-            out += res_gvar_init(0, entry_count + 2) + b"\x0a"
+            out += res_gvar_init(0, _first_n + 2) + b"\x0a"
             if _only_lambda_keys:
-                # CAD 纯顶层 + `-lambda-`（tlrep 实测 offset 98-142）：
-                #   INT8 0; INT8 <total_size>; CONS; BUILD_LIST 1; SYMBOL <lambda体符号>
-                #   GET_LOCAL; GVARINIT(0,2); POP
+                # CAD 纯顶层 + `-lambda-`（setq-lambda.lsp golden 实测布局）：
+                #   函数目录：每个 `-lambda-` 的 (offset . end) 范围，offset 大的
+                #     先压（`32 <off>; 33/32 <end>; CONS ... 39 <n>`）
+                #   第二区符号（lambda 体符号 + 参数，top_lambda_body_syms）——
+                #     连续 SYMBOL 合并 5b 块，遇 STRING 分块
+                #   GET_LOCAL; GVARINIT(0, 第二区数+1) → fg 表（module_id = 栈顶
+                #     最后符号，build_mvar_tables 判 table1）
                 #   GET_LOCAL; INT8 <seg0-offset>; SYMBOL -lambda-; DEFCODE
-                #   NIL; GVARINIT(<模块符号数>,1)
-                # `INT8 0; INT8 <total>; CONS` = (0 . total_size) 代码引用，
-                # BUILD_LIST 1 后接 lambda 体符号（模块注册最后符号 = 顶层
-                # 符号数 + 1 槽）。
-                # lambda 体符号 = entries 末尾的顶层表达式符号（CAD tlrep 为
-                # `@::*X*`）。seg0 stub 的 PUSH_VALUE 引用该槽。
-                _total = total_size if total_size else 1
-                # `INT8 0; INT8/INT32 <total>; CONS; BUILD_LIST 1`：
-                # (0 . total_size) 代码引用。total 可能超 127（大 lambda 体）。
-                if -128 <= _total <= 127:
-                    out += b"\x32\x00" + bytes([0x32, _total & 0xFF]) + b"\x2a\x39\x01\x00"
-                else:
-                    out += b"\x32\x00" + bytes([0x33]) + struct.pack("<i", _total) + b"\x2a\x39\x01\x00"
-                # lambda 体符号（CAD 用顶层 lambda 体引用的符号，tlrep/bootstrap
-                # 为 `@::*X*`/`@::*ACADVER*`）。由 cli 传入（top_lambda_body_syms）。
-                if top_lambda_body_syms:
-                    _last_sym = top_lambda_body_syms[0]
-                elif entries:
-                    _last_sym = self._entry_name(entries[-1])
-                else:
-                    _last_sym = "-lambda-"
-                out += b"\x5b" + self._enc_sym(_last_sym) + b"\x00\x00"
-                out += b"\x5c\x00\x00" + res_gvar_init(0, 2) + b"\x0a"
-                out += b"\x5c\x00\x00"
-                # -lambda- 的 seg0 offset（func_offsets 第一个键）
-                _lam_off = next(iter(func_offsets.values()))
-                if -128 <= _lam_off <= 127:
-                    out += b"\x32" + bytes([_lam_off & 0xFF])
-                else:
-                    out += res_int32(_lam_off)
-                out += b"\x5b" + self._enc("-lambda-") + b"\x00\x00" + b"\x3a"
-                # `-lambda-` 注册到末尾 gvar 槽 = entry_count+2（CAD 实测
-                # bootstrap GVARINIT(41,1)，与主 GVARINIT(0,41) 同值）。
-                out += b"\x01" + res_gvar_init(entry_count + 2, 1)
+                #     （offset 大的先注册，func_offsets 值大的在前）
+                #   NIL; GVARINIT(第一区数+2, 函数数) → `-lambda-` gvar 槽
+                #     （超出 nsyms 表的运行时槽，模块代码 PUSH_G 引用）
+                out += self._func_ranges_bytes(func_offsets, total_size or 1)
+                _lam_syms = list(top_lambda_body_syms or [])
+                _sym_buf = bytearray()
+                for _bs in _lam_syms:
+                    if isinstance(_bs, str) and _bs.startswith('"'):
+                        if _sym_buf:
+                            out += b"\x5b" + bytes(_sym_buf) + b"\x00"
+                            _sym_buf = bytearray()
+                        out += b"\x55\x01\x00" + res_u16(len(_bs) - 2) + self._enc(_bs[1:-1])
+                    else:
+                        _sym_buf += self._enc_sym(_bs) + b"\x00"
+                if _sym_buf:
+                    out += b"\x5b" + bytes(_sym_buf) + b"\x00"
+                out += b"\x5c\x00\x00" + res_gvar_init(0, len(_lam_syms) + 1) + b"\x0a"
+                # 多个 `-lambda-` DEFCODE：每个 `GET_LOCAL 0; INT8 <seg0-offset>;
+                # SYMBOL -lambda-; DEFCODE`（setq-lambda.lsp CAD golden 实测
+                # 两个 `-lambda-`，offset 大的先注册）。CAD 顺序 = seg0 中后出现
+                # 的 `-lambda-` 先 DEFCODE（func_offsets 值大的在前）。
+                _lam_offs = sorted(func_offsets.values(), reverse=True)
+                for _lo in _lam_offs:
+                    out += b"\x5c\x00\x00"
+                    if -128 <= _lo <= 127:
+                        out += b"\x32" + bytes([_lo & 0xFF])
+                    else:
+                        out += res_int32(_lo)
+                    out += b"\x5b" + self._enc("-lambda-") + b"\x00\x00" + b"\x3a"
+                # `-lambda-` 注册到末尾 gvar 槽 = 第一区数+2（CAD 实测
+                # GVARINIT(28, 2)，28 = 26 第一区符号 + 2）。
+                out += b"\x01" + res_gvar_init(_first_n + 2, len(_lam_offs))
                 out += b"\x1c"
                 out += module_code
                 return bytes(out)

@@ -483,7 +483,8 @@ def _subr_bytes(opcode: int, argc: int, idx: int, flags: int = 3, wide: bool = F
 
 def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: Optional[int] = None,
                      params_by_name: Optional[dict] = None, lambda_args_by_func: Optional[dict] = None,
-                     has_top_forms: bool = False, n_real_funcs: int = 1) -> bytes:
+                     has_top_forms: bool = False, n_real_funcs: int = 1,
+                     top_lambda_args: Optional[list] = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
     CAD 实测逆向：
@@ -680,13 +681,18 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 cur_args = params_by_name.get(fname)
                 lambda_idx = 0
             else:
-                # 内嵌 `-lambda-` DEFUN：取所在函数收集的 kwote lambda 参数
-                _la = lambda_args_by_func.get(cur_func, []) if cur_func else []
+                # 内嵌 `-lambda-` DEFUN：取所在函数收集的 kwote lambda 参数。
+                # 纯顶层 `(set/setq 'sym (lambda ...))`（无宿主 defun）用
+                # top_lambda_args（按 seg0 出现序 = 源码序）。
+                if top_lambda_args and (cur_func is None or cur_func == "-LAMBDA-"):
+                    _la = top_lambda_args
+                else:
+                    _la = lambda_args_by_func.get(cur_func, []) if cur_func else []
                 cur_args = _la[lambda_idx] if lambda_idx < len(_la) else None
                 lambda_idx += 1
             arg_i = 0
         # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
-        if multi and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
+        if (multi or top_lambda_args) and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
             arg = cur_args[arg_i]
             new_idx = gvar_slot(arg) - 1 - offset
             if 0 <= new_idx <= 0xFFFF:
@@ -766,12 +772,22 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             idx0 = inst.operands[0]
             # 参数读取 PUSH_VALUE 的槽（nsyms-argc .. nsyms-1）不是 entry 索引，
             # 单函数 codegen 已输出正确槽，跳过（i18n_v2 实测 offset14 参数读取）。
+            # 顶层 `-lambda-`（top_lambda_args）：CAD 用 gvar 槽 - 1 编址
+            # （@::vlx 参数 str-vlx fg[9] → 操作数 8），须重映射。
             if (
                 inst.op_name == "PUSH_VALUE"
                 and cur_args is not None
                 and len(cur_args)
                 and nsyms - len(cur_args) <= idx0 < nsyms
             ):
+                if top_lambda_args:
+                    _pi = idx0 - (nsyms - len(cur_args))
+                    _arg = cur_args[_pi] if 0 <= _pi < len(cur_args) else None
+                    if _arg:
+                        _ni = gvar_slot(_arg) - 1 - offset
+                        if 0 <= _ni <= 0xFFFF:
+                            out += bytes([0x03, _ni & 0xFF, (_ni >> 8) & 0xFF])
+                            continue
                 out += seg0[inst.offset : inst.offset + inst.size]
                 continue
             if 0 <= idx0 < len(symtab.entries):
@@ -1080,15 +1096,17 @@ def _build_cad_module_code(
                 _sym_idx = symtab.name_to_idx.get(_tgt)
                 _lam_slot = top_lambda_slots[_tgt]
                 _b = bytearray()
-                if _sym_idx is not None:
-                    _b += bytes([0x09]) + struct.pack("<H", _slot_gv(_sym_idx))  # PUSH_G <sym>
-                # CAD 在 PUSH_G sym 与 PUSH_G <-lambda-> 间插 JUMP 0（相对偏移 0，
-                # 跳到下一条，bootstrap/tlrep 实测模块代码 `57 00 00 00 00`）。
+                # CAD 纯顶层 `(setq X (lambda ...))`（setq-lambda.lsp CAD golden
+                # 实测）：模块代码 `JUMP 0; PUSH_G <-lambda-槽>; DUP; SETQ_G <sym>`
+                # ——用 setq 协议绑定（不是 `set` 函数）。JUMP 0 为占位跳转。
                 _b += bytes([0x57, 0x00, 0x00, 0x00, 0x00])  # JUMP 0
-                _b += bytes([0x09]) + struct.pack("<H", _slot_gv(_lam_slot))  # PUSH_G <-lambda->
-                _set_idx = symtab.name_to_idx.get("set")
-                if _set_idx is not None:
-                    _b += bytes([0x35, 0x02]) + struct.pack("<H", _slot_gv(_set_idx)) + bytes([0x03])
+                # `-lambda-` 槽是 DEFCODE 区注册的独立 gvar 槽（不在 symtab/
+                # gvar_map），PUSH_G = 符号槽 + 1（_lam_slot 28 → 29）。不能用
+                # _slot_gv（会把槽当 symtab 索引查 entries → 错位到 gvar_map）。
+                _b += bytes([0x09]) + struct.pack("<H", _lam_slot + 1)  # PUSH_G <-lambda->
+                _b += bytes([0x0b])  # DUP
+                if _sym_idx is not None:
+                    _b += bytes([0x06]) + struct.pack("<H", _slot_gv(_sym_idx))  # SETQ_G <sym>
                 return bytes(_b)
         fb = BytecodeBuffer()
         cg._emit_expr(fb, form, _tail=tail)
@@ -1344,7 +1362,16 @@ def _collect_symbol_nodes(node):
         for e in node.body:
             yield from _collect_symbol_nodes(e)
     elif isinstance(node, QuotedExpr):
-        yield from _collect_symbol_nodes(node.expr)
+        if node.kwote and isinstance(node.expr, LambdaNode):
+            # `(function (lambda ...))`（顶层 setq-lambda 的 kwote 改写）：
+            # lambda 体符号不属于**顶层符号**（CAD 把它们放 `-lambda-` 区，
+            # 不在模块注册段）。跳过体符号，只保留 lambda 参数名（参数仍需
+            # 注册）。否则 top_level_count / max(_top_slots) 被体符号膨胀，
+            # `-lambda-` 槽位偏移。
+            for a in _lambda_real_args(node.expr):
+                yield Symbol(a)
+        else:
+            yield from _collect_symbol_nodes(node.expr)
     elif isinstance(node, LambdaNode):
         for a in node.args:
             yield Symbol(a)
@@ -1762,8 +1789,13 @@ def cmd_compile(
         top_level_count = max(0, _mrc(program) - len(defun_forms))
     else:
         # 纯顶层文件：无函数体符号污染，`max(顶层槽)+1` 与 golden 一致
-        # （setqa/setcmp/p01 实测）。
-        if _top_slots:
+        # （setqa/setcmp/p01 实测）。含顶层 `(set/setq 'sym (lambda ...))`
+        # 的文件（setq-lambda.lsp）用模块注册段符号数（`_mrc`）——`max(_top_slots)`
+        # 会被 `-lambda-` 第二区体符号膨胀，`-lambda-` 槽位偏移。CAD 的
+        # `-lambda-` 槽 = 模块注册段符号数 + 3（fasext）、+2（vlx）。
+        if top_lambda_binds:
+            top_level_count = max(0, _mrc(program))
+        elif _top_slots:
             top_level_count = max(_top_slots) + 1
         else:
             top_level_count = 0
@@ -1834,45 +1866,40 @@ def cmd_compile(
             all_bytecode.emit(bytes([0x16]))
 
     # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：CAD 把内嵌
-    # `-lambda-` DEFUN 放 seg0（紧凑 stub：`14 <argc><argc><argc> 00` + 体，
-    # 无 JUMP/CLEAR_ARGS/END，bootstrap `seg0 = 14 00 00 00 00 03 01 00`），
-    # 由 DEFCODE 注册为可调用 SUBR。模块代码 `PUSH_G <sym>; PUSH_G
-    # <-lambda-槽>; FUNC_REF set`。这里生成 stub 进 seg0，登记 `-lambda-`
-    # 槽供模块代码引用；有 defun 的混合文件（platform）CAD 用引用数据。
+    # `-lambda-` DEFUN 放 seg0（完整紧凑 stub：`14 <argc><argc><argc> 00` +
+    # GET_LOCAL + INIT_ARGS + 体 + CLEAR_ARGS + END_DEFUN，函数间 `16` 分隔），
+    # 由 DEFCODE 注册为可调用 SUBR。模块代码用 setq 协议绑定
+    # `JUMP 0; PUSH_G <-lambda-槽>; DUP; SETQ_G <sym>`。这里生成 stub 进
+    # seg0，登记 `-lambda-` 槽供模块代码引用；有 defun 的混合文件（platform）
+    # CAD 用引用数据。
     top_lambda_slots: dict = {}
     if top_lambda_binds and not defun_forms:
         for _ti, (_sym, _lam) in enumerate(top_lambda_binds):
-            _lbuf = BytecodeBuffer()
-            # 紧凑 stub：DEFUN 头（b1=b2=b3=argc）+ lambda 体（值位置）。
-            # CAD 纯顶层 `-lambda-` 体为单符号时：`14 <argc>x3 00; PUSH_VALUE 1`，
-            # `PUSH_VALUE 1` 引用 resource 槽 1（GVARINIT(0,2) 把体符号放槽 1）。
-            _argc = len(_lam.args)
-            _lbuf.emit(bytes([0x14, _argc & 0xFF, _argc & 0xFF, _argc & 0xFF, 0]))
-            _saved_tail = codegen._in_tail_context
-            codegen._in_tail_context = True
-            if len(_lam.body) == 1 and isinstance(_lam.body[0], Symbol):
-                # 单符号体：PUSH_VALUE 1（体符号由 resource 槽 1 提供）。
-                _lbuf.emit(bytes([0x03, 0x01, 0x00]))
-            else:
-                for _be in _lam.body[:-1]:
-                    codegen._emit_stmt(_lbuf, _be)
-                    _lbuf.emit(b"\x0a")  # POP
-                if _lam.body:
-                    codegen._emit_expr(_lbuf, _lam.body[-1], _tail=True)
-                else:
-                    _lbuf.emit(b"\x01")  # PUSH_NIL
-            codegen._in_tail_context = _saved_tail
-            _lbuf.resolve()
+            # 纯顶层 `-lambda-` 是完整 compact stub 函数（CAD 实测 seg0：
+            # `14 <argc><argc><argc> 00` + GET_LOCAL_WIDE + INIT_ARGS + 体 +
+            # CLEAR_ARGS + END_DEFUN，与普通 defun 一致），由 DEFCODE 注册为
+            # 可调用 SUBR。复用 generate_function 生成（_defun_from_lambda 把
+            # LambdaNode 转 Defun），避免手动拼 stub 缺 GET_LOCAL/INIT_ARGS/
+            # CLEAR_ARGS/END。
+            _fdef = _defun_from_lambda(_sym, _lam)
+            _fb, _ = codegen.generate_function(_fdef)
             _off = len(all_bytecode.data)
             _key = f"-lambda-#{_ti + 1}" if _ti else "-lambda-"
             func_offsets[_key] = _off
-            all_bytecode.emit(bytes(_lbuf.data))
-            # `-lambda-` 槽 = 顶层符号数 + 1（CAD 把内嵌 SUBR 注册在末尾，
-            # GVARINIT(entry_count+2,1) 放 gvar 槽 entry_count+2；模块代码
-            # gvar 槽 = 符号槽 + 1 → 符号槽 = entry_count+1）。多 lambda 逆序
+            all_bytecode.emit(_fb)
+            # CAD 纯顶层 `-lambda-` 函数间以 END_DEFUN(`16`) 分隔（同 defun，
+            # setq-lambda.lsp CAD golden 实测第一个 `-lambda-` 后 `16`）；最后
+            # 一个 `-lambda-` 无 END（以 CLEAR_ARGS 结束）。
+            if _ti < len(top_lambda_binds) - 1:
+                all_bytecode.emit(bytes([0x16]))
+            # `-lambda-` 槽 = 顶层符号数 + 2（setq-lambda.lsp golden 实测：
+            # 模块代码 `PUSH_G 29`（@::fasext）、`PUSH_G 28`（@::vlx）——gvar 槽 =
+            # 符号槽 + 1，符号槽 = top_level_count + 2 - _ti。CAD 的 GVARINIT
+            # (top_level_count+2, N) 注册这些超表运行时槽。不能用全部
+            # symtab.entries（第二区 `-lambda-` 体符号会膨胀）。多 lambda 逆序
             # 递减。不进 symtab（CAD 无 `-lambda-` 普通符号槽，仅 DEFCODE
             # 区小写注册）。
-            _lam_slot = len(symtab.entries) + 1 - _ti
+            _lam_slot = top_level_count + 2 - _ti
             top_lambda_slots[_sym] = _lam_slot
 
     # 内嵌 `(function (lambda ...))` / `((lambda ...) args)` DEFUN（kwote/
@@ -1914,11 +1941,53 @@ def cmd_compile(
     # 注册进模块注册段；atlisp_u 48，其余 416 个库函数名经函数体符号区注册）。
     _mr_func_count = _mrfc(program)
     module_reg_count = len(defun_forms) + top_level_count
+    # 纯顶层含顶层 `(set/setq 'sym (lambda ...))` 时，收集第二区符号
+    # （lambda 体符号 + 参数，CAD DEFCODE 区前置注册，fg 表用）。顺序：源码
+    # 逆序（@::vlx 在前、@::fasext 在后），各 lambda 体符号 + 参数。与
+    # cad_symbols 的 3b 块收集顺序一致。
+    _top_lambda_body_syms = None
+    if top_lambda_binds:
+        from compiler.cad_symbols import CadSymbolCollector, _SeenList
+
+        _syms = []
+        _lam_seen = set()  # 跨 lambda 去重（strcat 出现在两个 lambda 体只注册一次）
+        for _sym, _lam in reversed(top_lambda_binds):
+            _lam_col = _SeenList()
+            for _be in _lam.body:
+                CadSymbolCollector()._collect_byteorder(_be, _lam_col, set())
+            _fwd = [n for n, _ in _lam_col if n != "__kwote_end__" and n != "kwote"]
+            # 最后调用名（strcat）移末尾。
+            _tc = None
+            while _fwd and (
+                not isinstance(_fwd[-1], str) or str(_fwd[-1]).startswith('"')
+                or _fwd[-1] in _lam.args
+            ):
+                _fwd.pop()
+            if _fwd and isinstance(_fwd[-1], str) and not str(_fwd[-1]).startswith('"'):
+                _tc = _fwd[-1]
+                _fwd = _fwd[:-1]
+            for _n in reversed(_fwd):
+                if isinstance(_n, str) and _n in _lam.args:
+                    continue
+                if isinstance(_n, str) and _n in _lam_seen:
+                    continue
+                _lam_seen.add(_n)
+                _syms.append(_n)
+            for _a in reversed(_lam.args):
+                if _a not in _lam_seen:
+                    _lam_seen.add(_a)
+                    _syms.append(_a)
+            if _tc is not None and _tc not in _lam_seen:
+                _lam_seen.add(_tc)
+                _syms.append(_tc)
+        _top_lambda_body_syms = _syms
     fas_nsyms = len(symtab.entries) - module_reg_count + 1
-    # 纯顶层文件含顶层 `-lambda-`（CAD 把内嵌 SUBR 当函数注册，nsyms 含它）。
-    # bootstrap CAD nsyms=2（模块 + -lambda-），setqa（无 lambda）nsyms=1。
-    if top_lambda_binds and not defun_forms:
-        fas_nsyms = 1 + len(top_lambda_binds)
+    # 纯顶层文件含顶层 `-lambda-`：CAD nsyms = fg 表长度 = 1 + 第二区符号数
+    # （setq-lambda.lsp golden nsyms=12 = 1 + 11 个体符号/参数；bootstrap 单
+    # lambda 时 = 1 + 1 = 2）。不能再用 `1 + len(top_lambda_binds)`（=3），
+    # 否则参数绑定 PUSH_G 的 `gvar_slot(arg)-1` 越界错槽。
+    if top_lambda_binds and not defun_forms and _top_lambda_body_syms:
+        fas_nsyms = 1 + len(_top_lambda_body_syms)
     _pre_nsyms = fas_nsyms
     if other_forms:
         # 顶层语句在源码中位于最后一个 defun 之后（如 `(set '_ @::_)`、
@@ -2005,22 +2074,6 @@ def cmd_compile(
     # module_code）模块注册段用标准 module_entries 顺序（CAD atlisp_u 实测
     # 65 项无 vl-ACAD-defun 前置）。
     _rb_commands = n_cmds if not other_forms else 0
-    _top_lambda_body_syms = None
-    if top_lambda_binds:
-        from compiler.ast_nodes import Symbol as _Sym
-
-        _syms = []
-        for _sym, _lam in top_lambda_binds:
-            _last = _lam.body[-1] if _lam.body else None
-            _nm = getattr(_last, "name", None)
-            if not isinstance(_nm, str) or not _nm:
-                _nm = None
-                for _f in reversed(_lam.body):
-                    if isinstance(_f, _Sym):
-                        _nm = _f.name
-                        break
-            _syms.append(_nm or _sym)
-        _top_lambda_body_syms = _syms
     seg1 = resource.build(
         func_offsets,
         module_code=module_code,
@@ -2099,7 +2152,9 @@ def cmd_compile(
                             params_by_name=params_by_name,
                             lambda_args_by_func=lambda_args_by_func,
                             has_top_forms=bool(other_forms),
-                            n_real_funcs=len(defun_forms))
+                            n_real_funcs=len(defun_forms),
+                            top_lambda_args=[list(la.args) for _, la in top_lambda_binds]
+                            if top_lambda_binds and not defun_forms else None)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(
         func_offsets,

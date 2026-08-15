@@ -344,6 +344,35 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - **`__kwote_end__` 标记不注册**（2026-08-15）：`_collect_single` 收集 refs 中的
   `__kwote_end__` 分隔标记须过滤，否则泄漏为符号槽（多 kwote 文件 nsyms 多 1、
   后续槽偏移，CAD 加载报 `-lambda-` 类型错误）。
+- **纯顶层 `(set/setq 'sym (lambda ...))` 多 `-lambda-`**（2026-08-15，byte-identity，
+  回归 `test_byte_identity_with_cad_golden[setq-lambda.lsp]`，CAD 真机验证
+  `(@::fasext "abc")`→`"abc.fas"`、`(@::vlx "a.vlx")`→`"a.vls"`）：
+  - **seg0**：`-lambda-` 是完整 compact stub（`14 <argc>x3 00` + GET_LOCAL + INIT_ARGS +
+    体 + CLEAR_ARGS + END_DEFUN，函数间 `16` 分隔、最后无 END），复用
+    `generate_function`（`_defun_from_lambda` 转 Defun）。**CAD 的 USUBR 用 5 字节宽格式**
+    （`35 <argc> <idx16> 03`，flags=3，非小文件 3 字节）。
+  - **nsyms** = fg 表长度 = `1 + len(top_lambda_body_syms)`（setq-lambda golden 12 =
+    1 + 11 第二区符号），非 `1 + len(top_lambda_binds)`。
+  - **符号表布局**：第一区（模块注册段，仅顶层表达式符号）→ GVARINIT(0, 第一区数+2)
+    → 函数目录（`_func_ranges_bytes`：每个 `-lambda-` 的 (offset . end)）→ 第二区
+    （lambda 体符号 + 参数 + 最后调用名，跨 lambda 去重 strcat）→ `GET_LOCAL;
+    GVARINIT(0, 第二区数+1)`（module_id=最后符号 FILE → build_mvar_tables 判 table1
+    = fg 表）→ 多 DEFCODE（offset 大的先）→ `GVARINIT(第一区数+2, 函数数)`（`-lambda-`
+    超表运行时槽）。
+  - **fg 表**（`_patch_usubr_idx` 映射依据）= 代码引用（fg[1]）+ 第二区符号（fg[2-11]），
+    FILE 作 module_id 不占槽。`gvar_slot` 未命中返回 nsyms（参数 file→11）。
+  - **模块代码绑定**用 setq 协议 `JUMP 0; PUSH_G <lam槽+1>; DUP; SETQ_G <sym>`；
+    `-lambda-` 槽不在 symtab/gvar_map，PUSH_G 直接用 `_lam_slot + 1`（不能用 `_slot_gv`，
+    会把槽当 symtab 索引查 entries 错位到 gvar_map）。
+  - **`_patch_usubr_idx`**：`top_lambda_args` 按 seg0 出现序传参；参数绑定 PUSH_G 与
+    参数读取 PUSH_VALUE 用 `gvar_slot(arg) - 1`（str-vlx fg[9]→8）；参数读取槽识别
+    `nsyms - len(cur_args) <= idx < nsyms`。
+  - `_collect_single` 的 `_has_top_lam` 分支走 `_register_module`（第一区）+ 3b 块
+    （第二区）；普通纯顶层仍全局逆序（test-cond/setcmp/set5/setqa 不变）。
+  - `_owner_of` 用 min(form 序)（command-s 在 form2 首次读取、form4 才 setq，槽排
+    VL-CMDF 后）。
+  - seg1 尾部 8 字节（密钥边界截取乱码）非 byte-identity 目标；`resource_items`
+    已全对齐。
 - 文件头注释/版本戳（`;A<日期>`）随日期变化，非字节一致性目标；seg0+sec2 已全对齐
 - **CAD 模态对话框阻塞 MCP**：CAD 偶发弹出 `alert`/错误框（`#32770`）会阻塞
   `atlisp-mcp` eval。用 `python -m tools.cad_dialog_killer <pid> --watch` 自动关闭
