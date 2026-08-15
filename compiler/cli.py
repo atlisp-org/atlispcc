@@ -484,7 +484,8 @@ def _subr_bytes(opcode: int, argc: int, idx: int, flags: int = 3, wide: bool = F
 def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: Optional[int] = None,
                      params_by_name: Optional[dict] = None, lambda_args_by_func: Optional[dict] = None,
                      has_top_forms: bool = False, n_real_funcs: int = 1,
-                     top_lambda_args: Optional[list] = None) -> bytes:
+                     top_lambda_args: Optional[list] = None,
+                     top_lambda_offsets: Optional[dict] = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
     CAD 实测逆向：
@@ -681,15 +682,23 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 cur_args = params_by_name.get(fname)
                 lambda_idx = 0
             else:
-                # 内嵌 `-lambda-` DEFUN：取所在函数收集的 kwote lambda 参数。
-                # 纯顶层 `(set/setq 'sym (lambda ...))`（无宿主 defun）用
-                # top_lambda_args（按 seg0 出现序 = 源码序）。
-                if top_lambda_args and (cur_func is None or cur_func == "-LAMBDA-"):
-                    _la = top_lambda_args
+                # 混合文件顶层 setq-lambda（提升为 defun，func_offsets 用
+                # `-lambda-` 键）：按 seg0 offset 查原函数名解析参数。
+                if top_lambda_offsets and inst.offset in top_lambda_offsets:
+                    _orig = top_lambda_offsets[inst.offset]
+                    cur_args = params_by_name.get(str(_orig).upper()) if params_by_name else None
+                    cur_func = None
+                    lambda_idx = 0
                 else:
-                    _la = lambda_args_by_func.get(cur_func, []) if cur_func else []
-                cur_args = _la[lambda_idx] if lambda_idx < len(_la) else None
-                lambda_idx += 1
+                    # 内嵌 `-lambda-` DEFUN：取所在函数收集的 kwote lambda 参数。
+                    # 纯顶层 `(set/setq 'sym (lambda ...))`（无宿主 defun）用
+                    # top_lambda_args（按 seg0 出现序 = 源码序）。
+                    if top_lambda_args and (cur_func is None or cur_func == "-LAMBDA-"):
+                        _la = top_lambda_args
+                    else:
+                        _la = lambda_args_by_func.get(cur_func, []) if cur_func else []
+                    cur_args = _la[lambda_idx] if lambda_idx < len(_la) else None
+                    lambda_idx += 1
             arg_i = 0
         # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
         if (multi or top_lambda_args) and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
@@ -1662,6 +1671,9 @@ def cmd_compile(
     #   /访问冲突，见 KNOWN_ISSUES。
     _defuns_now = [f for f in program.forms if isinstance(f, Defun)]
     top_lambda_binds = _collect_top_lambda_binds(program.forms)
+    # 记录顶层 `(set/setq 'sym (lambda ...))` 的目标符号名（混合文件转为 defun
+    # 后用于 func_offsets 以 `-lambda-` 键登记，CAD DEFCODE 尾注册为 `-lambda-`）。
+    _top_lambda_names = {s for s, _ in top_lambda_binds}
     if top_lambda_binds:
         if _defuns_now:
             program.forms = _convert_top_lambda_to_defuns(program.forms)
@@ -1742,7 +1754,15 @@ def cmd_compile(
         elif isinstance(sym, str) and sym.startswith('__real_') and sym.endswith('__'):
             symtab.add_real(float(sym[len('__real_'):-len('__')]))
         elif sym.startswith('"') and sym.endswith('"'):
-            symtab.add_string(sym[1:-1])
+            _sv = sym[1:-1]
+            if f"__str_{_sv}__" in symtab.name_to_idx:
+                # CAD 字符串跨区重复注册：模块区与函数体区各自独立 gvar 槽
+                # （platform.lsp `(setq @::*locale* "chs")` 的 "chs" 在模块
+                # cond 与函数体各注册一次，fg 表两处都有）。首次 add_string
+                # 登记 name_to_idx，二次（重复）直接追加重复 STRING 槽。
+                symtab.add_string(_sv, force=True)
+            else:
+                symtab.add_string(_sv)
         elif sym in symtab.name_to_idx:
             # CAD stub：允许符号重复（递归/跨函数引用产生重复槽）
             symtab.add_force(sym)
@@ -1853,12 +1873,27 @@ def cmd_compile(
     top_level_code = bytes(top_level_bc.data)
 
     all_bytecode = BytecodeBuffer()
+    _top_lam_count = 0
+    _top_lambda_key_names: dict = {}
+    _top_lambda_offsets: dict = {}
     for i, form in enumerate(defun_forms):
         offset = len(all_bytecode.data)
         func_bytecode, _ = codegen.generate_function(form)
         from compiler.cad_symbols import normalize_vla_name
 
-        func_offsets[normalize_vla_name(form.name)] = offset
+        if form.name in _top_lambda_names:
+            # 混合文件顶层 setq-lambda（已提升为 defun）：CAD 在 DEFCODE 尾
+            # 注册为 `-lambda-`（platform.lsp 实测两处 `-lambda-`，offset 大的
+            # 先 DEFCODE）。func_offsets 键用 `-lambda-`，使 resource_builder
+            # 按 `-lambda-` 编码 DEFCODE（`_is_lambda_key`）。顺序按 seg0 offset
+            # 自然排序（源码序 = 定义序），与 CAD 逆序 DEFCODE 一致。
+            _lkey = f"-lambda-{'' if _top_lam_count == 0 else '#' + str(_top_lam_count + 1)}"
+            func_offsets[_lkey] = offset
+            _top_lambda_key_names[_lkey] = form.name
+            _top_lambda_offsets[offset] = form.name
+            _top_lam_count += 1
+        else:
+            func_offsets[normalize_vla_name(form.name)] = offset
         all_bytecode.emit(func_bytecode)
         if i < len(defun_forms) - 1:
             # CAD stub: 函数间分隔符 `16`（CLEAR_ARGS `19 <argc> 00` 已由
@@ -2067,6 +2102,10 @@ def cmd_compile(
         lambda_args_by_func[_fn.upper()] = _las
         for la in _las:
             all_func_args.append(la)
+    # 混合文件顶层 setq-lambda 以 `-lambda-` 键登记 func_offsets（DEFCODE 尾
+    # 注册为 `-lambda-`）：参数修正按原函数名解析（params_by_name 用原名键）。
+    for _lkey, _oname in _top_lambda_key_names.items():
+        params_by_name[_lkey.upper()] = params_by_name.get(normalize_vla_name(_oname).upper())
 
     # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
     # commands 标志：仅纯命令文件（无顶层表达式，走 build_command_module_code）
@@ -2154,7 +2193,8 @@ def cmd_compile(
                             has_top_forms=bool(other_forms),
                             n_real_funcs=len(defun_forms),
                             top_lambda_args=[list(la.args) for _, la in top_lambda_binds]
-                            if top_lambda_binds and not defun_forms else None)
+                            if top_lambda_binds and not defun_forms else None,
+                            top_lambda_offsets=_top_lambda_offsets)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(
         func_offsets,

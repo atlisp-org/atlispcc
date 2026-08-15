@@ -515,7 +515,18 @@ class CadSymbolCollector:
                 else:
                     _rev = _items + _rev
             for name, force in _rev:
-                if str(name).lower() == "t" and i != t_last:
+                if str(name).lower() == "t":
+                    if i != t_last:
+                        continue
+                    # CAD T 槽：模块注册区（顶层 cond else 键）与函数体区
+                    # （函数 cond else 键）各自独立注册（platform.lsp CAD 实测
+                    # 两处 `T`：模块 [27] + 函数体 [43]，后者喂 fg 表 gvar 槽）。
+                    # T 已在模块区注册过（_name_set 含 T）时直接追加重复槽，
+                    # 否则走 add() 常规注册。
+                    if "T" in self._name_set:
+                        self.names.append("T")
+                    else:
+                        self.add("T", force=True)
                     continue
                 self.add(
                     name,
@@ -836,10 +847,25 @@ class CadSymbolCollector:
             else:
                 form_refs = _SeenList()
                 self._collect_byteorder(form, form_refs, set())
-                for name, force in reversed(form_refs):
+                _rev = list(reversed(form_refs))
+                # CAD T 槽由**外层 cond 的 else 键**（`(t ...)`）位置决定
+                # （platform.lsp 实测 T 槽紧跟 else 键体符号 @::PGP-FILE/chs
+                # 之后）。保留 reversed 序最后一个 force t 注册，其余 t/T
+                # （内层 else 键、值位置 `(strcase ... T)` 等）跳过复用该槽
+                # ——与纯顶层路径（test-cond）同规则。
+                _t_force_idx = [j for j, (n, f) in enumerate(_rev)
+                                if isinstance(n, str) and n.lower() == 't' and f]
+                _t_reg_idx = _t_force_idx[-1] if _t_force_idx else -1
+                for j, (name, force) in enumerate(_rev):
                     # 顶层符号调用（force=True）不登记槽——并入 defun 槽
-                    # （CAD p04 form4 cadr/not/codepage 组无 c2l）。
+                    # （CAD p04 form4 cadr/not/codepage 组无 c2l）。例外：
+                    # cond else 键 `t`（force=True）在 T 槽位注册（CAD 实测）。
                     if force:
+                        if isinstance(name, str) and name.lower() == 't' and j == _t_reg_idx:
+                            self.add('T', force=True)
+                        continue
+                    # 值位置 t/T 与内层 else 键复用 T 槽，跳过（仅 force t 注册）。
+                    if isinstance(name, str) and name.lower() == 't':
                         continue
                     # 符号由"归属 form"独占登记，其它 form 引用不重复发槽
                     # （CAD p04：lang 属 form0 被放尾部，codepage 属 form3）。

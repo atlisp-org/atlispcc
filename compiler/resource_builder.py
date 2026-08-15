@@ -442,20 +442,34 @@ class ResourceBuilder:
                 _cmd_names = {str(f).upper() for f in names}
                 module_entries = [e for e in module_entries
                                   if not (e[0] == "SYMBOL" and str(e[1]).upper() in _cmd_names)]
-            for entry_type, entry_val in module_entries:
+            mi = 0
+            while mi < len(module_entries):
+                entry_type, entry_val = module_entries[mi]
                 if entry_type == "SYMBOL":
                     fn_bytes += self._enc_sym(entry_val) + b"\x00"
+                    mi += 1
                 elif entry_type == "STRING":
                     if fn_bytes:
                         out += b"\x5b" + bytes(fn_bytes) + b"\x00"
                         fn_bytes = bytearray()
-                    encoded = self._enc(entry_val)
-                    out += b"\x55\x01\x00" + res_u16(len(encoded)) + encoded
+                    # CAD 模块注册：连续 STRING 合并为单个 55 块
+                    # （platform.lsp CAD 实测 `55 02 00 acad.pgp chs`）。
+                    strs = [entry_val]
+                    mj = mi + 1
+                    while mj < len(module_entries) and module_entries[mj][0] == "STRING":
+                        strs.append(module_entries[mj][1])
+                        mj += 1
+                    out += b"\x55" + res_u16(len(strs))
+                    for sv in strs:
+                        enc = self._enc(sv)
+                        out += res_u16(len(enc)) + enc
+                    mi = mj
                 else:
                     if fn_bytes:
                         out += b"\x5b" + bytes(fn_bytes) + b"\x00"
                         fn_bytes = bytearray()
                     self._push_entry(out, (entry_type, entry_val))
+                    mi += 1
             if fn_bytes:
                 out += b"\x5b" + bytes(fn_bytes) + b"\x00"
             out += b"\x01" * 2

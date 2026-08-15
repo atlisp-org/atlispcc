@@ -89,15 +89,15 @@ class SymbolTable:
         slots = self.repeat_slots(name)
         return slots[1] if len(slots) > 1 else -1
 
-    def add_string(self, s: str) -> int:
-        if isinstance(s, int) or s.lstrip('-').isdigit():
-            return self.get_or_add(s)
+    def add_string(self, s: str, force: bool = False) -> int:
         key = f'__str_{s}__'
-        if key not in self.name_to_idx:
+        if force or key not in self.name_to_idx:
             idx = len(self.entries)
-            self.name_to_idx[key] = idx
+            if not force:
+                self.name_to_idx[key] = idx
             self.entries.append(('STRING', s))
             self.strings.append(s)
+            return idx
         return self.name_to_idx[key]
 
     def add_int(self, value: int) -> int:
