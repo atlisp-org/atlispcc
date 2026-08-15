@@ -906,7 +906,7 @@ class LispGenerator:
         stub and the symbol table is addressed directly by registration
         index (rather than through the mvar-reconstructed gvar tables).
 
-        AutoCAD 编译器产物（如 tests/fun-cad.fas）无函数目录且 seg0 很短，
+        AutoCAD 编译器产物（如 tests/cad/t01_math_cad.fas 等 t-series golden）无函数目录且 seg0 很短，
         使用 3 字节 Xsubr，符号按资源注册顺序（symbol_slots）编址。
         """
         if is_compact_stub(self.fas.bytecode, self.fas.function_catalog, len(self.fas.symbol_slots)):

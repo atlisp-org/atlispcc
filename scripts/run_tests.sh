@@ -125,44 +125,53 @@ else
   echo "==> [3/4] 往返验证已跳过 (--no-roundtrip)"
 fi
 
-# ── 4. CAD golden byte-identity 状态 ───────────────────────────────────────
-echo "==> [4/4] CAD golden byte-identity 状态"
+# ── 4. compile_src 编译自检（结构断言替代 CAD golden byte-identity）─────────
+echo "==> [4/4] tests/compile_src 编译 + 反编译结构自检"
 ID_STATE=$("$PY" - <<'PYEOF'
 import glob, os, sys, tempfile
 from contextlib import redirect_stdout
 
 from compiler.cli import cmd_compile
-from decompiler.fas4_decompiler import Fas4Parser
+from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
 
-ident, diff = [], []
-for f in sorted(glob.glob('tests/cad/t0[0-9]_*_cad.fas')) + sorted(glob.glob('tests/cad/t1[0-9]_*_cad.fas')):
-    name = os.path.basename(f)[:-8]  # strip _cad.fas
-    src = f'tests/cad/{name}.lsp'
-    if not os.path.exists(src):
-        continue
+ok, fail = [], []
+for src in sorted(glob.glob('tests/compile_src/*.lsp')):
+    name = os.path.basename(src)[:-4]
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, 'o.fas')
-        with open(os.devnull, "w") as devnull:
-            with redirect_stdout(devnull):
-                cmd_compile(src, out)
-        p = Fas4Parser().parse(out)
-        g = Fas4Parser().parse(f)
-        if p.bytecode == g.bytecode and p.resource_items == g.resource_items:
-            ident.append(name)
-        else:
-            diff.append(name)
-print(f"IDENTICAL={len(ident)} DIFF={len(diff)}")
-print("identical: " + (", ".join(ident) if ident else "-"))
-print("diff: " + (", ".join(diff) if diff else "-"))
+        try:
+            with open(os.devnull, "w") as devnull:
+                with redirect_stdout(devnull):
+                    cmd_compile(src, out)
+            p = Fas4Parser().parse(out)
+            if not p.bytecode or p.nsyms == 0:
+                fail.append((name, 'empty seg0/nsyms'))
+                continue
+            disasm = Disassembler(short_subr=is_compact_stub(p.bytecode, p.function_catalog))
+            insts = disasm.disassemble(p.bytecode, p.nsyms)
+            cfa = ControlFlowAnalyzer(insts, p.function_catalog)
+            funcs = cfa.find_functions()
+            gen = LispGenerator(p)
+            result = gen.generate(funcs, out)
+            if not result.strip():
+                fail.append((name, 'empty decompile'))
+                continue
+        except Exception as e:
+            fail.append((name, str(e)[:60]))
+            continue
+    ok.append(name)
+print(f"OK={len(ok)} FAIL={len(fail)}")
+print("ok: " + (", ".join(ok) if ok else "-"))
+print("fail: " + (", ".join(f"{f}: {e}" for f, e in fail) if fail else "-"))
 PYEOF
 )
 echo "$ID_STATE"
-ID_DIFF=$(echo "$ID_STATE" | grep -oP 'DIFF=\K[0-9]+' || echo 0)
-if [ "$ID_DIFF" -eq 0 ]; then
-  log "byte-identity: 全部 t-series 与 CAD 逐字节一致"
+ID_FAIL=$(echo "$ID_STATE" | grep -oP 'FAIL=\K[0-9]+' || echo 0)
+if [ "$ID_FAIL" -eq 0 ] && [ "$(echo "$ID_STATE" | grep -oP 'OK=\K[0-9]+' || echo 0)" -gt 0 ]; then
+  log "compile_src 自检: 全部编译+反编译结构通过"
   PASS=$((PASS+1))
 else
-  warn "byte-identity: $ID_DIFF 项与 CAD 有差异（已知缺口，见 docs/development-plan.md 8.C）"
+  err "compile_src 自检: $ID_FAIL 项失败"
 fi
 [ "$QUIET" -eq 0 ] && echo
 

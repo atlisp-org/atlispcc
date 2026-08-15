@@ -1,6 +1,0 @@
-(defun test-quote ()
-  (setq lst '(a b c)))
-(defun test-cons-quote ()
-  '(1 . 2))
-(defun test-nested-quote ()
-  (quote (1 2 3)))

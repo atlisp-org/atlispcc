@@ -319,22 +319,23 @@ def test_i18n_mixed_mode_roundtrip():
 
 
 _T_SERIES = [
-    't01_math', 't02_recursion', 't03_fib', 't04_while', 't05_cond',
-    't06_strcat', 't07_list', 't08_apply_mapcar', 't09_funcall', 't10_init',
-    't11_localvars', 't12_quote', 't13_nested_if', 't14_command', 't15_cad_funcs',
+    '01_math', '02_strings', '03_recursion', '04_control', '05_lists',
+    '06_higher_order', '07_locals', '08_loops', '09_variadic',
+    '10_commands', '11_top_level', '12_cad_funcs', '13_activex',
+    '14_command_s', '15_error', '16_i18n',
 ]
 
 
 @pytest.mark.parametrize('name', _T_SERIES)
 def test_t_series_roundtrip(name):
-    """Compile→decompile→validate each CAD-compat matrix source (t01-t15).
+    """Compile→decompile→validate each tests/compile_src fixture.
 
-    Sources live in tests/cad/ alongside their CAD `vlisp-compile` goldens.
+    Sources live in tests/compile_src/ (named fixtures, not CAD goldens).
     """
     from compiler.cli import cmd_compile
-    src_path = os.path.join(os.path.dirname(__file__), 'cad', f'{name}.lsp')
+    src_path = os.path.join(os.path.dirname(__file__), 'compile_src', f'{name}.lsp')
     if not os.path.exists(src_path):
-        pytest.skip(f'tests/cad/{name}.lsp fixture not present')
+        pytest.skip(f'tests/compile_src/{name}.lsp fixture not present')
     with open(src_path, encoding='utf-8') as f:
         src = f.read()
     out_path = os.path.join(tempfile.gettempdir(), f't_{name}_{os.urandom(4).hex()}.fas')
@@ -642,7 +643,7 @@ def test_star_error_roundtrip():
 
     `*error*` 是 CAD 在错误时调用的特殊函数，作为独立 defun 编译；
     反编译保留 `*error*` 名称与参数名。对应真机用例
-    `tests/cad/t24_star_error.lsp`（scripts/cad_verify.py）。
+    `tests/compile_src/15_error.lsp`（scripts/cad_verify.py）。
     """
     src = '(defun *error* (msg) (setq t24-error-msg msg) msg)'
     result = compile_and_decompile(src)
@@ -868,25 +869,35 @@ def test_tail_recursive_factorial():
 
 
 def test_decompile_reference_fun_fas():
-    """Decompiling tests/fun-cad.fas (compiled by a CAD AutoLISP compiler)
-    reproduces the original source."""
-    ref_path = os.path.join(os.path.dirname(__file__), 'fun-cad.fas')
-    if not os.path.exists(ref_path):
-        pytest.skip('tests/fun-cad.fas reference fixture not present')
+    """CLI 往返：tests/fun.lsp `(defun a () (alert "abc"))` 编译→反编译→验证。
 
-    decomp_parser = Fas4Parser()
-    fas = decomp_parser.parse(ref_path)
-    disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
-    instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
-    cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
-    functions = cfa.find_functions()
-    gen = LispGenerator(fas)
-    result = gen.generate(functions, ref_path)
+    原用例反编译 CAD 产物的 tests/fun-cad.fas；该 golden 已随 t-series 清理
+    移除，改为用 CLI 编译 tests/fun.lsp 自身做往返（保留 fun 参考源覆盖）。
+    """
+    from compiler.cli import cmd_compile
+    src_path = os.path.join(os.path.dirname(__file__), 'fun.lsp')
+    if not os.path.exists(src_path):
+        pytest.skip('tests/fun.lsp reference fixture not present')
 
-    assert '(defun a ()' in result
-    assert '(alert "abc")' in result
-    ok, errs = _validate(result)
-    assert ok, f'Validation failed: {errs}'
+    out_path = os.path.join(tempfile.gettempdir(), f'fun_{os.urandom(4).hex()}.fas')
+    try:
+        cmd_compile(src_path, out_path)
+        decomp_parser = Fas4Parser()
+        fas = decomp_parser.parse(out_path)
+        disasm = Disassembler(short_subr=is_compact_stub(fas.bytecode, fas.function_catalog))
+        instructions = disasm.disassemble(fas.bytecode, fas.nsyms)
+        cfa = ControlFlowAnalyzer(instructions, fas.function_catalog)
+        functions = cfa.find_functions()
+        gen = LispGenerator(fas)
+        result = gen.generate(functions, out_path)
+
+        assert '(defun a ()' in result
+        assert '(alert "abc")' in result
+        ok, errs = _validate(result)
+        assert ok, f'Validation failed: {errs}'
+    finally:
+        if os.path.exists(out_path):
+            os.unlink(out_path)
 
 
 def test_entity_dxf_data_roundtrip():

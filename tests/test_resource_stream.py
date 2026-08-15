@@ -96,7 +96,7 @@ def test_parse_resource_roundtrip():
 
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "o.fas")
-        cmd_compile("tests/cad/t06_strcat.lsp", out)
+        cmd_compile("tests/compile_src/02_strings.lsp", out)
         p = Fas4Parser().parse(out)
         plain = _seg1_plain(out)
         items, symbols, strings = parse_resource_stream(plain)
@@ -157,6 +157,7 @@ def test_module_id_slots_structured_only():
     var_pos+st_init 槽；原子型（SYMBOL/STRING）module_id 是符号槽重复，
     不登记（否则 `_gvar_item` 的 mvar-1 分支抢先命中破坏 symbol_slots 回退）。
     """
+    from compiler.cli import cmd_compile
     from decompiler.fas4_decompiler import Fas4Parser
 
     p = Fas4Parser()
@@ -168,10 +169,15 @@ def test_module_id_slots_structured_only():
     assert isinstance(value, tuple) and len(value) == 3
     assert [v[1] for v in value] == ["A", "B", "C"]
 
-    # 单函数文件：module_id 是字符串常量（原子型），不登记
-    fun = p.parse(os.path.join(os.path.dirname(__file__), "fun-cad.fas"))
-    fun_slots = build_module_id_slots(fun.sec2_data, fun.nsyms)
-    assert fun_slots == {}, f'atomic module_id should not be registered, got {fun_slots}'
+    # 混合文件编译产物：module_id 是原子型（字符串常量），不登记
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "o.fas")
+        cmd_compile("tests/compile_src/11_top_level.lsp", out)
+        ours = p.parse(out)
+        our_slots = build_module_id_slots(ours.sec2_data, ours.nsyms)
+        assert our_slots == {}, (
+            f'atomic module_id should not be registered, got {our_slots}'
+        )
 
 
 # ─── count_resource_records ──────────────────────────────────────────────────
@@ -189,7 +195,7 @@ def test_count_records_real_seg1():
 
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "o.fas")
-        cmd_compile("tests/cad/t05_cond.lsp", out)
+        cmd_compile("tests/compile_src/04_control.lsp", out)
         plain = _seg1_plain(out)
         n = count_resource_records(plain)
         assert n >= 2, f"expected >=2 records (GVARINIT+INIT_DONE), got {n}"
@@ -243,10 +249,10 @@ def test_extract_symbol_names_matches_slots():
     from compiler.cli import cmd_compile
     from decompiler.fas4_decompiler import Fas4Parser
 
-    for name in ["t01_math", "t04_while", "t06_strcat", "t13_nested_if"]:
+    for name in ["01_math", "03_recursion", "02_strings", "04_control"]:
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, "o.fas")
-            cmd_compile(f"tests/cad/{name}.lsp", out)
+            cmd_compile(f"tests/compile_src/{name}.lsp", out)
             p = Fas4Parser().parse(out)
             plain = _seg1_plain(out)
             names = extract_symbol_names(plain)
@@ -318,7 +324,7 @@ def test_bytecode_table_has_no_resource_only_codes():
 
 @pytest.mark.parametrize(
     "name",
-    ["t01_math", "t03_fib", "t05_cond", "t06_strcat", "t13_nested_if", "t15_cad_funcs"],
+    ["01_math", "03_recursion", "04_control", "02_strings", "08_loops", "12_cad_funcs"],
 )
 def test_real_seg1_resource_stream_parseable(name):
     """真实产物 seg1 解密后可解析，符号/字符串不丢失。"""
@@ -326,7 +332,7 @@ def test_real_seg1_resource_stream_parseable(name):
 
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "o.fas")
-        cmd_compile(f"tests/cad/{name}.lsp", out)
+        cmd_compile(f"tests/compile_src/{name}.lsp", out)
         plain = _seg1_plain(out)
         items, symbols, strings = parse_resource_stream(plain)
         assert items, f"{name}: no resource items parsed"

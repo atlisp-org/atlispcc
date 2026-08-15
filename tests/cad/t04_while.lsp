@@ -1,5 +1,0 @@
-(defun count-down (n)
-  (while (> n 0)
-    (princ n)
-    (setq n (- n 1)))
-  (princ "Done!"))

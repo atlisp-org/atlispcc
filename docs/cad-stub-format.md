@@ -2,7 +2,7 @@
 
 > 本文档是 `atlispcc`（FAS4 编译器/反编译器）对 **AutoCAD 编译器输出格式**
 > （紧凑 stub 格式）逆向与兼容实现的完整技术规范。所有结论均基于
-> AutoCAD 24.1s 实测验证与 `tests/fun-cad.fas`、`tests/cad/i18n-cad.fas` 等
+> AutoCAD 24.1s 实测验证与 `tests/cad/t01_math_cad.fas`（紧凑 stub）等 t-series golden 与 `tests/cad/i18n-cad.fas` 等
 > 参考文件逐字节对比。
 >
 > 实测成果：本项目编译的单函数 LSP 的 seg0 字节码与 AutoCAD 产物**逐字节一致**
@@ -22,7 +22,7 @@
 | 符号寻址 | function_gvars 间接 | 符号槽直接（注册序） |
 | USUBR/FUNC | 5/6 字节 | 3 字节 |
 | 函数目录 | mvar 表重建 | 资源段 DEFCODE 序列 |
-| 参考产物 | `tests/cad/i18n-cad.fas` / `tests/cad/i18n.fas` | `tests/fun-cad.fas` |
+| 参考产物 | `tests/cad/i18n-cad.fas` / `tests/cad/i18n.fas` | `tests/cad/t01_math_cad.fas` 等 t-series golden |
 
 ### 1.2 文件总布局
 
@@ -369,7 +369,7 @@ for i in 0..len(data)-1:
 2. 检查资源段 DEFCODE 序列（`5c 00 00 32 <off> 5b <name> 00 00 3a`）
 3. 平局且无 gvar DEFUN → 用函数目录判定
 
-已验证：`fun-cad.fas`→stub，`tests/cad/i18n-cad.fas`/`tests/cad/i18n.fas`→自包含。
+已验证：`tests/cad/*_cad.fas`（t-series golden）→stub，`tests/cad/i18n-cad.fas`/`tests/cad/i18n.fas`→自包含。
 
 > **汇编器独立判定**（`asm/assembler.py` 的 `_detect_compact`）：
 > 反编译共享的 `is_compact_stub` 对多函数紧凑 stub（UNK 平局且函数目录非空）会误判为
@@ -380,9 +380,9 @@ for i in 0..len(data)-1:
 
 ## 7. 已验证成果（AutoCAD 24.1s 实测）
 
-> **当前（v0.1.22）**：`CAD_T_SERIES_IDENTICAL` 锁入 **25 项** byte-identity
-> （t01-t18 + t22_activex + andor/and2/or2/andval + chinese + qsingle，
-> `tests/test_compiler_output.py`）；i18n 原文件/拆分件 byte-identity 回归；
+> **当前（v0.1.22）**：`CAD_T_SERIES_IDENTICAL` 锁入 **6 项** byte-identity
+> （andor/and2/or2/andval + chinese + qsingle，`tests/test_compiler_output.py`；
+> 原 t0X 源已迁移至 `tests/compile_src/`，其 golden 由结构断言覆盖）；i18n 拆分件 byte-identity 回归；
 > 链接输出与 `tests/cad/link/*_cad.fas` 3 份 golden 逐字节一致。CAD 真机
 > **25 项**全过（`scripts/cad_verify.py`：t01-t24 + i18n，含 foreach/repeat/
 > 变参/kwote/vla-/command/*error*）。

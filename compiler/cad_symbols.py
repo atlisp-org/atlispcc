@@ -435,6 +435,11 @@ class CadSymbolCollector:
         # `*VERSION* PRINC` 在模块段与函数体段各出现一次）。纯函数文件不受影响
         # （模块注册仅函数名，函数体符号本就独立）。
         module_reg_names = set(self.names)
+        # 大小写不敏感集合：`vla-sendcommand`（函数体原始名）与模块注册的
+        # 规范化名 `vla-SendCommand` 需判定为同符号（否则 force=False → 重复
+        # 槽被 add() 丢弃 → fg 表缺该符号 → USUBR 走 nsyms-1 越界编码，
+        # CAD 加载访问冲突 0xC0000005，@lisp_u 实测）。
+        _module_reg_upper = {str(n).upper() for n in module_reg_names}
         # `_al-bind-alist` 共享槽注册在**源码序第一个**带 `/ 局部变量` 的函数
         # （逆序迭代最后一个 local 函数 = `@::update-locale`），而非第一个遍历到
         # 的 local 函数（i18n-cad 实测 slot 121 在 @::update-locale 区）。其余
@@ -507,7 +512,11 @@ class CadSymbolCollector:
             for name, force in _rev:
                 if str(name).lower() == "t" and i != t_last:
                     continue
-                self.add(name, force=force or name in module_reg_names)
+                self.add(
+                    name,
+                    force=force
+                    or (isinstance(name, str) and name.upper() in _module_reg_upper),
+                )
             # CAD `/ 局部变量`（多函数）：与单函数一致注入 `_al-bind-alist` +
             # `(quote (locals...))` 常量；`_al-bind-alist` 全文件共享一个符号槽
             # （i18n-cad 实测仅 1 个 `_al-bind-alist`），locals 常量每函数独立。
@@ -554,6 +563,8 @@ class CadSymbolCollector:
             self.module_reg_count = len(self.names)
         # 混合模式（defun + 顶层）：函数体符号若与模块注册符号同名需重复槽。
         module_reg_names = set(self.names)
+        # 大小写不敏感集合（vla- 原始名 vs 规范化名，见多函数路径注释）。
+        _module_reg_upper = {str(n).upper() for n in module_reg_names}
 
         # 3. 函数体符号：字节码引用序正序收集，逆序注册；参数最后（共享不特殊处理）。
         #    CAD 单函数参数槽逆序（实测 simple3/t13：`+ Z Y X`、`> C B A`——
@@ -575,11 +586,18 @@ class CadSymbolCollector:
                 if force:
                     seen_forced.add(name)
             for name, force in reversed(deduped):
+                # kwote 块结束标记（`__kwote_end__`）仅作收集分隔，不注册符号。
+                if name == "__kwote_end__":
+                    continue
                 # 混合模式（defun + 顶层）：函数体符号若与模块注册符号同名，需作为
                 # 重复槽强制再注册（base-function `(set item item)` 的 SET 在模块段
                 # 与函数体段各一次，CAD 实测；t10_init `*VERSION* PRINC` 同）。
                 # 纯函数文件模块注册仅函数名，函数体符号本就独立（force 不影响）。
-                self.add(name, force=force or name in module_reg_names)
+                self.add(
+                    name,
+                    force=force
+                    or (isinstance(name, str) and name.upper() in _module_reg_upper),
+                )
             # CAD `/ 局部变量`：注入 `_al-bind-alist` 助手符号与局部变量引用
             # 常量 `(quote (locals...))`，紧跟函数体符号之后、参数之前
             # （t11_localvars 实测：`+ <= I RESULT _al-bind-alist (RESULT I) N`）。
@@ -910,7 +928,13 @@ class CadSymbolCollector:
                 # 由 arg_names 排除。
                 out.append(("kwote", False))
                 if isinstance(node.expr, LambdaNode):
-                    lambda_args = set(node.expr.args)
+                    # `/ 局部变量` 不排除：局部变量照常从函数体收集注册
+                    # （与 defun `/ locals` 同协议，_al-bind-alist 绑定符号槽），
+                    # 否则 SETQ_G 引用未注册槽 → CAD 访问冲突。仅真参数排除。
+                    _lambda_args = list(node.expr.args)
+                    if "/" in _lambda_args:
+                        _lambda_args = _lambda_args[: _lambda_args.index("/")]
+                    lambda_args = set(_lambda_args)
                     for expr in node.expr.body:
                         self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
                 else:

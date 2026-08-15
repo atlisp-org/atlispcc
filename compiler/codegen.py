@@ -605,6 +605,23 @@ class CodeGenerator:
                 self._func_ref_slots[name] = rep if rep >= 0 else self.symtab.add_force(name)
             idx = self._func_ref_slots[name]
         is_builtin = self.symtab.is_builtin(name)
+        if self.stub_format and name == "command":
+            # CAD 把 `(command a b ...)` 编译为每个参数一次独立的 `FUNC 1
+            # <ads-cmd>` 调用（platform-api `(command "shell" (strcat ...))`
+            # 实测：`PUSH_G <arg1>; FUNC 1; NIL PUSH_NIL NIL; POP; ...arg2...;
+            # FUNC 1; NIL PUSH_NIL NIL`）。中间 POP 丢弃前次调用结果，末次
+            # 调用的值留给外层语句上下文丢弃。此前用单次 `FUNC <argc>` 会报
+            # "参数太多"（CAD 的 command 每参数 argc=1）。
+            for _i, _arg in enumerate(args):
+                with self._value_ctx():
+                    self._emit_expr(buf, _arg)
+                self._emit_func3(buf, 1, idx)
+                buf.emit(encode_op_noarg(0x00))  # NIL
+                buf.emit(encode_op_noarg(PUSH_NIL))  # PUSH_NIL
+                buf.emit(encode_op_noarg(0x00))  # NIL
+                if _i < len(args) - 1:
+                    buf.emit(encode_op_noarg(POP))
+            return
         with self._value_ctx():
             for arg in args:
                 self._emit_expr(buf, arg)
@@ -683,7 +700,11 @@ class CodeGenerator:
         label_else = f"_if_else_{buf.pos()}"
         label_end = f"_if_end_{buf.pos()}"
 
-        self._emit_expr(buf, node.cond or Symbol("nil"))
+        # 条件为值位置：`_tail=True` 使条件内值位置的 setq 保留返回值
+        # （`DUP; SETQ_G`，platform-api `(if (not (vl-catch-all-error-p
+        # (setq status ...))) ...)` CAD 实测 `DUP SETQ_G`），否则 SETQ_G
+        # 消费栈顶导致条件判断取错值。与 while 条件同规则。
+        self._emit_expr(buf, node.cond or Symbol("nil"), _tail=True)
 
         if self.stub_format:
             # CAD stub: cond + JMP32_IFNOT <else> + then + JUMP <end> + else。
@@ -699,13 +720,18 @@ class CodeGenerator:
             # （模块代码顶层 if-then-setq，p04/i18n-cad 实测 `0b 06`）。
             _then_tail = self._in_tail_context or self._module_mode
             self._emit_expr(buf, node.then or Symbol("nil"), _tail=_then_tail)
-            if self._in_stmt_ctx and not isinstance(node.then, (Setq, IfNode, Progn)):
+            if self._in_stmt_ctx and not isinstance(
+                node.then, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode)
+            ):
                 # 语句上下文（中间 if，值被丢弃）：then 分支值被 POP。值上下文
                 # （setq RHS、函数/算术实参）不 POP——值需流到外层消费者。
                 # then 为 setq 时 SETQ_G 已消费栈顶，无需 POP；普通表达式则
                 # POP 丢弃（i18n-cad update-locale 内层 if-then @::load-module
                 # 后 `POP`）。then 为 progn/if 时由其自身管理栈（i18n-cad
                 # load-locale 外层 if-then=progn 后无额外 POP）。
+                # while/foreach/repeat 自带栈平衡（循环 JUMP 回跳 + CLEAR_ARGS/
+                # 尾协议），then 后无额外 POP（platform-api @::platform-path
+                # 双 while 分支实测 CAD `57 JUMP` 直接退出，无 0a POP）。
                 # POP 位于 then 末尾、JUMP 之前（ref 实测顺序 `03 0a 57`）。
                 buf.emit(encode_op_noarg(POP))
             jmp2_pos = buf.pos()
@@ -996,9 +1022,11 @@ class CodeGenerator:
                 # 中间语句丢弃结果：if 自身管理栈（then 末尾已 POP / 无 else 补
                 # PUSH_NIL）；setq 由 SETQ_G 消费栈顶；foreach stub 以
                 # CLEAR_ARGS 1 平衡栈（hkrepro cond 分支1 实测 CAD 不额外
-                # POP）；progn 自身管理。再加 body 层 POP 会双 POP。其余
-                # （调用/print 等）发 POP 丢弃。
-                if not isinstance(a, (IfNode, Setq, Progn, ForeachNode)):
+                # POP）；while/repeat 自带栈平衡（JUMP 回跳 + CLEAR_ARGS/尾
+                # 协议，platform-api @::platform-http-head `(while ...)` 后
+                # 接 if 实测 CAD 无额外 0a POP）；progn 自身管理。再加 body
+                # 层 POP 会双 POP。其余（调用/print 等）发 POP 丢弃。
+                if not isinstance(a, (IfNode, Setq, Progn, ForeachNode, WhileNode, RepeatNode)):
                     buf.emit(encode_op_noarg(POP))
             if actions:
                 self._emit_expr(buf, actions[-1])
@@ -1237,7 +1265,13 @@ class CodeGenerator:
         ``JUMP label; 14 <argc><argc><argc> 00; 体...; CLEAR_ARGS; 16; label:``。
         内嵌 DEFUN 由模块加载器预定义（运行时不执行）。
         """
-        argc = len(node.args)
+        args = list(node.args)
+        locals_ = []
+        if "/" in args:
+            _i = args.index("/")
+            locals_ = args[_i + 1 :]
+            args = args[:_i]
+        argc = len(args)
         # 每个内嵌 `-lambda-` 独立符号槽（CAD 实测：t3 槽 18、t4 槽 17、
         # t5 槽 16，nsyms=19，各自独立 DEFCODE 登记）。首个用 get_or_add
         # （保持单 kwote 文件 i18n/t20 的槽位与 golden 逐字节一致），
@@ -1259,8 +1293,14 @@ class CodeGenerator:
         # 不把 current_func_args 设为 lambda args——否则 Symbol 读取会走"函数
         # 参数"符号槽分支（PUSH_VALUE），而非 GET_LOCAL 局部槽。CAD 内嵌
         # `-lambda-` 参数读取用 GET_LOCAL（t20_kwote 真机实测）。
-        self.local_slots = {a: i for i, a in enumerate(node.args)}
-        self._emit_init_args(buf, node.args)
+        self.local_slots = {a: i for i, a in enumerate(args)}
+        self._emit_init_args(buf, args)
+        if locals_:
+            # `/ 局部变量` 与 defun 同协议：`_al-bind-alist` 绑定（CAD
+            # atlisp_u C:@F kwote lambda 实测 `PUSH_G <const>; FUNC;
+            # POP`）。局部变量读取/写入经符号槽（PUSH_VALUE/SETQ_G），
+            # 不占局部槽。
+            self._emit_al_bind_alist_locals(buf, locals_)
         body = node.body
         for expr in body[:-1]:
             self._emit_stmt(buf, expr)
@@ -1270,7 +1310,11 @@ class CodeGenerator:
             self._emit_expr(buf, body[-1], _tail=True)
         else:
             buf.emit(encode_op_noarg(PUSH_NIL))
-        buf.emit(encode_op_u16(CLEAR_ARGS, argc))
+        # CAD stub：无参 `-lambda-`（argc=0、无 `/ locals`）直接 END_DEFUN，
+        # 不发射 CLEAR_ARGS 0（与顶层 0 参 defun 同规则；platform-api
+        # @::platform-http-winhttp 内嵌 0 参 lambda CAD 实测 `16` 收尾）。
+        if argc + len(locals_):
+            buf.emit(encode_op_u16(CLEAR_ARGS, argc + len(locals_)))
         buf.emit(encode_op_noarg(0x16))
         nested_end = buf.pos()
         self.local_slots = saved_slots
@@ -1339,7 +1383,10 @@ class CodeGenerator:
         ——把局部变量引用常量 `(quote (loc1 ...))` 压栈，调用 `_al-bind-alist`
         绑定为 nil，再丢弃返回值。`_al-bind-alist` 为保留大小写的 0x56 单符号。
         """
-        const = ("LIST", tuple(("SYMBOL", l) for l in func.locals))
+        self._emit_al_bind_alist_locals(buf, func.locals)
+
+    def _emit_al_bind_alist_locals(self, buf: BytecodeBuffer, locals_list: List[str]):
+        const = ("LIST", tuple(("SYMBOL", l) for l in locals_list))
         const_idx = self.symtab.add_constant(const)
         al_idx = self.symtab.get_or_add("_al-bind-alist")
         if self.stub_format:

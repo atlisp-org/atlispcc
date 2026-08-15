@@ -572,9 +572,9 @@ python -m compiler.cli compile --report report.json test.lsp test.fas
 
 ## 16. 测试覆盖
 
-- `tests/test_compiler_output.py`：60 用例，含 7 对 CAD golden 逐字节比对 +
-  t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归。
-- `tests/test_compile_decompile.py`：73 用例编译-反编译往返。
+- `tests/test_compiler_output.py`：50 用例，含 4 对 CAD golden 逐字节比对 +
+  16 个 `tests/compile_src/` 结构断言 + i18n 拆分件 byte-identity 回归。
+- `tests/test_compile_decompile.py`：74 用例编译-反编译往返（16 个 `tests/compile_src/` fixture 系列）。
 - `tests/test_optimizer.py`：32 用例优化 pass。
 - `tests/test_cli.py`：28 用例 CLI 路径。
 - `tests/test_assembler.py` / `test_disasm.py`：反汇编/汇编往返。

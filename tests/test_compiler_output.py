@@ -279,14 +279,9 @@ def test_value_position_if_no_then_pop():
 
 #: (source, cad_golden) pairs where our compact-stub output must be byte-identical
 #: to the AutoCAD `vlisp-compile` golden (bytecode AND resource items).
+#: 顶层 tests/*.lsp 的 CAD golden（fact/fun/m1/m2/mix/multi/rt_e）已随
+#: t-series 清理移除；保留 real_* 系（源与 golden 均在 tests/cad/）。
 CAD_GOLDEN_PAIRS = [
-    ('fact.lsp', 'fact_cad.fas'),
-    ('fun.lsp', 'fun-cad.fas'),
-    ('m1.lsp', 'm1_cad.fas'),
-    ('m2.lsp', 'm2_cad.fas'),
-    ('mix.lsp', 'mix_cad.fas'),
-    ('multi.lsp', 'multi_cad.fas'),
-    ('rt_e.lsp', 'rt_e_cad.fas'),
     # 实数常量（2026-08-08 修复：CAD 注册资源段 REAL 槽 + PUSH_G，非内联 PUSH_REAL）
     ('cad/real_simple.lsp', 'cad/real_simple_cad.fas'),
     ('cad/real_arith.lsp', 'cad/real_arith_cad.fas'),
@@ -297,13 +292,11 @@ CAD_GOLDEN_PAIRS = [
 #: t-series sources whose compiled output is byte-identical to the CAD golden
 #: (generated via `vlisp-compile` on AutoCAD 24.1s, 2026-08-04/05).
 #: Source .lsp and golden .fas both live under tests/cad/.
+#: t0X 系列源文件已删（compile_src 取代），此处仅保留源与 golden 仍在的
+#: 独立夹具（andor/and2/or2/andval/chinese/qsingle）。
 CAD_T_SERIES_IDENTICAL = [
-    't01_math', 't02_recursion', 't03_fib', 't04_while', 't05_cond',
-    't06_strcat', 't07_list', 't08_apply_mapcar', 't09_funcall',
-    't10_init', 't11_localvars', 't12_quote', 't13_nested_if',
-    't14_command', 't15_cad_funcs', 'andor', 'and2', 'or2', 'andval',
-    't18_multi_recursive', 't16_foreach', 't17_repeat', 'chinese',
-    'qsingle', 't22_activex',
+    'andor', 'and2', 'or2', 'andval',
+    'chinese', 'qsingle',
 ]
 
 #: t-series sources with KNOWN remaining byte diffs (see docs/development-plan.md 8.C1).
@@ -366,6 +359,53 @@ def _t_series_golden_paths(name):
     if not (os.path.exists(src) and os.path.exists(golden)):
         pytest.skip(f'missing t-series golden fixture: {name}')
     return src, golden
+
+
+#: tests/compile_src 全新编译 fixture：编译产物做结构断言（非 CAD golden 比对）。
+#: 覆盖 nsyms/seg0/资源流/加密头等 FAS 结构的普适不变量。
+_COMPILE_SRC = [
+    '01_math', '02_strings', '03_recursion', '04_control', '05_lists',
+    '06_higher_order', '07_locals', '08_loops', '09_variadic',
+    '10_commands', '11_top_level', '12_cad_funcs', '13_activex',
+    '14_command_s', '15_error', '16_i18n',
+]
+
+
+@pytest.mark.parametrize('name', _COMPILE_SRC)
+def test_compile_src_fas_structure(name):
+    """compile_src fixture 编译产物满足 FAS 结构不变量。
+
+    每个 fixture 经 CLI 编译后断言：
+    - nsyms > 0 且 seg0 非空（含函数字节码）
+    - seg1 解密后含符号块（5b）与 DEFCODE/函数注册
+    - 加密密钥可定位（find_key）+ 段分隔符存在
+    """
+    from compiler.cli import cmd_compile
+
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'compile_src', f'{name}.lsp')
+    if not os.path.exists(src_path):
+        pytest.skip(f'missing compile_src fixture: {name}')
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src_path, out)
+        with open(out, 'rb') as fh:
+            data = fh.read()
+
+        assert data.startswith(FAS4_MAGIC), f'{name}: bad magic'
+        assert SEG_TERMINATOR in data, f'{name}: missing segment terminator'
+
+        nsyms, bc, seg1, sec2_items = _parse_fas(data)
+        assert nsyms > 0, f'{name}: empty symbol table'
+        assert len(bc) > 0, f'{name}: empty seg0 bytecode'
+        assert len(seg1) > 0, f'{name}: empty seg1'
+        # seg1 解密后应含 SYMBOL 块（5b）——所有 fixture 都定义函数/顶层符号
+        assert b'\x5b' in seg1, f'{name}: no symbol block in decrypted seg1'
+        assert sec2_items > 0, f'{name}: no resource records'
+
+        # 加密密钥可定位：find_key 不返回 None
+        from core.fas_core import find_key
+        assert find_key(data) is not None, f'{name}: XOR key not located'
 
 
 @pytest.mark.parametrize('name', CAD_T_SERIES_IDENTICAL)

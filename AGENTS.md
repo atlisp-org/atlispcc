@@ -127,14 +127,14 @@ make clean       # 清理构建产物与缓存
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，共 348 用例 + 1 skip 占位）：
+**测试文件在 `tests/` 目录下**（pytest 风格，共 345 用例：343 passed + 2 skipped）：
 - `test_parser.py` — AST 解析器（21 用例）
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
 - `test_cli.py` — CLI 路径（28 用例：compile/-O/--analyze/--report/validate/link/vlx/info/analyze/dispatch + validate 补强规则 + 源码编码检测 + 顶层 progn/条件 defun/atlisp_u 综合包编译）
-- `test_compile_decompile.py` — 编译-反编译往返（73 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t01-t15 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
-- `test_compiler_output.py` — FAS 输出正确性（60 用例，含 7 对 CAD golden 逐字节比对 + t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
+- `test_compile_decompile.py` — 编译-反编译往返（74 用例，含复杂 LSP O2/O3 往返、16 个 `tests/compile_src/` fixture 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
+- `test_compiler_output.py` — FAS 输出正确性（50 用例，含 4 对 CAD golden 逐字节比对 + 16 个 `tests/compile_src/` 结构断言 + i18n 拆分件 byte-identity 回归）
 - `test_optimizer.py` — 优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（13 用例，含重名冲突警告 + 3 份 CAD golden byte-identity）
 - `test_assembler.py` — 反汇编/汇编往返（8 用例）
@@ -148,7 +148,7 @@ make clean       # 清理构建产物与缓存
 
   一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。
 
- 手动测试文件 `tests/test_*.lsp` 也在该目录；CAD 兼容矩阵源文件 `tests/cad/t01_math.lsp`…`t15_cad_funcs.lsp` 是 `test_t_series_roundtrip` 的 fixture（编译→反编译→validate），源码与 CAD golden `.fas` 自包含存放在 `tests/cad/`。真机用例源文件另含 `tests/cad/t16_foreach.lsp`、`t17_repeat.lsp`、`t19_variadic.lsp`（`&optional`/`&rest`）、`t20_kwote.lsp`（`(function (lambda ...))` kwote 机制），由 `scripts/cad_verify.py` 编译加载验证。`tools/validate.py` 的 `SYMBOL_RE` 允许 `&`/`@`/`%`（`&optional`/`&rest`、`@::pkg`、`opt%` 等合法 AutoLISP 符号）。
+ 手动测试文件 `tests/test_*.lsp` 也在该目录；CAD 兼容矩阵源文件 `tests/compile_src/01_math.lsp`…`16_i18n.lsp` 是编译/往返测试的 fixture（16 份，覆盖数学/字符串/递归/控制/列表/高阶/kwote/局部变量/循环/变参/命令/顶层/几何内建/ActiveX/command-s/*error*/i18n），源码与 CAD golden `.fas` 分开存放（`tests/compile_src/*.lsp` + `tests/cad/*_cad.fas`），由 `scripts/cad_verify.py` 编译加载验证。`tools/validate.py` 的 `SYMBOL_RE` 允许 `&`/`@`/`%`（`&optional`/`&rest`、`@::pkg`、`opt%` 等合法 AutoLISP 符号）。
 
 ## 兼容性
 
@@ -169,11 +169,11 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - **`/ 局部变量` `_al-bind-alist` 协议**（t11_localvars 实测）：含 `/ 局部变量` 的函数，CAD 用 `(_al-bind-alist '(loc1 ...))` 绑定而非 GET_LOCAL。符号收集在函数体符号后、参数前注入 `_al-bind-alist` + `(quote (locals...))` 常量（nsyms 6→8）；codegen 在 INIT_ARGS 后发 `PUSH_G <const>; FUNC 1, <_al-bind-alist>; NIL; PUSH_NIL; NIL; POP`；CLEAR_ARGS = argc + len(locals)；while 体中间 setq 无 POP。`_al-bind-alist` 以 `0x56` 保留大小写独立注册（不进 5b 合并块）
 - **符号槽顺序** = 按源码函数逆序，每函数内"字节码引用序"逆序收集函数体符号、参数紧跟其后；混合（defun+顶层）时顶层表达式符号排在函数体内建之前；递归函数名重复槽（`compiler/cad_symbols.py`）
 - 多函数函数间分隔符 `16`（END_DEFUN；CLEAR_ARGS `19 <argc> 00` 已由 codegen 生成）；多函数代码引用末函数 end = total_size
-- 反编译回归参考：AutoCAD 产物 `tests/fun-cad.fas`（对应 `tests/fun.lsp`）
+- 反编译回归参考：`tests/fun.lsp`（`(defun a () (alert "abc"))`）经 CLI 编译往返；原 CAD 产物 golden `tests/fun-cad.fas` 已随 t-series 源清理移除
 
 反编译器同时支持两种布局：
 - **自包含格式**（`tests/cad/i18n-cad.fas`、`tests/cad/i18n.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
-- **紧凑 stub 格式**（AutoCAD 编译器输出，`tests/fun-cad.fas`）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
+- **紧凑 stub 格式**（AutoCAD 编译器输出，`tests/cad/*_cad.fas` t-series golden）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
 
 生成器会发出包装辅助函数以避免内建冲突：
 - `fas-polar1`、`fas-rtos1`、`fas-rtos3`、`fas-getvar2`、`fas-getvar3`
@@ -186,7 +186,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 
 - **CLI 与裸管线的顶层表达式差异**：`compiler.cli.cmd_compile`（CLI）把顶层表达式（defun 之外的 `setq`/`princ` 等）编译进 seg1 **模块代码**（CAD 标准），而 `tests/test_compile_decompile.py` 内的裸内存管线（`SymbolTable→Codegen→ResourceBuilder→FasWriter`）把它们留在 seg0 字节码。两者反编译结果不同——CLI 管线的顶层 `(princ "Loading...")` 反编译为 `nil`。写往返测试时二选一保持一致，**不要**把两个管线的 `compile_and_decompile` 混用。
 - **黄金比对（golden）fixture 必须是 CAD 重新编译的产物**：`D:/atlisp-test/cad_t*.fas`（7月31）版本戳是 `;A7/31/26`，当前编译器输出 `;A8/4/26`，整文件比对必然失败（即使 seg0 字节一致）。`tests/cad/` 内 `*_cad.fas`（8月3-4 重新在 CAD 编译）可用作 byte-identity golden。
-- **t-series golden 覆盖现状**：源文件与 golden 均自包含于 `tests/cad/`（`t0X_xxx.lsp` + `t0X_xxx_cad.fas`，2026-08-04/05 CAD `vlisp-compile` 生成，共 18 份）。**18/18 已 byte-identity**（`test_t_series_byte_identity`；t16_foreach/t17_repeat 于 2026-08-06 转正——codegen 实现 CAD stub 的 foreach/repeat 协议；CAD 真机功能验证见 `scripts/cad_verify.py`）。**另含 `t22_activex_cad.fas`**（2026-08-08 CAD 生成，vla-/vlax- ActiveX，锁入同一回归）。
+- **t-series golden 覆盖现状**：源文件已迁移至 `tests/compile_src/`（16 份，`01_math.lsp`…`16_i18n.lsp`），golden `.fas` 保留在 `tests/cad/`（`*_cad.fas`，2026-08-04/05 CAD `vlisp-compile` 生成，共 18 份）。**编译测试不再直接依赖 golden 文件**（`test_t_series_byte_identity` 改为对 6 份仍有效 golden 的逐字节比对 + 16 份 compile_src 结构断言；t16_foreach/t17_repeat 于 2026-08-06 转正——codegen 实现 CAD stub 的 foreach/repeat 协议；CAD 真机功能验证见 `scripts/cad_verify.py`）。**另含 `t22_activex_cad.fas`**（2026-08-08 CAD 生成，vla-/vlax- ActiveX，锁入同一回归）。
 
 ## 文档
 
@@ -203,7 +203,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 make cad-test        # 或: bash scripts/run_tests.sh --cad
 # 等价直接运行: python scripts/cad_verify.py
 ```
-`scripts/cad_verify.py` 编译 t01-t15 → 逐项在 CAD 加载 → 断言返回值，15 项全部通过
+`scripts/cad_verify.py` 编译 `tests/compile_src/` 的 16 个模块 → 逐项在 CAD 加载 → 断言返回值（16 项断言，对应原 t01-t24 系列功能）
 （2026-08-05：t10_init 随 byte-identity 转正，KNOW_ISSUES 标记已除；t12_quote 断言
 曾误用 proper list 比对 dotted pair `'(1 . 2)`，已改为 car/cdr 校验）。
 
@@ -223,17 +223,17 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - t-series 真机功能验证通过 t01-t15、t18（16 项，`scripts/cad_verify.py`；2026-08-06 复核）✅
 - **真机验证清单扩展至 21 项**（`scripts/cad_verify.py`，2026-08-06）：新增
   t16_foreach/t17_repeat（循环 stub）、t19_variadic（`&optional`/`&rest`，
-  `tests/cad/t19_variadic.lsp`）、t20_kwote（`(function (lambda ...))` 内嵌
-  `-lambda-` 运行链路，`tests/cad/t20_kwote.lsp`）、i18n（混合模式加载 +
+  现并入 `tests/compile_src/09_variadic.lsp`）、t20_kwote（`(function (lambda ...))` 内嵌
+  `-lambda-` 运行链路，现并入 `tests/compile_src/06_higher_order.lsp`）、i18n（混合模式加载 +
   `@::codepage2lang` 纯函数断言）——待 CAD 复核确认
 - **真机验证清单扩展至 22 项**（2026-08-07）：新增 t21_variadic_extra
-  （`tests/cad/t21_variadic_extra.lsp`：单函数 `&optional` 缺省、`&rest` 收集、
+  （并入 `tests/compile_src/09_variadic.lsp`：单函数 `&optional` 缺省、`&rest` 收集、
   optional+rest 组合、纯 `&optional`），与 t19 同属真机功能验证（无 CAD golden）。
 - **真机验证清单扩展至 24 项**（2026-08-08）：新增 t22_activex（`vla-`/`vlax-`
   ActiveX 只读断言）、t23_command（`command-s` 画圆→断言→擦除），**CAD 真机
   24/24 全过**。
 - **真机验证清单扩展至 25 项**（2026-08-11）：新增 t24_star_error（`*error*`
-  错误处理函数，直接调用编译产物模拟 CAD 错误分发，`tests/cad/t24_star_error.lsp`）。
+  错误处理函数，直接调用编译产物模拟 CAD 错误分发，`tests/compile_src/15_error.lsp`）。
   `scripts/cad_verify.py` 覆盖 22→24→25 项（t24 真机待 CAD 复核）。
   - **t22 修复**（2026-08-08，真机暴露的编译 bug）：
     - vla- 符号名**保留大小写**（`vla-get-count`→符号槽 `vla-get-Count`，
@@ -304,6 +304,34 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   仅**裸语句** `if` 才在 then 末尾、JUMP 前发 `POP` 丢弃值。判别标志 `_in_stmt_ctx`
   （`_emit_stmt` 置位；`setq`/算术/实参等值位置经 `_value_ctx` 清位）。回归
   `test_value_position_if_no_then_pop`。
+- **`if` then 分支为 while/foreach/repeat 时无 POP**（2026-08-15）：then 为循环
+  节点（自带栈平衡：JUMP 回跳 + CLEAR_ARGS/尾协议）时，`_emit_if` 的语句上下文
+  POP 排除列表须含 WhileNode/ForeachNode/RepeatNode，否则循环退出前多 POP
+  （platform-api `@::platform-path` 双 while 分支 CAD 实测 `57 JUMP` 直接退出）。
+- **`cond` 分支中间 while/repeat 无 POP**（2026-08-15）：`_emit_cond_stub` 的
+  分支 actions 中间语句 POP 排除列表同样须含 WhileNode/RepeatNode（自带栈平衡，
+  platform-api `@::platform-http-head` `(while ...)` 后接 `(if ...)` CAD 实测
+  无额外 `0a` POP）。
+- **`command` 每参数独立 `FUNC 1` 调用**（2026-08-15）：CAD 把 `(command a b ...)`
+  编译为每个参数一次 `FUNC 1 <ads-cmd>`（`PUSH_G <arg>; FUNC 1; NIL PUSH_NIL
+  NIL; POP` 间隔），非单次 `FUNC <argc>`——后者 CAD 加载报"参数太多"
+  （platform-api `(command "shell" (strcat ...))` 实测）。`command` 内建在
+  资源段注册名为 `ads-cmd`。
+- **`if` 条件为值位置 setq 需 DUP**（2026-08-15）：`_emit_if` 的条件用
+  `_tail=True` 求值，使条件内值位置 `(setq ...)` 发 `DUP; SETQ_G` 保留返回值
+  （platform-api `(if (not (vl-catch-all-error-p (setq status ...))) ...)`
+  CAD 实测 `0b 06`）。与 while 条件同规则。
+- **0 参 `-lambda-` 无 CLEAR_ARGS 0**（2026-08-15）：`_emit_nested_lambda` 在
+  argc=0 且无 `/ locals` 时直接 END_DEFUN（`16`），不发 `19 00 00`（与顶层
+  0 参 defun 同规则；platform-api 内嵌 0 参 kwote lambda CAD 实测）。
+- **`_patch_usubr_idx` 仅混合/多函数文件启用**（2026-08-15）：纯单函数文件
+  （无顶层表达式且 ≤1 真实 defun）直接返回原 seg0——codegen 槽已与资源
+  symbol_slots 一致，重映射会把多 kwote 的 PUSH_G 字符串按 `nsyms-1` 回退
+  改错槽（`-lambda-` 类型错误）。表外字符串操作数 = 资源 symbol_slots 真实索引
+  （含 REAL 项，漏 REAL 会使索引偏 1）。回归：2-kwote 最小复现 `(test-a)` → T。
+- **`__kwote_end__` 标记不注册**（2026-08-15）：`_collect_single` 收集 refs 中的
+  `__kwote_end__` 分隔标记须过滤，否则泄漏为符号槽（多 kwote 文件 nsyms 多 1、
+  后续槽偏移，CAD 加载报 `-lambda-` 类型错误）。
 - 文件头注释/版本戳（`;A<日期>`）随日期变化，非字节一致性目标；seg0+sec2 已全对齐
 - **CAD 模态对话框阻塞 MCP**：CAD 偶发弹出 `alert`/错误框（`#32770`）会阻塞
   `atlisp-mcp` eval。用 `python -m tools.cad_dialog_killer <pid> --watch` 自动关闭

@@ -22,7 +22,7 @@ FAS4 字节码由单字节操作码及其可变长度操作数组成。每个操
 | FUNC 调用 | `51 <argc> <idx:2> <flags> 00` (6 字节) | `51 <argc> <idx:1>` (3 字节) |
 | GET_LOCAL | `05 <slot:1>` (2 字节) | `5c <slot:2>` (3 字节) |
 | 函数目录 | mvar 表重建 | seg1 DEFCODE 序列 |
-| 参考产物 | `tests/cad/i18n-cad.fas` / `tests/cad/i18n.fas` | `tests/fun-cad.fas` |
+| 参考产物 | `tests/cad/i18n-cad.fas` / `tests/cad/i18n.fas` | `tests/cad/t01_math_cad.fas` 等 t-series golden |
 
 操作数格式代码：
 

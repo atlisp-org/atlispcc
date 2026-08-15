@@ -41,7 +41,7 @@ def build_trailer(seg1_plaintext: bytes, key_len: int = 23) -> tuple:
 
     ``key_len`` 为密钥总长度（21~26 字节），其中含 15 字节的
     ``;fas4 crunch`` 标记，其余为随机前缀。默认 23 与 AutoCAD
-    编译器产物（tests/fun-cad.fas）一致。
+    编译器产物（tests/cad/t01_math_cad.fas 等 t-series golden）一致。
     """
     if not 21 <= key_len <= 26:
         raise ValueError(f'key_len must be in 21..26 (got {key_len})')

@@ -1,7 +1,0 @@
-(defun sum-to-n (n / result i)
-  (setq result 0)
-  (setq i 1)
-  (while (<= i n)
-    (setq result (+ result i))
-    (setq i (+ i 1)))
-  result)

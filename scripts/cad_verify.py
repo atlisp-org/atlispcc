@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""CAD 真机测试运行器 — 逐个编译/加载/断言 t-series 编译产物。
+"""CAD 真机测试运行器 — 逐个编译/加载/断言 tests/compile_src/ 编译产物。
 
 每个用例独立执行（编译 → 复制到 CAD → 加载 → 断言返回值），避免单个大脚本
 在 CAD 会话不稳定时整体中断（§3.7 安全策略）。
 
-覆盖 24 项：t01-t15 + t16_foreach/t17_repeat + t18 相互递归 +
-t19_variadic（&optional/&rest）+ t20_kwote（`(function (lambda ...))` 内嵌
-函数）+ t21_variadic_extra（变参扩展：optional 缺省/rest 收集/组合）
-+ i18n（混合 defun+顶层+kwote，调 @::codepage2lang）+ t22/t23 ActiveX/command
-+ t24_star_error（`*error*` 错误处理函数）。
+源文件在 tests/compile_src/（自包含，2026-08 重构后不再依赖 tests/cad/ 的
+t-series 源文件；tests/cad/ 只保留 `*_cad.fas` golden 供反编译/资源流回归）。
+覆盖 24 项：01_math / 02_strings / 03_recursion / 04_control / 05_lists /
+06_higher_order / 07_locals / 08_loops / 09_variadic / 10_commands /
+11_top_level / 12_cad_funcs + 13_activex / 14_command_s / 15_error /
+16_i18n（混合 defun+顶层+kwote，调 @::codepage2lang）。
 
 用法:
-    python scripts/cad_verify.py           # 全量验证 24 项
-    python scripts/cad_verify.py t01 t05   # 只验证指定项
+    python scripts/cad_verify.py               # 全量验证
+    python scripts/cad_verify.py 01_math 05_lists  # 只验证指定项
 """
 import json
 import os
@@ -29,64 +30,64 @@ from compiler.cli import cmd_compile
 CAD_DIR = "C:/Users/vitalgg/@lisp"
 
 # 每个用例: (模块名, 加载后断言脚本, 期望 JSON 值)
+# 模块名 = tests/compile_src/<模块名>.lsp（不含扩展名）。
 CASES = [
-    ("t01_math", '(list (add 2 3) (multiply 4 5))', [5, 20]),
-    ("t02_recursion", '(list (factorial 5) (factorial 10))', [120, 3628800]),
-    ("t03_fib", '(fib 10)', 55),
-    ("t04_while", '(count-down 3)', "Done!"),
-    ("t05_cond", '(list (classify -5) (classify 0) (classify 7))',
-     ["negative", "zero", "positive"]),
-    ("t06_strcat", '(greet "CAD")', "Hello, CAD!"),
-    ("t07_list", '(list (get-first \'(10 20 30)) (get-rest \'(10 20 30)) (build-list))',
-     [10, [20, 30], [1, 2, 3]]),
-    ("t08_apply_mapcar", '(list (sum-list \'(1 2 3 4)) (double-all \'(1 2 3)))',
-     [10, [2, 4, 6]]),
-    ("t09_funcall", '(list (square 6) (sum-of-squares 3 4))', [36, 25]),
-    ("t10_init", '(get-version)', "1.0"),
-    ("t11_localvars", '(sum-to-n 5)', 15),
-    ("t12_quote",
-     '(list (test-nested-quote) (car (test-cons-quote)) (cdr (test-cons-quote)))',
-     [[1, 2, 3], 1, 2]),
-    ("t13_nested_if", '(list (max3 3 1 2) (max3 1 5 2) (max3 2 1 7))', [3, 5, 7]),
-    ("t14_command", '(list (c:add 3 4) (c:add 10 -2))', [7, 8]),
-    ("t15_cad_funcs", '(list (get-dist \'(0 0) \'(3 4)) (get-ang \'(0 0) \'(1 0)))',
+    ("01_math", '(list (add 2 3) (multiply 4 5) (square 6) (sum-of-squares 3 4))',
+     [5, 20, 36, 25]),
+    ("02_strings",
+     '(list (greet "CAD") (full-name "John" "Doe") (shout "hi"))',
+     ["Hello, CAD!", "John Doe", "HI!!"]),
+    ("03_recursion",
+     '(list (factorial 5) (factorial 10) (fib 10) (count-to 3))',
+     [120, 3628800, 55, 3]),
+    ("04_control",
+     '(list (classify -5) (classify 0) (classify 7)'
+     ' (max3 3 1 2) (max3 1 5 2) (max3 2 1 7)'
+     ' (is-even 4) (is-odd 3))',
+     ["negative", "zero", "positive", 3, 5, 7, True, True]),
+    ("05_lists",
+     '(list (get-first \'(10 20 30)) (get-rest \'(10 20 30)) (build-list)'
+     ' (test-nested-quote) (car (test-cons-quote)) (cdr (test-cons-quote)))',
+     [10, [20, 30], [1, 2, 3], [1, 2, 3], 1, 2]),
+    ("06_higher_order",
+     '(list (sum-list \'(1 2 3 4)) (double-all \'(1 2 3)) (kwote-double))',
+     [10, [2, 4, 6], 42]),
+    ("07_locals", '(sum-to-n 5)', 15),
+    ("08_loops",
+     '(list (sum-foreach \'(1 2 3 4 5)) (collect-foreach \'(1 2 3)) (repeat-count 5))',
+     [15, [2, 4, 6], 5]),
+    # &optional/&rest 可变参数（v-greet/v-sum-rest/v-product/v-first-arg）
+    ("09_variadic",
+     '(list (v-greet "CAD") (v-greet "CAD" "Hi")'
+     ' (v-sum-rest 1 2 3 4) (v-product 2 3 4)'
+     ' (v-first-arg 1 2 3) (v-first-arg 5)'
+     ' (v-pure-optional) (v-pure-optional 1 2))',
+     ["Hello, CAD!", "Hi, CAD!", 10, 24, 2, 5, [None, None], [1, 2]]),
+    # c:hello 尾 `(princ)` 返回 nil，仅断言 c:add（返回求和，同原 t14 断言）
+    ("10_commands", '(list (c:add 3 4) (c:add 10 -2))', [7, 8]),
+    ("11_top_level", '(list (get-version) *version*)', ["1.0", "1.0"]),
+    ("12_cad_funcs",
+     '(list (get-dist \'(0 0) \'(3 4)) (get-ang \'(0 0) \'(1 0)))',
      [5.0, 0.0]),
-    ("t16_foreach", '(sum-foreach \'(1 2 3 4 5))', 15),
-    ("t17_repeat", '(repeat-count 5)', 5),
-    ("t18_multi_recursive", '(list (is-even 4) (is-odd 3))', [True, True]),
-    # &optional/&rest 可变参数（t19_variadic，CAD 需至少一个必填参数才收集 rest）
-    ("t19_variadic",
-     '(list (t19-greet "CAD") (t19-greet "CAD" "Hi") (t19-sum 1 2 3 4))',
-     ["Hello, CAD!", "Hi, CAD!", 10]),
-    # &optional/&rest 变参扩展（t21_variadic_extra：optional 缺省、rest 收集、
-    # optional+rest 组合、纯 &optional 无必填）
-    ("t21_variadic_extra",
-     '(list (t21-greet "CAD") (t21-greet "CAD" "Hi")'
-     ' (t21-sum-rest 1 2 3 4) (t21-product 2 3 4)'
-     ' (t21-first-arg 1 2 3) (t21-first-arg 5))',
-     ["Hello, CAD!", "Hi, CAD!", 10, 24, 2, 5]),
-    # kwote `(function (lambda ...))` / `-lambda-` 内嵌函数完整运行链路
-    # （t20_kwote：apply-fn 接收 kwote lambda 并调用，应得 2*21=42）
-    ("t20_kwote", '(t20-kwote)', 42),
-    # i18n 混合模式（defun+顶层+kwote `-lambda-`）：加载后调用纯函数
-    # `@::codepage2lang`（assoc 字符串 key），验证 kwote/嵌套 lambda 运行正确
-    ("i18n",
+    # i18n 混合模式（defun+顶层+kwote）：加载后调用纯函数 `@::codepage2lang`
+    # （assoc 字符串 key），验证 kwote/嵌套 lambda 运行正确。
+    ("16_i18n",
      '(list (@::codepage2lang "ANSI_936") (@::codepage2lang "ANSI_949")'
      ' (@::codepage2lang "ANSI_1258"))',
      [["zh", "zh_CN"], ["kor", "kr"], ["vie", "vi"]]),
     # C1: vla-/vlax- ActiveX 只读结构断言。断言 T（文档存在）+ 计数为正整数，
     # 不用具体图元名，避免破坏性与环境依赖。
-    ("t22_activex",
+    ("13_activex",
      '(list (t22-has-active-doc)'
      ' (t22-positive-count (vla-get-Application (t22-acad-doc))))',
      [True, True]),
     # C2: command-s 交互执行真实 CAD 命令。创建圆 → 断言 entlast 为 CIRCLE →
     # 擦除，全部在 UNDO 组内自清理，不留新实体。
-    ("t23_command", '(t23-created-circle-p)', True),
+    ("14_command_s", '(t23-created-circle-p)', True),
     # C3: *error* 错误处理函数。直接调用编译好的 *error* 处理器（模拟 CAD 的
     # 错误分发），断言消息被捕获——安全验证 *error* 编译产物运行正确，不触发
     # 真实错误（避免破坏 CAD 会话，§3.7）。
-    ("t24_star_error",
+    ("15_error",
      '(list (t24-handler-test) t24-error-msg)',
      ["handler-ran", "handler-ran"]),
 ]
@@ -150,7 +151,7 @@ def _extract_value(res):
 
 def verify_case(probe, module, expr, expected):
     fas = os.path.join(CAD_DIR, f"{module}.fas").replace("\\", "/")
-    src = os.path.join(_ROOT, "tests", "cad", f"{module}.lsp")
+    src = os.path.join(_ROOT, "tests", "compile_src", f"{module}.lsp")
     try:
         cmd_compile(src, fas)
     except Exception as e:
@@ -168,7 +169,9 @@ def verify_case(probe, module, expr, expected):
 
 
 def _to_lisp_literal(value):
-    """把 Python 值序列化为 Lisp 字面量（列表/数字/字符串）。"""
+    """把 Python 值序列化为 Lisp 字面量（列表/数字/字符串/nil）。"""
+    if value is None:
+        return "nil"
     if isinstance(value, list):
         return "(" + " ".join(_to_lisp_literal(v) for v in value) + ")"
     if isinstance(value, str):

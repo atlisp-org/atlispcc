@@ -239,8 +239,8 @@ python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
 - `test_cli.py` — CLI 路径（28 用例：compile/-O/--analyze/--report/validate/link/vlx/info/analyze/dispatch + validate 补强规则 + 源码编码检测 + 顶层 progn/条件 defun/atlisp_u 综合包编译）
-- `test_compile_decompile.py` — 编译-反编译往返（73 用例，含 AutoCAD `fun-cad.fas` 参考反编译回归、复杂 LSP O2/O3 往返、t-series 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
-- `test_compiler_output.py` — FAS 输出正确性（60 用例，含 7 对 CAD golden 逐字节比对 + t-series byte-identity + i18n 原文件/拆分件 byte-identity 回归）
+- `test_compile_decompile.py` — 编译-反编译往返（74 用例，含复杂 LSP O2/O3 往返、16 个 `tests/compile_src/` fixture 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
+- `test_compiler_output.py` — FAS 输出正确性（50 用例，含 4 对 CAD golden 逐字节比对 + 16 个 `tests/compile_src/` 结构断言 + i18n 拆分件 byte-identity 回归）
 - `test_optimizer.py` — 所有优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（13 用例，含重名冲突警告 + 3 份 CAD golden byte-identity）
 - `test_assembler.py` — 反汇编/汇编往返（8 用例）
@@ -270,7 +270,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - **顶层表达式**（defun 之外的 setq/set 等）编译进 seg1 **模块代码**（非 seg0）：模块代码 = `DEFUN头 + [顶层表达式] + [函数注册尾: JUMP + PUSH_G <模块注册+2>; SETQ_G 1; PUSH_G 1] + END_DEFUN`；gvar 槽 = 符号槽 + 1；简单 `setq 变量 "字符串"` → `PUSH_G 值+1; DUP; SETQ_G 变量+1`；顶部占位 `PUSH_G <模块注册符号数+1>; POP`；代码引用长度 = `total_size`（`len(seg0) + 1`）
 - **模块注册段**（混合 defun+顶层）：注册函数名 + 顶层表达式符号（连续 SYMBOL 合并 5b 块，遇 STRING 分块）；`nsyms = len(entries) - 模块注册符号数 + 1`；函数注册 GVARINIT st_init = nsyms；DEFCODE 后 GVARINIT var_pos = 模块注册符号数 + 2
 - 多函数函数间分隔符：`16`（END_DEFUN；CLEAR_ARGS `19 <argc> 00` 已由 codegen 生成，分隔符只追加 `16`）
-- 反编译回归参考：AutoCAD 产物 `tests/fun-cad.fas`（对应 `tests/fun.lsp`）
+- 反编译回归参考：`tests/fun.lsp`（`(defun a () (alert "abc"))`）经 CLI 编译往返；原 CAD 产物 golden `tests/fun-cad.fas` 已随 t-series 源清理移除
 
 **kwote 机制**（`(function (lambda ...))`，v0.1.18+）：
 
@@ -298,7 +298,7 @@ CLEAR_ARGS = argc + locals。
 
 反编译器同时支持两种布局：
 - **自包含格式**（`tests/cad/i18n-cad.fas`、`tests/cad/i18n.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
-- **紧凑 stub 格式**（AutoCAD 编译器输出，`tests/fun-cad.fas`）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
+- **紧凑 stub 格式**（AutoCAD 编译器输出，`tests/cad/*_cad.fas` t-series golden）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
 
 生成器会发出包装辅助函数以避免内建冲突：
 - `fas-polar1`、`fas-rtos1`、`fas-rtos3`、`fas-getvar2`、`fas-getvar3`

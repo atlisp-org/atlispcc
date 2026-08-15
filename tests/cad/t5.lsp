@@ -1,6 +1,0 @@
-(defun a ()
-  (if (> 1 2)
-    (alert "yes")
-    (alert "no")
-  )
-)

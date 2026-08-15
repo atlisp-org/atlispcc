@@ -35,6 +35,7 @@ from compiler.resource_builder import (
     build_command_module_code,
     count_resource_records,
     resolve_encoding,
+    _real_fmt,
 )
 from compiler.fas_writer import FasWriter
 from compiler.analyzer import analyze
@@ -481,13 +482,20 @@ def _subr_bytes(opcode: int, argc: int, idx: int, flags: int = 3, wide: bool = F
 
 
 def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: Optional[int] = None,
-                     params_by_name: Optional[dict] = None, lambda_args_by_func: Optional[dict] = None) -> bytes:
+                     params_by_name: Optional[dict] = None, lambda_args_by_func: Optional[dict] = None,
+                     has_top_forms: bool = False, n_real_funcs: int = 1) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
     CAD 实测逆向：
     - USUBR 调用符号的 gvar 槽 = idx + 1（idx = gvar 槽 - 1）
     - 参数绑定/读取槽 = 参数符号的 gvar 槽 - 1（越界符号 gvar 槽假定 = nsyms）
     codegen 用占位生成，此处用资源段 GVARINIT 重建的 gvar 表修正。
+
+    仅当文件含顶层表达式（has_top_forms=True，顶层符号占用模块注册槽导致
+    codegen symtab 序 ≠ 资源注册序）时重映射。纯函数文件（无顶层表达式）
+    codegen 槽已与资源 symbol_slots 一致，重映射反而破坏正确输出（多 kwote
+    PUSH_G 字符串被 `nsyms-1` 回退改错槽、kwote FUNC 槽错位 → CAD 加载报
+    `-lambda-` 类型错误，test-2kwote/platform-api 实测），直接原样返回。
 
     当 codegen 内嵌 `(function (lambda ...))`（kwote）时，codegen 会把 `-lambda-`
     追加进 symtab.entries，使 fas_nsyms（len(entries)-module_reg_count+1）比
@@ -502,6 +510,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     此时 offset=0（CAD 实测 `nsyms-codegen_nsyms` 过大导致 USUBR/FUNC 索引
     整体错位、加载报参数太少）。
     """
+    if not has_top_forms and n_real_funcs <= 1:
+        return seg0
     offset = 0
     if codegen_nsyms is not None and nsyms > codegen_nsyms:
         _trailing_lam = 0
@@ -510,8 +520,12 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 _trailing_lam += 1
             else:
                 break
-        if _trailing_lam == nsyms - codegen_nsyms:
-            offset = nsyms - codegen_nsyms
+        # 仅单 kwote（恰好 1 个末尾 `-lambda-`）用统一偏移补偿（i18n 实测
+        # gvar 槽 - 2）。多 kwote（≥2）`-lambda-` 穿插/多槽时统一偏移会
+        # 整体错位 → CAD 加载报"参数太少"/类型错误，此时 offset=0（gvar 槽 - 1，
+        # platform-api 双 kwote 实测 GETVAR fg[131]→USUBR 130 正确）。
+        if _trailing_lam == 1 and _trailing_lam == nsyms - codegen_nsyms:
+            offset = 1
     try:
         from core.fas_core import build_mvar_tables
 
@@ -553,7 +567,32 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     real_map: dict = {}
     for idx, v in enumerate(fg):
         if isinstance(v, tuple) and len(v) == 2 and v[0] == "REAL":
-            real_map.setdefault(float(v[1]), idx)
+            real_map.setdefault(_real_fmt(float(v[1])), idx)
+    # 资源流注册序（symbol_slots）：PUSH_G 字符串/表外符号的操作数 = 其在
+    # symbol_slots 中的索引（CAD 实测）。此前字符串回退用 `nsyms-1` 硬编码，
+    # 对多 kwote 文件（`-lambda-` 参数混入 func_args 使 multi=True）会越界
+    # 错槽（platform-api/test-2kwote 的 `"platform"` 在 slot 6 而非末尾，
+    # 被改成 nsyms-1=8 → CAD 加载报 `-lambda-` 类型错误）。改用真实注册序。
+    _res_symbol_slots: List[str] = []
+    try:
+        from core.fas_core import parse_resource_stream as _prs
+
+        _ritems, _rsyms, _rstrs = _prs(seg1)
+        for _rit in _ritems:
+            # symbol_slots = SYMBOL/STRING/REAL 三类（与 decompiler 一致）；
+            # 漏 REAL 会使后续索引整体偏 1（platform-api `0.5` REAL 项实测）。
+            if isinstance(_rit, tuple) and len(_rit) == 2 and _rit[0] in ("SYMBOL", "STRING", "REAL"):
+                _res_symbol_slots.append(str(_rit[1]))
+    except Exception:
+        _res_symbol_slots = []
+
+    def _res_slot_of(value: str) -> Optional[int]:
+        """字符串/符号在资源 symbol_slots 中的索引；未找到返回 None。"""
+        for _i, _v in enumerate(_res_symbol_slots):
+            if str(_v) == value:
+                return _i
+        return None
+
     def _strip_list_markers(v):
         """symtab 常量结构 → fg 表可比较形式（规范化大小写/INT/REAL/LIST）。
 
@@ -769,16 +808,14 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     gkey = str(strval)  # 字符串大小写敏感（`"date"`/`"DATE"` 异槽）
                     if gkey in str_map:
                         new_idx = str_map[gkey] - 1 - offset
-                    elif multi:
-                        # 多函数表外字符串：注册于符号槽末尾（gvar 槽 = nsyms）。
-                        new_idx = nsyms - 1
                     else:
-                        # 单函数：函数体字符串若不在 fg（有顶层 form 时符号注册
-                        # 被顶层组占用，fg 仅含函数表符号），CAD 同样注册于符号槽
-                        # 末尾，操作数 = nsyms - 1（pf5 `(getenv "HOME")` 实测
-                        # HOME 操作数 2 = nsyms-1）。无顶层 form 的纯函数文件
-                        # （t06 等）字符串已在 fg，走上方 gvar_map 分支。
-                        new_idx = nsyms - 1
+                        # 表外字符串：操作数 = 其在资源 symbol_slots 的真实索引
+                        # （CAD 实测 PUSH_G 字符串直接引用 symbol_slots 槽）。
+                        # 此前硬编码 nsyms-1（假定注册于符号槽末尾），对多 kwote
+                        # 文件/内联字符串会错槽（platform-api `"platform"` slot 6
+                        # 被改成 nsyms-1 → `-lambda-` 类型错误）。
+                        _rslot = _res_slot_of(strval)
+                        new_idx = _rslot if _rslot is not None else nsyms - 1
                 else:
                     # 函数体符号（SYMBOL 且不在 GVARINIT 表——fg 表）：
                     # CAD 对 PUSH_G/PUSH_VALUE/SETQ_G 也用 `gvar 槽 - 1`
@@ -794,7 +831,10 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 if etype == "REAL":
                     # 实数常量按值匹配资源段 REAL 槽（codegen symtab 槽可能
                     # 偏离 GVARINIT，base-function 实测 0.001 槽 174→fg[130]）。
-                    _ridx = real_map.get(float(symtab.entries[idx0][1]))
+                    # key 用 _real_fmt 规范化：资源流存 15 位（.15g），symtab
+                    # 保留完整 float（`(/ 1.0 24.0)`=0.041666666666666664 vs
+                    # 资源 `'0.0416666666666667'`），直接 float 比较会失配 → 越界。
+                    _ridx = real_map.get(_real_fmt(float(symtab.entries[idx0][1])))
                     new_idx = (_ridx - 1 - offset) if _ridx is not None else None
                 if new_idx is not None and 0 <= new_idx <= 0xFFFF:
                     opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
@@ -1188,8 +1228,9 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
             if _t in ("SYMBOL", "STRING"):
                 return gvar_map.get(str(_v).upper())
             if _t == "REAL" and real_map is not None:
-                # 实数常量：按值匹配资源段 REAL 槽（fg，与函数体 real_map 同基准）
-                return real_map.get(float(_v))
+                # 实数常量：按值匹配资源段 REAL 槽（fg，与函数体 real_map 同基准）；
+                # key 用 _real_fmt 规范化（资源流存 15 位，symtab 为完整 float）。
+                return real_map.get(_real_fmt(float(_v)))
         return None
 
     out = bytearray()
@@ -1311,6 +1352,14 @@ def _collect_symbol_nodes(node):
             yield from _collect_symbol_nodes(e)
 
 
+def _lambda_real_args(lam):
+    """lambda 真参数：剔除 `/ 局部变量` 分隔符及局部变量（与 defun 同协议）。"""
+    args = list(lam.args)
+    if "/" in args:
+        args = args[: args.index("/")]
+    return args
+
+
 def _collect_kwote_lambda_args(node):
     """递归收集 `(function (lambda (args...) ...))` 的参数列表（源码顺序）。
 
@@ -1335,7 +1384,7 @@ def _collect_kwote_lambda_args(node):
     )
 
     if isinstance(node, QuotedExpr) and node.kwote and isinstance(node.expr, LambdaNode):
-        yield list(node.expr.args)
+        yield _lambda_real_args(node.expr)
         for e in node.expr.body:
             yield from _collect_kwote_lambda_args(e)
     elif isinstance(node, Defun):
@@ -1373,7 +1422,7 @@ def _collect_kwote_lambda_args(node):
         # `((lambda (a b) ...) args...)` 立即应用：内嵌 `-lambda-` DEFUN 参数
         # （与 kwote 同机制，CAD 实测按源码顺序紧跟所在函数之后）。
         if node.items and isinstance(node.items[0], LambdaNode):
-            yield list(node.items[0].args)
+            yield _lambda_real_args(node.items[0])
             for e in node.items[0].body:
                 yield from _collect_kwote_lambda_args(e)
             for item in node.items[1:]:
@@ -1454,6 +1503,98 @@ def _rewrite_top_lambda_binds(forms):
     return forms
 
 
+def _defun_from_lambda(name, lam):
+    """把 LambdaNode 提升为等价的 Defun（拆分 `/ locals`、`&optional`、`&rest`）。
+
+    LambdaNode.args 是原始平铺列表（含 `/`、`&optional`、`&rest` 标记），
+    Defun 需拆分到 args/optional/rest/locals。CAD 对顶层 lambda 同样按
+    真实参数数编码（@lisp_u `@::wget` lambda 3 实参，CAD `-lambda-` DEFUN
+    头 `[3,3,3,0]`，`/` 后 cmd/headers 为局部变量）。
+    """
+    args = list(getattr(lam, "args", []) or [])
+    optional = []
+    rest = None
+    locals_ = []
+    out_args = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "&optional":
+            i += 1
+            while i < len(args) and args[i] not in ("&rest", "/"):
+                optional.append(args[i])
+                i += 1
+            continue
+        elif a == "&rest":
+            if i + 1 < len(args):
+                rest = args[i + 1]
+            i += 1
+            continue
+        elif a == "/":
+            locals_ = args[i + 1 :]
+            break
+        else:
+            out_args.append(a)
+        i += 1
+    return Defun(
+        name=name,
+        args=out_args,
+        optional=optional,
+        rest=rest,
+        locals=locals_,
+        body=list(getattr(lam, "body", []) or []),
+    )
+
+
+def _convert_top_lambda_to_defuns(forms):
+    """把混合文件顶层 `(setq X (lambda ...))` / `(set 'X (lambda ...))` 提升为
+    独立 defun。
+
+    CAD 对混合文件顶层 lambda 编译为可调用 SUBR（seg0 `-lambda-` DEFUN +
+    DEFCODE 注册 + 模块代码 `set` 绑定，`(type @::acadver)` → SUBR、
+    `(@::acadver)` → 值）。atlispcc 直接提升为同名 defun 等价实现：X 成为
+    普通函数（callable SUBR），加载时由 DEFCODE 注册，模块代码中对 X 的
+    顶层调用（如 `(@::fasext "@lisp")`、`(@::acadver)`）可正常执行。
+
+    纯顶层文件（无 defun）仍走 CAD `-lambda-` 机制（_rewrite_top_lambda_binds），
+    本函数只处理混合文件。`(set 'fasext @::*fasext*)` 等非 lambda 绑定保留。
+    """
+    from compiler.ast_nodes import LambdaNode as _LN, Setq as _Setq
+
+    def _lambda_of(v):
+        if isinstance(v, _LN):
+            return v
+        if isinstance(v, QuotedExpr) and isinstance(v.expr, _LN):
+            return v.expr
+        return None
+
+    out = []
+    for f in forms:
+        if isinstance(f, Call) and f.name == "set" and len(f.args) == 2:
+            tgt = f.args[0]
+            lam = _lambda_of(f.args[1])
+            if lam is not None and isinstance(tgt, QuotedExpr) and isinstance(tgt.expr, Symbol):
+                out.append(_defun_from_lambda(tgt.expr.name, lam))
+                continue
+        elif isinstance(f, _Setq):
+            new_pairs = []
+            has_lambda_pair = False
+            for t, v in f.pairs:
+                lam = _lambda_of(v)
+                if lam is not None and isinstance(t, Symbol):
+                    out.append(_defun_from_lambda(t.name, lam))
+                    has_lambda_pair = True
+                else:
+                    new_pairs.append((t, v))
+            if new_pairs:
+                out.append(_Setq(pairs=new_pairs))
+            elif not has_lambda_pair:
+                out.append(f)
+            continue
+        out.append(f)
+    return out
+
+
 def cmd_compile(
     source: str,
     output: str = "",
@@ -1483,15 +1624,23 @@ def cmd_compile(
     program.forms = _hoist_conditional_defuns(program.forms)
     # 嵌套 defun（`(defun f () (defun g () ...))`）改写为 `(setq g '(lambda ...))`
     program.forms = _lower_nested_defuns(program.forms)
-    # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：CAD 用内嵌 `-lambda-`
-    # SUBR（seg0 紧凑 stub + DEFCODE 注册为可调用函数），模块代码
-    # ``PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set``。有 defun 的混合
-    # 文件 CAD 用引用数据，不改写（@lisp_u @::fasext 顶层 lambda 的 -lambda-
-    # stub 体含复杂调用需完整参数/USUBR 槽修正，暂未支持，见 KNOWN_ISSUES）。
+    # 顶层 `(setq X (lambda ...))`：CAD 编译为可调用 SUBR。
+    # - 纯顶层文件（无 defun）：走 CAD `-lambda-` 机制（seg0 紧凑 stub +
+    #   DEFCODE 注册 + 模块代码 ``PUSH_G <sym>; PUSH_G <-lambda-槽>;
+    #   FUNC_REF set``）。
+    # - 混合文件（含 defun）：提升为同名 defun（@lisp_u 实测 CAD `@::fasext`/
+    #   `@::vlx`/`@::acadver` 为可调用 SUBR，`(type @::fasext)` → SUBR）。
+    #   此前改写成 kwote 但混合文件无 seg0 `-lambda-` 生成/DEFCODE 注册，
+    #   模块代码 `FUNC kwote` 无定义 → CAD 加载报 `函数错误: (LAMBDA ...)`
+    #   /访问冲突，见 KNOWN_ISSUES。
     _defuns_now = [f for f in program.forms if isinstance(f, Defun)]
-    top_lambda_binds = _collect_top_lambda_binds(program.forms) if not _defuns_now else []
+    top_lambda_binds = _collect_top_lambda_binds(program.forms)
     if top_lambda_binds:
-        program.forms = _rewrite_top_lambda_binds(program.forms)
+        if _defuns_now:
+            program.forms = _convert_top_lambda_to_defuns(program.forms)
+            top_lambda_binds = []
+        else:
+            program.forms = _rewrite_top_lambda_binds(program.forms)
     # 多 `(function (lambda ...))`（>1）走 CAD kwote 原生路径：每个 kwote 编译为
     # 独立 `-lambda-` 内嵌 DEFUN（`-lambda-#N` 目录键 + DEFCODE 注册，见
     # codegen._emit_nested_lambda / resource_builder）。`_lower_multi_kwote` 仅作为
@@ -1924,7 +2073,7 @@ def cmd_compile(
             real_map = {}
             for _idx, _v in enumerate(_fg):
                 if isinstance(_v, tuple) and len(_v) == 2 and _v[0] == "REAL":
-                    real_map.setdefault(float(_v[1]), _idx)
+                    real_map.setdefault(_real_fmt(float(_v[1])), _idx)
             if not gvar_map:
                 gvar_map = None
         except Exception:
@@ -1948,7 +2097,9 @@ def cmd_compile(
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args,
                             codegen_nsyms=codegen_nsyms,
                             params_by_name=params_by_name,
-                            lambda_args_by_func=lambda_args_by_func)
+                            lambda_args_by_func=lambda_args_by_func,
+                            has_top_forms=bool(other_forms),
+                            n_real_funcs=len(defun_forms))
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(
         func_offsets,

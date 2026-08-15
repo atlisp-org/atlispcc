@@ -1,6 +1,6 @@
 # FAS4 文件格式详解
 
-本文档描述 FAS4（AutoLISP Fast-Load）二进制文件格式。它是对本项目编译器（`compiler/fas_writer.py`）、解析器（`core/fas_core.py` / `decompiler/fas4_decompiler.py`）实际实现的精确说明，并与 AutoCAD 编译器产物（`tests/fun-cad.fas`）逐字节兼容。
+本文档描述 FAS4（AutoLISP Fast-Load）二进制文件格式。它是对本项目编译器（`compiler/fas_writer.py`）、解析器（`core/fas_core.py` / `decompiler/fas4_decompiler.py`）实际实现的精确说明，并与 AutoCAD 编译器产物（`tests/cad/t01_math_cad.fas` 等 t-series golden）逐字节兼容。
 
 参考源码：
 - 写入：`compiler/fas_writer.py`
@@ -396,7 +396,7 @@ nsyms = len(entries) - 模块注册符号数 + 1
 | USUBR/FUNC | 5/6 字节 | 3 字节（小文件）；**nsyms>256 时 5/6 字节宽格式** |
 | GET_LOCAL | `05 <slot:1>` | `5c <slot:2>`（GET_LOCAL_WIDE） |
 | 函数目录 | mvar 表重建 | DEFCODE 序列 |
-| 参考产物 | `tests/cad/i18n-cad.fas` / `tests/cad/i18n.fas` | `tests/fun-cad.fas` |
+| 参考产物 | `tests/cad/i18n-cad.fas` / `tests/cad/i18n.fas` | `tests/cad/t01_math_cad.fas` 等 t-series golden |
 
 > **大文件宽格式**（v0.1.19+，atlisp_u.lsp 502 函数实测）：符号槽 >255 时
 > USUBR 用 5 字节 `35 <argc> <idx16> <flags=3>`、FUNC 用 6 字节

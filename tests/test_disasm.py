@@ -14,7 +14,7 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(TESTS_DIR)
 
 PDI_FAS = os.path.join(ROOT_DIR, 'tests', 'cad', 'i18n.fas')
-CAD_FAS = os.path.join(TESTS_DIR, 'fun-cad.fas')
+CAD_FAS = os.path.join(ROOT_DIR, 'tests', 'cad', 't01_math_cad.fas')
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(PDI_FAS),
@@ -55,7 +55,7 @@ def test_disasm_pdi_structure():
 
 def test_disasm_cad_fas_no_unknown_opcodes():
     if not os.path.exists(CAD_FAS):
-        pytest.skip('tests/fun-cad.fas reference fixture not present')
+        pytest.skip('tests/cad/t01_math_cad.fas reference fixture not present')
     insts, _ = _disassemble(CAD_FAS)
     assert len(insts) > 0
     unks = [i for i in insts if i.op_name.startswith('UNK')]

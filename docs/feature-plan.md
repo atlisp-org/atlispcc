@@ -234,7 +234,7 @@ seg0+sec2+nsyms **逐字节一致**（锁入 `test_t_series_byte_identity`），
 - `test_activex_vla_vlax_roundtrip`：8 组形态（`vla-get-*`/`vla-put-*`/`vla-Add*`、
   `vlax-get/put-property`、`vlax-invoke-method`、`vlax-variant-value`、
   `vlax-get-acad-object`）全 roundtrip + validate PASS。
-- `tests/cad/t22_activex.lsp` + `scripts/cad_verify.py` 真机用例：只读结构断言
+- `tests/compile_src/13_activex.lsp` + `scripts/cad_verify.py` 真机用例：只读结构断言
   （ActiveDoc 存在 + 文档计数 > 0），不用具体图元名，无破坏性。**CAD 真机确认**
   （2026-08-08）：`(t22-acad-doc)` 返回 VLA 对象、`has-doc`=T、`pos-count`=T。
 
@@ -244,7 +244,7 @@ seg0+sec2+nsyms **逐字节一致**（锁入 `test_t_series_byte_identity`），
 求值（字符串/坐标列表/数字/`pause` 符号），无需特殊编译器逻辑。新增：
 - `test_command_vlcmdf_roundtrip`：9 组形态（字符串命令、坐标列表、pause、
   多语句、`(if ...)` 实参、`nil` 结尾）全 roundtrip + validate PASS。
-- `tests/cad/t23_command.lsp` + `scripts/cad_verify.py` 真机用例：`command-s`
+- `tests/compile_src/14_command_s.lsp` + `scripts/cad_verify.py` 真机用例：`command-s`
   画圆 → `entlast` 断言为 CIRCLE → 擦除，全程包在 UNDO 组内自清理，不留新
   实体。**CAD 真机确认**（2026-08-08）：`(t23-created-circle-p)` = T。
 
