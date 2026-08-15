@@ -1,12 +1,44 @@
 # atlispcc 项目进度报告
 
-> 生成日期：2026-08-12
-> 分支：main · 最新提交 `2dec5e5`（v0.1.22）
+> 生成日期：2026-08-15
+> 分支：main · 最新提交 `7e434b1`（setq-lambda byte-identity）
 > 本文档为滚动进度报告；历史周期记录保留于下方，最新周期见第 0 节。
 
 ---
 
-## 0. 本周期（2026-08-11 → 08-12，v0.1.22）摘要
+## 0. 本周期（2026-08-15，v0.1.22+）摘要
+
+| 指标 | 数值 |
+|------|------|
+| 测试用例 | **347 用例**（345 passed + 2 skip，无 xfail） |
+| t-series byte-identity | **25 项** 不回归（t01-t18 + t22_activex + andor/and2/or2/andval + chinese + qsingle） |
+| CAD 真机验证 | 25 项不回归 + setq-lambda 功能验证 |
+
+### 本周期成果
+
+1. **纯顶层多 `-lambda-` setq 绑定 byte-identity**（`7e434b1`，
+   `setq-lambda.lsp`：两个顶层 `(setq X (lambda ...))`）：
+   - seg0 `-lambda-` 完整 compact stub（`14 <argc>x3 00` + GET_LOCAL + INIT_ARGS +
+     体 + CLEAR_ARGS + END_DEFUN，函数间 `16` 分隔、最后无 END），USUBR 5 字节
+     宽格式（`35 <argc> <idx16> 03`）——与 CAD 141B 逐字节一致。
+   - nsyms = fg 表长度 = `1 + len(第二区符号)`（12 = 1 + 11），非 `1 + lambda 数`。
+   - 资源段布局：第一区（仅顶层表达式符号）→ 函数目录 → 第二区（体符号+参数+
+     调用名，跨 lambda 去重）→ `GET_LOCAL; GVARINIT(0, 第二区数+1)` 建 fg 表
+     （module_id=最后符号判 table1）→ 多 DEFCODE → `GVARINIT(第一区数+2, 函数数)`。
+   - 模块代码 setq 协议 `JUMP 0; PUSH_G <lam槽+1>; DUP; SETQ_G <sym>`；`_patch_
+     usur_idx` `top_lambda_args` 参数映射（绑定/读取 gvar 槽-1）。
+   - 回归 `test_byte_identity_with_cad_golden[setq-lambda.lsp]`；CAD 真机
+     `(@::fasext "abc")`→`"abc.fas"`、`(@::vlx "a.vlx")`→`"a.vls"`。
+2. **文档更新**：development.md / development-plan.md / cad-stub-format.md /
+   compilation-process.md 同步 setq-lambda 布局与协议。
+
+### 已知残余
+
+- seg1 尾部 8 字节（密钥边界截取乱码）非 byte-identity 目标；`resource_items`
+  已全对齐。
+- t24_star_error 真机待 CAD 复核（延续）。
+
+## 0.1 本周期（2026-08-11 → 08-12，v0.1.22）摘要
 
 | 指标 | 数值 |
 |------|------|
@@ -41,7 +73,7 @@
 - atlisp_u 加载返回值偶发一次 `参数太少`（`@::compat1` foreach 边界原子），
   不影响任何功能。
 
-## 0.1 本周期（2026-08-11，v0.1.21）摘要
+## 0.2 本周期（2026-08-11，v0.1.21）摘要
 
 | 指标 | 数值 |
 |------|------|

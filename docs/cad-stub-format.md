@@ -179,9 +179,40 @@ PUSH_G <locals 常量槽>; FUNC3 1 <_al-bind-alist>; NIL(00); PUSH_NIL(01); NIL(
 - 每个内嵌 `-lambda-` 独立符号槽（t3 槽 18、t4 槽 17、t5 槽 16，nsyms=19）。
 - `-lambda-` 不进 `symtab.entries`，仅资源段 DEFCODE 区小写注册 → fas_nsyms
   比 codegen_nsyms 大 1，seg0 引用 `gvar 槽 - 2`。
-- 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，v0.1.22）：内嵌 `-lambda-`
-  SUBR（seg0 紧凑 stub `14 <argc>x3 00` + 体，无 JUMP/CLEAR_ARGS/END），模块
-  代码 `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`。
+- 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，v0.1.22+，setq-lambda.lsp
+  byte-identity）：内嵌 `-lambda-` 是**完整 compact stub**（`14 <argc>x3 00` +
+  GET_LOCAL + INIT_ARGS + 体 + CLEAR_ARGS + END_DEFUN，函数间 `16` 分隔、最后无
+  END），USUBR 用 5 字节宽格式（`35 <argc> <idx16> 03`）。模块代码用 setq 协议
+  绑定 `JUMP 0; PUSH_G <-lambda-槽+1>; DUP; SETQ_G <sym>`。资源段布局见 §2.5d。
+
+### 2.5d 纯顶层多 `-lambda-` 资源段布局（setq-lambda.lsp，v0.1.22+）
+
+CAD 对纯顶层 `(set/setq 'sym (lambda ...))`（多 `-lambda-`）的 seg1 布局：
+
+```
+14 01 01 01 00                  DEFUN 头（模块注册段）
+32 00 33 <mc> 2a 39 01 00       模块代码引用 ((0 . mc),)
+5b <第一区符号>                  仅顶层表达式符号（不含 lambda 体符号）
+01 01                           NIL NIL
+43 <0> <第一区数+2>               GVARINIT(0, 第一区数+2) → rg 表
+0a                              POP
+32 <off> 33/32 <end> 2a ... 39 <n>   函数目录（每个 `-lambda-` 的 (offset . end)，
+                                    offset 大的先压，末函数 end = total_size）
+5b <第二区符号>                  lambda 体符号 + 参数 + 最后调用名（跨 lambda 去重）
+5c 00 00 43 <0> <第二区数+1>     GET_LOCAL; GVARINIT(0, 第二区数+1) → fg 表
+                                （module_id = 栈顶最后符号 → table1）
+0a                              POP
+5c 00 00 32 <off> 5b -lambda- 00 00 3a   DEFCODE ×N（offset 大的先注册）
+01 43 <第一区数+2> <函数数>       GVARINIT(第一区数+2, 函数数) → `-lambda-` 超表槽
+1c                              INIT_DONE
+<模块代码>                        `JUMP 0; PUSH_G <lam槽+1>; DUP; SETQ_G <sym>` …
+```
+
+- **nsyms** = fg 表长度 = `1 + len(第二区符号)`（setq-lambda golden 12 = 1 + 11）。
+- **fg 表**（`_patch_usubr_idx` 映射依据）= fg[1] 代码引用 + fg[2-11] 第二区符号；
+  最后一个参数符号（如 FILE）作 GVARINIT module_id 弹出、不占 fg 槽。
+- `-lambda-` gvar 槽 = `_lam_slot + 1` = `top_level_count + 2 - i + 1`（@::fasext 29、
+  @::vlx 28），由 DEFCODE 后的 GVARINIT 注册为超表运行时槽（模块代码 PUSH_G 引用）。
 
 ### 2.6 控制流
 

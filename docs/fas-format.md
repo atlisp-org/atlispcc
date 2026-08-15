@@ -324,7 +324,8 @@ seg0 只含 defun 函数。三种构建器：
 - **post-form 分组**：最后一个 defun 之后的顶层语句排到函数注册尾之后
   （`n_post_forms`，支持多个）；首个 defun 之前的顶层语句（globals）排在最前。
 - **顶层 lambda 绑定**（纯顶层 `(set/setq 'sym (lambda ...))`，`-lambda-` SUBR）：
-  `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`。
+  setq 协议 `JUMP 0; PUSH_G <-lambda-槽+1>; DUP; SETQ_G <sym>`（`-lambda-` gvar
+  槽 = `_lam_slot + 1` = `top_level_count + 2 - i + 1`，setq-lambda.lsp 实测）。
 - commands+顶层混合时经 `_gvar_map.py` 重建 gvar 表后二次生成（§3.3）。
 
 ### 3.5a 命令模块代码（`build_command_module_code`，t14_command 实测）
@@ -452,10 +453,12 @@ nsyms = len(entries) - 模块注册符号数 + 1
 ### 关键格式结论（v0.1.21–v0.1.22）
 
 - **顶层 `(set/setq 'sym (lambda ...))`**（纯顶层文件）：CAD 用内嵌 `-lambda-`
-  SUBR（seg0 紧凑 stub `14 <argc>x3 00` + 体，无 JUMP/CLEAR_ARGS/END），模块
-  代码 `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`；`-lambda-`
-  槽 = 顶层符号数 + 1（多 lambda 逆序递减），DEFCODE 区小写注册
-  （bootstrap 与 CAD 逐字节一致，v0.1.22）。
+  SUBR（seg0 完整紧凑 stub `14 <argc>x3 00` + GET_LOCAL + INIT_ARGS + 体 +
+  CLEAR_ARGS + END_DEFUN，函数间 `16` 分隔、最后无 END），模块代码 setq 协议
+  `JUMP 0; PUSH_G <-lambda-槽+1>; DUP; SETQ_G <sym>`；`-lambda-` 槽 = 顶层
+  符号数 + 2 - i（gvar = +1，setq-lambda 实测 @::fasext 29、@::vlx 28），DEFCODE
+  区小写注册。资源段布局（第一区/函数目录/第二区/fg 表/多 DEFCODE）见
+  `cad-stub-format.md §2.5d`（setq-lambda.lsp byte-identity，v0.1.22+）。
 - **`command` 内建**：资源段注册名为 `ads-cmd`（非 `COMMAND`）；调用字节
   `FUNC3 + NIL + PUSH_NIL + NIL`（base-function 真机实测）。
 - **字符串大小写敏感**：`"date"` 与 `"DATE"` 是两个不同槽（`.upper()` 会错误

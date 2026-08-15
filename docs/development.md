@@ -281,9 +281,15 @@ FAS4 输出格式与 AutoCAD 编译器一致：
   偏移逆序；`-lambda-` 保留小写、不进 `symtab.entries`（仅 DEFCODE 区注册）——
   fas_nsyms 比 codegen_nsyms 大 1，seg0 引用 `gvar 槽 - 2`（`_patch_usubr_idx`
   的 offset 修正）。
-- 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，v0.1.22）：内嵌 `-lambda-`
-  SUBR（seg0 紧凑 stub `14 <argc>x3 00` + 体），模块代码
-  `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`。
+- 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，v0.1.22+，setq-lambda.lsp
+  byte-identity）：内嵌 `-lambda-` 是完整 compact stub（`14 <argc>x3 00` +
+  GET_LOCAL + INIT_ARGS + 体 + CLEAR_ARGS + END_DEFUN，函数间 `16` 分隔、最后无
+  END；USUBR 用 5 字节宽格式 `35 <argc> <idx16> 03`），模块代码 setq 协议绑定
+  `JUMP 0; PUSH_G <-lambda-槽+1>; DUP; SETQ_G <sym>`。资源段布局：第一区（仅顶层
+  表达式符号）→ GVARINIT(0, 第一区数+2) → 函数目录（`_func_ranges_bytes`）→ 第二区
+  （lambda 体符号+参数+最后调用名，跨 lambda 去重）→ `GET_LOCAL; GVARINIT(0,
+  第二区数+1)` 建 fg 表（module_id=最后符号判 table1）→ 多 DEFCODE → `GVARINIT
+  (第一区数+2, 函数数)`。nsyms = fg 表长度 = `1 + len(第二区符号)`。
 
 **`command` 内建**：资源段注册名为 `ads-cmd`（非 `COMMAND`）；调用字节
 `FUNC3 + NIL + PUSH_NIL + NIL`（base-function 真机实测）。

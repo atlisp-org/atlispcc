@@ -54,6 +54,7 @@
 | 4函数+交叉引用 | ✅ | `(f1 10)`→11 … `(f5 10)`→29 全部正确（p1_multi4 实测） |
 | while/cond/局部变量/apply/funcall/quote | ✅ | t04-t13 全套 CAD 实测通过；t04_while/t05_cond 与 CAD golden 逐字节一致 |
 | i18n.lsp 混合模式 | ✅ | 拆件 p01-p07 全 byte-identity；原文件（交错 defun+顶层+kwote）seg0+seg1+nsyms 与 CAD golden 逐字节一致（`test_i18n_original_byte_identity`） |
+| 纯顶层多 `-lambda-` setq 绑定 | ✅ | `setq-lambda.lsp`（两个顶层 `(setq X (lambda ...))`）seg0+nsyms+resource_items 与 CAD golden 逐字节一致（`test_byte_identity_with_cad_golden[setq-lambda.lsp]`）；CAD 真机 `(@::fasext "abc")`→`"abc.fas"`、`(@::vlx "a.vlx")`→`"a.vls"` |
 
 > 单函数文件（`fun.lsp`）解密后与 CAD 编译器输出逐字节一致。
 
@@ -454,6 +455,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - **P2 完成**：复杂 zelx 逐字节一致 + ZWCAD 加载通过；多版本 CAD 兼容；大文件性能达标
 - **当前（2026-08-09）**：`pytest` **314 用例**（313 passed + 1 skip，无 xfail）；t-series byte-identity **18/18**（t01-t18，t22_activex 另锁入回归）；CAD 真机 **24/24**（`scripts/cad_verify.py`）；disasm→asm 往返 43 文件一致；性能基线见 `scripts/benchmark.py`
 - **当前（2026-08-11）**：`pytest` **344 用例**（343 passed + 1 skip，无 xfail）；t-series byte-identity **18/18** 不回归；**t12 链式 quote 常量解码修复**（`(setq lst '(a b c))` + dotted `'(1 . 2)`，见 §12T5）；**`*error*` 真机用例 t24_star_error**（cad_verify 覆盖 22→24 项）；zelx 15/15 样本 payload 复核一致；测试环境恢复（.venv 装 pytest，`PYTHON=.venv/bin/python` 可跑 `scripts/run_tests.sh`）
+- **当前（2026-08-15）**：`pytest` **347 用例**（345 passed + 2 skip，无 xfail）；**纯顶层多 `-lambda-` setq 绑定 byte-identity**（setq-lambda.lsp：seg0+nsyms+resource_items 与 CAD golden 逐字节一致，`test_byte_identity_with_cad_golden[setq-lambda.lsp]`，CAD 真机 `(@::fasext "abc")`→`"abc.fas"`、`(@::vlx "a.vlx")`→`"a.vls"`）；t-series byte-identity **18/18** 不回归
 
 ---
 
@@ -488,6 +490,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 # 9. 字节兼容收尾开发计划（2026-08-05 版）✅ 已完成 18/18
 
 > 精简归档：t10/t11/t12/t14/i18n/t16/t17 全部转正 byte-identity，`CAD_T_SERIES_DIFF` 空。
+> 2026-08-15：纯顶层多 `-lambda-`（setq-lambda.lsp）转正 byte-identity（见 §9.1）。
 
 - 阶段 1 t11 `_al-bind-alist '(locals)`：INIT_ARGS 后发 `PUSH_G;FUNC 1;NIL;PUSH_NIL;NIL;POP`，
   CLEAR_ARGS = argc + len(locals)
@@ -497,6 +500,18 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - 阶段 6 t16/t17 stub：foreach `PUSH_G;PUSH_NIL;INIT_ARGS 3` + `JMP32_IFNOT` + 尾 `CLEAR_ARGS 1`；
   repeat `GET_LOCAL;PUSH_INT8 0;FIX_LEQ;JMP32_IFNOT` + 体前 `DEC`；DEFUN 头 `b1=argc+1`
 - 涉及：`compiler/{codegen,cad_symbols,resource_builder,cli}.py`、`tests/test_compiler_output.py`
+
+**9.1 纯顶层多 `-lambda-` setq 绑定**（2026-08-15，byte-identity，`setq-lambda.lsp`）：
+- seg0：`-lambda-` 完整 compact stub（`14 <argc>x3 00` + GET_LOCAL + INIT_ARGS + 体 +
+  CLEAR_ARGS + END_DEFUN，函数间 `16`、最后无 END），USUBR 5 字节宽格式（flags=3）
+- nsyms = fg 表长度 = `1 + len(第二区符号)`（12 = 1 + 11）
+- 符号表布局：第一区 → 函数目录 → 第二区（体符号+参数+调用名，跨 lambda 去重）
+  → `GET_LOCAL; GVARINIT(0, 第二区数+1)` 建 fg 表（module_id=最后符号判 table1）
+  → 多 DEFCODE → `GVARINIT(第一区数+2, 函数数)`
+- 模块代码 setq 协议 `JUMP 0; PUSH_G <lam槽+1>; DUP; SETQ_G <sym>`（`_lam_slot+1`
+  不走 `_slot_gv`）；`_patch_usur_idx` `top_lambda_args` 参数映射（gvar 槽-1）
+- 回归：`test_byte_identity_with_cad_golden[setq-lambda.lsp]`；CAD 真机
+  `(@::fasext "abc")`→`"abc.fas"`、`(@::vlx "a.vlx")`→`"a.vls"`
 
 ---
 

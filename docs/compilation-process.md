@@ -139,7 +139,7 @@ UTF-8 逐字符推进天然支持（非 ASCII 落入 SYMBOL 分支）。
 |---|---|---|
 | 顶层 `(progn ...)` 展开 | `_flatten_top_level_forms` | @lisp 包整体包裹模式展开为顶层 form |
 | 条件/嵌套 defun 降级 | `_lower_nested_defuns` | `(if c (defun f ...))`、函数体内局部辅助函数 → `(setq f '(lambda ...))` 数据赋值（等价 defun-q，保留"条件定义"语义） |
-| 顶层 lambda 绑定 | `_rewrite_top_lambda_binds` | 纯顶层文件 `(set/setq 'sym (lambda ...))` → CAD 内嵌 `-lambda-` SUBR（seg0 紧凑 stub + DEFCODE 注册），模块代码 `PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set` |
+| 顶层 lambda 绑定 | `_rewrite_top_lambda_binds` | 纯顶层文件 `(set/setq 'sym (lambda ...))` → CAD 内嵌 `-lambda-` SUBR（seg0 完整 compact stub：`14 <argc>x3 00` + GET_LOCAL + INIT_ARGS + 体 + CLEAR_ARGS + END_DEFUN；函数间 `16` 分隔、最后无 END；USUBR 5 字节宽格式），模块代码 setq 协议 `JUMP 0; PUSH_G <-lambda-槽+1>; DUP; SETQ_G <sym>`；资源段：第一区 → 函数目录 → 第二区（体符号+参数+调用名，跨 lambda 去重）→ fg 表 GVARINIT → 多 DEFCODE → `-lambda-` 超表槽（setq-lambda.lsp byte-identity） |
 | 多 kwote 降级 | `_lower_multi_kwote` | 多个 `(function (lambda ...))`（>1）→ 引用数据 `'(lambda ...)`（apply/mapcar 回调等价） |
 | 立即 lambda 调用 | `_lower_immediate_lambda` | `((lambda ...) args)` → `(apply '(lambda ...) (list ...))` |
 
@@ -347,8 +347,10 @@ end:
 
 - 非 stub 或非 Lambda → 退回 `_emit_quoted`。
 - **`_module_mode`**：顶层 `(set/setq 'sym (function (lambda ...)))` 用内嵌
-  `-lambda-` SUBR，模块代码只发 `PUSH_G <-lambda-槽>`（模块代码里 `FUNC kwote`
-  无定义）。
+  `-lambda-` SUBR，模块代码发 setq 协议 `JUMP 0; PUSH_G <-lambda-槽+1>; DUP;
+  SETQ_G <sym>`（非 `FUNC kwote`）。seg0 `-lambda-` 由 cli 用 `generate_function`
+  生成完整 compact stub（见 §6.4），资源段按第一区/函数目录/第二区/fg 表/多
+  DEFCODE 布局（setq-lambda.lsp byte-identity）。
 - 普通：`_emit_nested_lambda` 发内嵌 DEFUN（`JUMP <label:4>; 14 argc argc argc
   00; 体; CLEAR_ARGS; 16; <label>`），随后 `PUSH_G <lam_idx>; FUNC3 1 <kwote>;
   NIL(00); PUSH_NIL(01); NIL(00)`。
@@ -409,7 +411,8 @@ CAD 把源码中的**顶层表达式**编译进 seg1 模块代码，seg0 只含 
 - **post-form 分组**：最后一个 defun 之后的顶层语句排到函数注册尾之后
   （`n_post_forms`）；首个 defun 之前的顶层语句（globals）排在最前。
 - 顶层 `(set/setq 'sym (lambda ...))`（纯顶层，`top_lambda_slots`）：
-  `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; FUNC_REF set`。
+  setq 协议 `JUMP 0; PUSH_G <-lambda-槽+1>; DUP; SETQ_G <sym>`（`-lambda-` gvar
+  槽 = `_lam_slot + 1` = `top_level_count + 2 - i + 1`，setq-lambda.lsp 实测）。
 
 纯命令文件（无顶层表达式）走 `build_command_module_code`：
 - 每命令 `PUSH_G <a> POP JUMP0`（占位）+ `PUSH_G <b> SETQ_G <c>` +
