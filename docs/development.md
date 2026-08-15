@@ -341,7 +341,7 @@ python -m py_compile decompiler/fas4_decompiler.py
 python -m py_compile compiler/opt.py
 
 # 编译 + 反编译 + 验证
-python -m compiler.cli compile -O2 tests/test_setq_while.lsp test.fas
+python -m compiler.cli compile -O2 tests/fun.lsp test.fas
 python -m decompiler.fas4_decompiler test.fas test.lsp
 python -m tools.validate test.lsp
 

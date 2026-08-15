@@ -321,9 +321,10 @@ def test_byte_identity_with_cad_golden(src_name, golden_name):
 
     Regression guard: multi-function + quoted-lambda previously emitted
     PUSH_G <symtab idx> for the lambda const instead of <gvar slot - 1>;
-    single-function cases masked it (nfuncs == 1). rt_e.lsp covers the
-    multi+lambda path fixed in _patch_usubr_idx. while/cond alignment is
-    covered by the t-series golden tests (t04_while/t05_cond).
+    single-function cases masked it (nfuncs == 1). The multi+lambda path
+    fixed in _patch_usubr_idx is covered by the real_* golden pairs below.
+    while/cond alignment is covered by the t-series golden tests
+    (t04_while/t05_cond).
     """
     from compiler.cli import cmd_compile
     from decompiler.fas4_decompiler import Fas4Parser

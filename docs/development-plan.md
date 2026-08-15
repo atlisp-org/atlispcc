@@ -55,7 +55,7 @@
 | while/cond/局部变量/apply/funcall/quote | ✅ | t04-t13 全套 CAD 实测通过；t04_while/t05_cond 与 CAD golden 逐字节一致 |
 | i18n.lsp 混合模式 | ✅ | 拆件 p01-p07 全 byte-identity；原文件（交错 defun+顶层+kwote）seg0+seg1+nsyms 与 CAD golden 逐字节一致（`test_i18n_original_byte_identity`） |
 
-> 单函数文件（`fun.lsp`、`fact.lsp`）解密后与 CAD 编译器输出逐字节一致。
+> 单函数文件（`fun.lsp`）解密后与 CAD 编译器输出逐字节一致。
 
 关键逆向成果：
 - **USUBR 索引 = 符号 gvar 槽 - 1**
@@ -104,8 +104,8 @@ CAD 真机 24/24 全过（含 t22/t23）。t22 修复与 t21 修正见 §9.6。
 逆序、参数紧跟其后、递归重复槽；多函数（m1/m2）与单函数递归（fact）已与
 CAD 逐字节一致。
 
-**剩余**：含递归的**多函数**（multi.lsp：fact+mul+sub+add）符号槽仍未完全对齐
-（fact 递归的 `*`/`-` 与 mul/sub 的去重顺序），以及 while/cond/局部变量场景。
+**剩余**：含递归的**多函数**符号槽仍未完全对齐
+（递归的 `*`/`-` 与 mul/sub 的去重顺序），以及 while/cond/局部变量场景。
 
 **技术路线**：用更多 CAD 样例（while/cond/局部变量/foreach/repeat/递归多函数）
 实测符号槽顺序，完善 `cad_symbols.py`。

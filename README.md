@@ -337,7 +337,7 @@ make cad-test    # 或: python scripts/cad_verify.py
 | `*error*` 错误处理 | ✅ | `(t24-handler-test)` → "handler-ran"（t24_star_error 真机用例） |
 | **多文件链接** | ✅ | `atlispcc link` 输出与 CAD 直接编译逐字节一致，CAD 真机全部函数可调用（含跨文件交叉引用、多参数、重名冲突） |
 
-> 单函数文件（`fun.lsp`、`fact.lsp`）与 CAD 编译器输出解密后逐字节一致。
+> 单函数文件（`fun.lsp`）与 CAD 编译器输出解密后逐字节一致。
 > `CAD_T_SERIES_IDENTICAL` 锁入 **6 项** byte-identity（andor/and2/or2/andval + chinese + qsingle，
 > 原 t0X 源已迁移至 `tests/compile_src/`，其 golden 由结构断言覆盖）；i18n 拆分件 byte-identity 回归。
 > 链接输出与 `tests/cad/link/*_cad.fas` **3 份 CAD golden** 逐字节一致。

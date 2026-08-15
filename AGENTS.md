@@ -99,7 +99,7 @@ atlispcc compile -O2 input.lsp output.fas
 python -m decompiler.fas4_decompiler tests/cad/i18n-cad.fas output.lsp
 
 # 验证输出
-python -m tools.validate tests/bib_generic.lsp
+python -m tools.validate tests/fun.lsp
 
 # 链接
 atlispcc link lib.fas main.fas -o combined.fas
@@ -219,7 +219,7 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - 2-3 函数交叉引用 ✅
 - 尾递归、&optional/&rest ✅
 - 顶层 setq/set（defun 前后混合）✅
-- `fun.lsp`/`fact.lsp` 解密后与 CAD 逐字节一致 ✅
+- `fun.lsp` 解密后与 CAD 逐字节一致 ✅
 - t-series 真机功能验证通过 t01-t15、t18（16 项，`scripts/cad_verify.py`；2026-08-06 复核）✅
 - **真机验证清单扩展至 21 项**（`scripts/cad_verify.py`，2026-08-06）：新增
   t16_foreach/t17_repeat（循环 stub）、t19_variadic（`&optional`/`&rest`，
