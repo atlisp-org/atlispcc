@@ -3002,10 +3002,10 @@ class LispGenerator:
         return "".join(result)
 
     def _is_symbol_char(self, ch: str) -> bool:
-        return bool(re.match(r"[A-Za-z0-9_:+<>=?.*/-]", ch))
+        return bool(re.match(r"[A-Za-z0-9_:+<>=?.*/@-]", ch))
 
     def _symbol_pattern(self, symbol: str) -> re.Pattern:
-        return re.compile(rf"(?<![A-Za-z0-9_:+<>=?.*/-]){re.escape(symbol)}(?![A-Za-z0-9_:+<>=?.*/-])")
+        return re.compile(rf"(?<![A-Za-z0-9_:+<>=?.*/@-]){re.escape(symbol)}(?![A-Za-z0-9_:+<>=?.*/@-])")
 
     def _replace_symbols(self, text: str, replacements: Dict[str, str]) -> str:
         if not replacements:
@@ -3061,7 +3061,7 @@ class LispGenerator:
             return False
         if "\n" in value or "\r" in value or " " in value or '"' in value:
             return False
-        return bool(re.match(r"^[A-Za-z0-9_:\\/*+#<>=?.-]+$", value))
+        return bool(re.match(r"^[A-Za-z0-9_:\\/*+#<>=?@.-]+$", value))
 
     def _normalize_symbol(self, name: str, prefix: str = "sym", allow_command_prefix: bool = False) -> str:
         if not name:
@@ -3077,10 +3077,10 @@ class LispGenerator:
         body = raw[2:] if command_prefix else raw
 
         if raw.startswith("*") and raw.endswith("*") and len(raw) > 2:
-            inner = re.sub(r"[^\w:-]+", "_", raw[1:-1]).strip("_")
+            inner = re.sub(r"[^\w:@-]+", "_", raw[1:-1]).strip("_")
             return f"*{(inner or prefix).lower()}*"
 
-        body = re.sub(r"[^\w+<>=.:-]+", "_", body)
+        body = re.sub(r"[^\w+<>=.:@-]+", "_", body)
         body = re.sub(r"_+", "_", body)
         if not body:
             body = prefix
