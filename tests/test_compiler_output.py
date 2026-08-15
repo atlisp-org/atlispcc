@@ -287,6 +287,9 @@ CAD_GOLDEN_PAIRS = [
     ('cad/real_arith.lsp', 'cad/real_arith_cad.fas'),
     ('cad/real_list.lsp', 'cad/real_list_cad.fas'),
     ('cad/real_param.lsp', 'cad/real_param_cad.fas'),
+    # 纯顶层 cond（test-cond.lsp）：cond else 键 `(t ...)` 的 T 槽位置、模块代码
+    # 语句 if 的 then setq 无 DUP / 无 else 不补 PUSH_NIL（2026-08-15 修复）。
+    ('test-cond.lsp', 'cad/test_cond_cad.fas'),
 ]
 
 #: t-series sources whose compiled output is byte-identical to the CAD golden

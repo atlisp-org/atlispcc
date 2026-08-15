@@ -299,6 +299,18 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 
 ### 已知限制
 
+- **cond else 键 `t` 的 T 槽位置**（2026-08-15）：CAD 中 T 槽由**外层 cond 的
+  else 键**（forward 序第一个 force t，纯顶层 reversed 注册序最后一个）位置
+  决定（test-cond 实测 `"chs" ... T "autocad"`——T 在结果体后、测试符号前），
+  内层 else 键 t 与值位置 `T` 复用该槽。`_collect_single` 纯顶层路径仅保留
+  reversed 序最后一个 force t 注册，其余 t/T 跳过；`add()` 对 t/T 统一为 `T`
+  槽（force 也不重复，T 无重复槽语义）。回归 `test_byte_identity_with_cad_golden
+  [test-cond.lsp]`。
+- **cond 子句体 / 语句上下文的 if**（2026-08-15）：`_emit_stmt` 清 `_module_mode`，
+  使 cond 子句体内的 if 不按模块代码顶层 if 编译——then 分支 setq 不 DUP、
+  无 else 不补 PUSH_NIL（test-cond CAD 实测 `PUSH_G; SETQ_G` 无 `0b`/`01`）。
+  模块代码独立顶层 if 仍经 `_emit_expr` 保留 `_module_mode`（then DUP、无 else
+  补 NIL，p05/i18n 实测）。多对 setq 最后对总是 DUP（p05 实测，与 tail 无关）。
 - **`if` 值/语句上下文**（2026-08-07）：`(setq r (if c e1 e2))` 的值位置 `if`
   不编译 then 分支 POP（值须流到 SETQ_G/算术/函数实参，与 CAD a4 golden 一致）；
   仅**裸语句** `if` 才在 then 末尾、JUMP 前发 `POP` 丢弃值。判别标志 `_in_stmt_ctx`

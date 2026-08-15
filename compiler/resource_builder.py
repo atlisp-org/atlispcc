@@ -246,9 +246,12 @@ class ResourceBuilder:
         统一规范化，此处仅需保留当前大小写（不再 .upper()）。
         """
         s = str(s)
-        # `command` 内建 SUBR 在 CAD FAS 资源段注册名为 `ads-cmd`
-        # （base-function CAD 实测 `(command ...)` → 符号槽 `ads-cmd`）。
-        if s.lower() == "command":
+        # `command` 内建 SUBR 的**调用目标**在 CAD FAS 资源段注册名为 `ads-cmd`
+        # （base-function CAD 实测 `(command ...)` → 符号槽 `ads-cmd`），由
+        # codegen 调用处单独注册 `ads-cmd` 符号；此处仅需保留其小写编码。
+        # 普通**值引用** `command`（`(boundp 'command)`/`(type command)` 等）
+        # 走下方默认大写路径 → `COMMAND`（platform CAD 实测值位置符号槽）。
+        if s == "ads-cmd":
             return b"ads-cmd"
         # VLISP 内建/关键字符号保留 CAD 特定大小写（:vlax-false/:VLR-*/VLAX-FOR/
         # vlax-3d-point/startapp 等，@lisp_u golden 实测）。按小写匹配，用 CAD

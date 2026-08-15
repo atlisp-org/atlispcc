@@ -344,9 +344,14 @@ class CadSymbolCollector:
             # 会注册真实符号槽并用 PUSH_VALUE 引用（t18 小写 t、t22 大写 T
             # golden 实测，大小写不敏感）；纯 `(and ...)` 短路与 cond else 键
             # 仍内联/强制。仅 nil 恒不占槽（PUSH_NIL 内联）。
+            # t/T 大小写不敏感统一为 `T` 槽（CAD weak_keywords）：else 键
+            # `(t ...)` 与值位置 `T` 共享同一 SYMBOL T。T 槽全局唯一——即使
+            # force 也不重复注册（递归函数名才需重复槽，T 无此语义）。
+            if name.lower() == 't':
+                name = 'T'
             if not force and name.lower() == 'nil':
                 return
-            if force or name not in self._name_set:
+            if name not in self._name_set:
                 self.names.append(name)
                 self._name_set.add(name)
             return
@@ -558,7 +563,20 @@ class CadSymbolCollector:
             refs = _SeenList()
             for form in others:
                 self._collect_byteorder(form, refs, set())
-            for name, force in reversed(refs):
+            _rev = list(reversed(refs))
+            # CAD 中 T 槽由**外层 cond 的 else 键** `(t ...)`（forward 序第一个
+            # force t，reversed 序最后一个）位置决定（test-cond 实测 `"chs" ...
+            # T "autocad"`——T 在结果体后、测试符号前）。内层 cond 的 else 键
+            # t 与值位置 `T`（`(strcase ... T)`）复用该槽。reversed 注册时值
+            # 位置 T（非 force）与内层 else 键 t（force）会抢先注册，故仅保留
+            # reversed 序**最后一个** force t 注册，其余 t/T 跳过。
+            _t_force_idx = [i for i, (n, f) in enumerate(_rev)
+                            if isinstance(n, str) and n.lower() == 't' and f]
+            _t_reg_idx = _t_force_idx[-1] if _t_force_idx else -1
+            for i, (name, force) in enumerate(_rev):
+                if isinstance(name, str) and name.lower() == 't':
+                    if i != _t_reg_idx:
+                        continue
                 self.add(name, force=force)
             self.module_reg_count = len(self.names)
         # 混合模式（defun + 顶层）：函数体符号若与模块注册符号同名需重复槽。
@@ -768,7 +786,9 @@ class CadSymbolCollector:
             for a in node.args:
                 self._form_read_target(a, reads, targets, arg_names, in_quote)
             if node.name not in self.func_names:
-                reads.add(node.name)
+                # `command` 内建 SUBR 的**调用目标**以 `ads-cmd` 槽独立注册
+                # （与值引用的 `COMMAND` 分离），read 归属同步用该名。
+                reads.add("ads-cmd" if node.name == "command" else node.name)
         elif isinstance(node, Setq):
             for target, value in node.pairs:
                 if value:
@@ -852,6 +872,13 @@ class CadSymbolCollector:
                 pass
             elif node.name in self.func_names:
                 out.append((node.name, True))
+            elif node.name == "command":
+                # `command` 内建 SUBR 的**调用目标**注册为独立符号槽 `ads-cmd`
+                # （base-function CAD 实测 `(command ...)` → `ads-cmd`），与值
+                # 引用的普通符号槽 `COMMAND` 分离。codegen 调用处已 `get_or_add
+                # ("ads-cmd")`，收集阶段同步改名避免槽位错位。
+                if not self._seen(out, "ads-cmd"):
+                    out.append(("ads-cmd", False))
             elif node.name not in arg_names and not self._seen(out, node.name):
                 out.append((node.name, False))
         elif isinstance(node, Setq):

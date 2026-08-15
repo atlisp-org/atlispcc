@@ -350,8 +350,14 @@ class CodeGenerator:
         """
         saved = self._in_stmt_ctx
         saved_tail = self._in_tail_context
+        saved_module = self._module_mode
         self._in_stmt_ctx = True
         self._in_tail_context = False
+        # 语句上下文（值被丢弃）：清 `_module_mode`，避免 cond 子句体内的 if
+        # 误按模块代码顶层 if 编译（then 分支 setq 加 DUP、无 else 补 PUSH_NIL
+        # ——test-cond CAD 实测子句体 if 无 `0b`/`01`）。模块代码独立顶层 if
+        # 仍经 `_emit_expr` 保留 `_module_mode`。
+        self._module_mode = False
         try:
             if isinstance(node, IfNode):
                 self._emit_if(buf, node)
@@ -360,6 +366,7 @@ class CodeGenerator:
         finally:
             self._in_stmt_ctx = saved
             self._in_tail_context = saved_tail
+            self._module_mode = saved_module
 
     def _emit_expr(self, buf: BytecodeBuffer, node: Node, _tail: bool = False):
         saved_tail = self._in_tail_context
@@ -587,6 +594,11 @@ class CodeGenerator:
             buf.emit(encode_op_noarg(EXIT_IF_NOT_ZERO))
             return
         idx = self.symtab.get_or_add(normalize_vla_name(name))
+        if self.stub_format and name == "command":
+            # CAD 把 `command` 内建 SUBR 的调用目标注册为独立符号槽 `ads-cmd`
+            # （base-function CAD 实测 `(command ...)` → `ads-cmd`），与值引用
+            # 的普通符号槽 `COMMAND`（platform 实测）分离——两者是不同的槽。
+            idx = self.symtab.get_or_add("ads-cmd")
         if (
             self.stub_format
             and not self._module_mode
@@ -685,7 +697,13 @@ class CodeGenerator:
                 with self._value_ctx():
                     self._emit_expr(buf, value)
                 if self.stub_format:
-                    if self._in_tail_context and i == n - 1:
+                    # 多对 setq 最后对总是 DUP 保留返回值（CAD p05/i18n 实测
+                    # `PUSH; ...; DUP; SETQ_G`，与 tail 无关）；单对 setq 仅
+                    # 真尾上下文才 DUP（test-cond 模块代码语句 if then 单对
+                    # `PUSH_G; SETQ_G` 无 `0b` 实测）。
+                    if n > 1 and i == n - 1:
+                        buf.emit(encode_op_noarg(DUP))
+                    elif self._in_tail_context and i == n - 1:
                         buf.emit(encode_op_noarg(DUP))
                     idx = self.symtab.get_or_add(normalize_vla_name(target.name))
                     buf.emit(encode_op_u16(SETQ_G, idx))
@@ -717,7 +735,9 @@ class CodeGenerator:
             buf.emit(encode_op_s32(JMP32_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_else, 4)
             # then 分支尾上下文：尾 if / 模块代码顶层 if 需 DUP 保留值
-            # （模块代码顶层 if-then-setq，p04/i18n-cad 实测 `0b 06`）。
+            # （模块代码顶层 if-then-setq，p04/i18n-cad 实测 `0b 06`）。仅
+            # 独立顶层 if / 尾 if 时 DUP；cond 子句体等语句上下文的 if 的
+            # then 分支 setq 不 DUP（test-cond CAD 实测 `PUSH_G; SETQ_G`）。
             _then_tail = self._in_tail_context or self._module_mode
             self._emit_expr(buf, node.then or Symbol("nil"), _tail=_then_tail)
             if self._in_stmt_ctx and not isinstance(
@@ -740,12 +760,12 @@ class CodeGenerator:
             buf.patch_label(label_else, buf.pos())
             if node.else_expr:
                 self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
-            elif self._in_tail_context or self._module_mode or not self._in_stmt_ctx:
-                # CAD stub：尾上下文 / 模块代码顶层 / 值位置无 else 分支时在
-                # else 标签处补隐式 PUSH_NIL（cond 为假时返回 nil），then 分支
-                # 的 JUMP 跳过它（t9 / i18n-cad 模块代码 / base-function 值位置
-                # setq RHS 实测）。中间 if（函数体中间的语句）不补：假路径直接
-                # 跳下一语句（i18n-cad update-locale 实测）。
+            elif self._in_tail_context or not self._in_stmt_ctx:
+                # CAD stub：尾上下文 / 值位置无 else 分支时在 else 标签处补隐式
+                # PUSH_NIL（cond 为假时返回 nil），then 分支的 JUMP 跳过它
+                # （t9 / base-function 值位置 setq RHS 实测）。中间 if（函数体
+                # 或模块代码中间的语句）不补：假路径直接跳下一语句，后续语句
+                # 的 POP 丢弃栈顶（i18n-cad update-locale / test-cond CAD 实测）。
                 buf.emit(encode_op_noarg(PUSH_NIL))
             buf.patch_label(label_end, buf.pos())
             return
