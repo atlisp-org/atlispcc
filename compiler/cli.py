@@ -920,6 +920,8 @@ def _build_cad_module_code(
     gvar_map: object = None,
     top_lambda_slots: Optional[dict] = None,
     real_map: Optional[dict] = None,
+    n_pre: int = 0,
+    skip_funcs: Optional[set] = None,
 ) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
@@ -1125,7 +1127,9 @@ def _build_cad_module_code(
         if isinstance(form, Setq) and not tail:
             # setq 值非常量（INT/REAL/列表等）：CAD 在 SETQ_G 前插入 DUP
             # 保留返回值（mix2 `(setq x 10)` 实测 `32 0a 0b 06 03 00`）。
-            # 注意：不能简单正则找 `06 ..`——USUBR 的 idx 字节可能为 0x06，
+            # 注意：多对 setq 的末对 DUP 已由 codegen 生成（n>1 末对），
+            # 此处仅单对 setq 补 DUP（platform 实测多对末对无额外 `0b`）。
+            # 不能简单正则找 `06 ..`——USUBR 的 idx 字节可能为 0x06，
             # 需定位真正的 SETQ_G 指令偏移。
             from decompiler.fas4_decompiler import Disassembler
 
@@ -1184,19 +1188,25 @@ def _build_cad_module_code(
             out += bytes([0x06]) + struct.pack("<H", c)  # SETQ_G c
             return c
 
-        out += b"\x57\x00\x00\x00\x00"  # JUMP
-        c0 = _reg(0)
-        if has_follow:
-            out += bytes([0x09]) + struct.pack("<H", c0) + b"\x0a"
-        # 首个 defun 与最后一个 defun 之间的顶层语句。
+        _skip = skip_funcs or set()
+        # START 函数注册：前 n_pre 个函数（定义在首个顶层语句之前，CAD
+        # platform 实测 set-locale/get-locale 在 globals 语句前注册）。
+        # 每组 `JUMP; PUSH_G b; SETQ_G c; PUSH_G c; POP`。
+        for i in range(min(n_pre, n_funcs)):
+            out += b"\x57\x00\x00\x00\x00"
+            c = _reg(i)
+            out += bytes([0x09]) + struct.pack("<H", c) + b"\x0a"
+        # 首个 defun 与最后一个 defun 之间的顶层语句（含 setq-lambda 绑定）。
         _emit_stmts(mid_forms, last_no_pop=False)
-        # 其余函数注册（最后一个 defun 之前、post 语句之前）。
-        if n_funcs > 1:
-            for i in range(1, n_funcs):
-                out += b"\x57\x00\x00\x00\x00"
-                c = _reg(i)
-                if i < n_funcs - 1 or post_forms:
-                    out += bytes([0x09]) + struct.pack("<H", c) + b"\x0a"
+        # 其余函数注册（最后一个 defun 之前、post 语句之前）。setq-lambda
+        # 函数（skip_funcs）已由 mid_forms 的 setq 绑定，不在此 `_reg`。
+        for i in range(n_pre, n_funcs):
+            if func_names and i < len(func_names) and func_names[i] in _skip:
+                continue
+            out += b"\x57\x00\x00\x00\x00"
+            c = _reg(i)
+            if i < n_funcs - 1 or post_forms:
+                out += bytes([0x09]) + struct.pack("<H", c) + b"\x0a"
     else:
         _emit_stmts(mid_forms, last_no_pop=(not post_forms))
     if post_forms:
@@ -1516,6 +1526,38 @@ def _collect_top_lambda_binds(forms):
     return out
 
 
+def _insert_top_lambda_defuns(forms, binds):
+    """在顶层 setq-lambda form 之后插入提升的 defun（保留原 setq-lambda form）。
+
+    混合文件 seg0 需要 `-lambda-` stub（按源码位置交错在 defun 之间），模块
+    代码又需要保留 `(setq sym (function (lambda ...)))` 以发射 setq-lambda
+    绑定。插入 defun 的同时保留原 form（kwote 改写后），两者分别驱动 seg0 与
+    模块代码。
+    """
+    from compiler.ast_nodes import Setq as _Setq
+
+    def _is_lam(v):
+        return isinstance(v, QuotedExpr) and v.kwote and isinstance(v.expr, LambdaNode)
+    out = []
+    for f in forms:
+        out.append(f)
+        if isinstance(f, _Setq):
+            for _t, _v in f.pairs:
+                if isinstance(_t, Symbol) and _is_lam(_v):
+                    for _s, _l in binds:
+                        if _s == _t.name:
+                            out.append(_defun_from_lambda(_s, _l))
+                            break
+        elif isinstance(f, Call) and f.name == "set" and len(f.args) == 2:
+            _t0 = f.args[0]
+            if isinstance(_t0, QuotedExpr) and isinstance(_t0.expr, Symbol) and _is_lam(f.args[1]):
+                for _s, _l in binds:
+                    if _s == _t0.expr.name:
+                        out.append(_defun_from_lambda(_s, _l))
+                        break
+    return out
+
+
 def _rewrite_top_lambda_binds(forms):
     """把顶层 set/setq-lambda 的值改写为 kwote 标记（`(function (lambda ...))`）。
 
@@ -1676,11 +1718,9 @@ def cmd_compile(
     # 后用于 func_offsets 以 `-lambda-` 键登记，CAD DEFCODE 尾注册为 `-lambda-`）。
     _top_lambda_names = {s for s, _ in top_lambda_binds}
     if top_lambda_binds:
+        program.forms = _rewrite_top_lambda_binds(program.forms)
         if _defuns_now:
-            program.forms = _convert_top_lambda_to_defuns(program.forms)
-            top_lambda_binds = []
-        else:
-            program.forms = _rewrite_top_lambda_binds(program.forms)
+            program.forms = _insert_top_lambda_defuns(program.forms, top_lambda_binds)
     # 多 `(function (lambda ...))`（>1）走 CAD kwote 原生路径：每个 kwote 编译为
     # 独立 `-lambda-` 内嵌 DEFUN（`-lambda-#N` 目录键 + DEFCODE 注册，见
     # codegen._emit_nested_lambda / resource_builder）。`_lower_multi_kwote` 仅作为
@@ -1938,6 +1978,23 @@ def cmd_compile(
             # 区小写注册）。
             _lam_slot = top_level_count + 2 - _ti
             top_lambda_slots[_sym] = _lam_slot
+    # 混合文件（platform）：`-lambda-` 运行时槽 = `_reg` 的 b 槽 - 1（模块代码
+    # setq-lambda 绑定 `PUSH_G <-lambda->` 复用该函数的 `_reg` b 槽：b =
+    # 2*n_funcs+1 + top_level_count - i，`_lam_slot = b - 1`。platform 实测
+    # @::fasext i=2 → PUSH_G 69、@::vlx i=3 → PUSH_G 68）。
+    elif top_lambda_binds and defun_forms:
+        _tl_names_set = set(s for s, _ in top_lambda_binds)
+        _tl_index = {
+            f.name: idx
+            for idx, f in enumerate(defun_forms)
+            if f.name in _tl_names_set
+        }
+        for _sym, _lam in top_lambda_binds:
+            _i = _tl_index.get(_sym)
+            if _i is None:
+                continue
+            _lam_slot = 2 * len(defun_forms) + top_level_count - _i
+            top_lambda_slots[_sym] = _lam_slot
 
     # 内嵌 `(function (lambda ...))` / `((lambda ...) args)` DEFUN（kwote/
     # 立即应用机制）：偏移相对所在函数字节码缓冲，需转换为 seg0 绝对偏移。
@@ -2067,6 +2124,14 @@ def cmd_compile(
             if _last_defun_pos >= 0
             else 0
         )
+        # START `_reg` 函数数 = 首个顶层语句之前定义的 defun 数（CAD platform
+        # 实测 set-locale/get-locale 在 globals 语句前注册）。
+        _n_pre = 0
+        for _f in program.forms:
+            if isinstance(_f, (Defun, Defpackage)):
+                _n_pre += 1
+            else:
+                break
         module_code = _build_cad_module_code(
             top_level_code,
             symtab,
@@ -2078,6 +2143,8 @@ def cmd_compile(
             n_post_forms=_n_post_forms,
             n_globals=_n_globals,
             top_lambda_slots=top_lambda_slots,
+            n_pre=_n_pre,
+            skip_funcs=_top_lambda_names,
         )
     elif n_cmds:
         module_code = build_command_module_code(len(defun_forms))
@@ -2187,6 +2254,8 @@ def cmd_compile(
                 gvar_map=gvar_map,
                 top_lambda_slots=top_lambda_slots,
                 real_map=real_map,
+                n_pre=_n_pre,
+                skip_funcs=_top_lambda_names,
             )
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args,
                             codegen_nsyms=codegen_nsyms,
