@@ -1057,7 +1057,10 @@ class CodeGenerator:
                 if not isinstance(a, (IfNode, Setq, Progn, ForeachNode, WhileNode, RepeatNode)):
                     buf.emit(encode_op_noarg(POP))
             if actions:
-                self._emit_expr(buf, actions[-1])
+                # 末动作是子句的"值"（cond 结果）：尾上下文发射使 setq 补 DUP
+                # 保留返回值（platform cond 子句体 `(setq is-gcad T)` 实测
+                # `PUSH_G T; DUP; SETQ_G`）。
+                self._emit_expr(buf, actions[-1], _tail=True)
             buf.label(f"{base}_body_{i}_end")
             if k < n - 1:
                 jp = buf.pos()

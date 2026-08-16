@@ -34,6 +34,7 @@ from compiler.resource_builder import (
     build_module_code,
     build_command_module_code,
     count_resource_records,
+    count_resource_items,
     resolve_encoding,
     _real_fmt,
 )
@@ -1124,7 +1125,7 @@ def _build_cad_module_code(
         cg._emit_expr(fb, form, _tail=tail)
         fb.resolve()
         bc = bytes(fb.data)
-        if isinstance(form, Setq) and not tail:
+        if isinstance(form, Setq) and not tail and len(form.pairs) == 1:
             # setq 值非常量（INT/REAL/列表等）：CAD 在 SETQ_G 前插入 DUP
             # 保留返回值（mix2 `(setq x 10)` 实测 `32 0a 0b 06 03 00`）。
             # 注意：多对 setq 的末对 DUP 已由 codegen 生成（n>1 末对），
@@ -2278,7 +2279,7 @@ def cmd_compile(
         top_lambda_body_syms=_top_lambda_body_syms,
         module_func_count=_mr_func_count,
     )
-    sec2_items = count_resource_records(seg1)
+    sec2_items = count_resource_items(seg1)
     # 确保 items 与 CAD 编译器一致。CAD 的 items 语义：
     # - 含 defun：2 * 模块注册数 + 2（模块注册数 = defun 数 + 顶层 form 数）。
     #   实测：1 函数→4、2 函数→6、3 函数→8、4 函数→10；mix(1 defun+1
@@ -2286,10 +2287,9 @@ def cmd_compile(
     # - 纯顶层（无 defun）：items = 符号槽数 + 2（setcmp 4 form→5，
     #   符号 SET/_/@::_ 3 个 + 2 = 5）。CAD 加载时按 items 处理
     #   GVARINIT 记录，若偏小会遗漏函数注册。
-    if len(defun_forms):
-        min_items = 2 * (len(defun_forms) + top_form_count) + 2
-    else:
-        min_items = len(symtab.entries) + 2
+    # 对拍 CAD 实测：items = 模块注册 GVARINIT st_init + 函数注册 GVARINIT
+    # st_init（count_resource_items），混合文件（platform 66+6=72）亦吻合。
+    min_items = count_resource_records(seg1)
     if sec2_items < min_items:
         sec2_items = min_items
 

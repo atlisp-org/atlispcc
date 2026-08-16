@@ -405,10 +405,9 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - **模块注册区连续 STRING 合并**（2026-08-16，platform.lsp）：resource_builder
   模块注册（module_entries 循环）连续 STRING 合并为单个 55 块（CAD
   `55 02 00 acad.pgp chs` 实测），此前每个字符串独立 `55 01` 块。
-- **platform.lsp 进度**（2026-08-16）：seg0 字节码完全一致；nsyms 对齐（24）；
-  seg1 模块注册区/DEFCODE 尾/fg 区已对齐；**模块代码 setq-lambda 绑定
-  （`JUMP 0; PUSH_G <-lambda->; DUP; SETQ_G <sym>`，@::fasext PUSH_G 69 /
-  @::vlx PUSH_G 68）与 CAD 一致**。相关修复：
+- **platform.lsp byte-identity**（2026-08-16，**seg0+nsyms+seg1 完全一致**）：
+  混合文件（defun+顶层 setq-lambda）对拍 CAD 真机编译，全文件 byte-identical
+  （仅头部横幅 `Do not change it!` vs `Built by atlispcc!` 差异）。相关修复：
   - `_module_code_ctx` 标志——模块代码（顶层表达式）里的跨函数调用用模块注册
     槽、不分配重复符号槽（否则顶层 cond 调 `@::set-locale` 在 fg 区泄漏
     `@::SET-LOCALE` 重复槽、VAL 与函数名合并进同一 5b 块、nsyms 多 1）。
@@ -419,8 +418,14 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
     其后插入提升 defun（`_insert_top_lambda_defuns`，seg0 `-lambda-` stub 源码
     位置交错）。
   - `top_lambda_slots`（混合）= `_reg` b 槽 - 1 = 2*n_funcs+top_level_count-i。
-  残余（seg1 ~468 字节差异）：模块代码 setq DUP 双发/缺失（多对 setq 末对
-  双 DUP、`(setq X (if ...))` then 分支 DUP 缺失）、items 计数（72 vs 34）。
+  - **cond 子句末动作尾上下文**（`_emit_cond_stub` `_tail=True`）：末动作是子句
+    的"值"，setq 需 DUP 保留返回值（platform `(setq is-gcad T)` 实测
+    `PUSH_G T; DUP; SETQ_G`）。
+  - **`_stmt_bytes` setq DUP 仅单对**：多对 setq 末对 DUP 已由 codegen 生成
+    （n>1 末对），`_stmt_bytes` 再插 DUP 会双发（platform 多对 setq 实测）。
+  - **`count_resource_items`**：CAD seg1 头 `<items>` = 模块注册 GVARINIT
+    st_init + 函数注册 GVARINIT st_init（platform 66+6=72、mid 3+1=4），
+    中间函数体 fg GVARINIT(0,nsyms) 不计数。
 - 文件头注释/版本戳（`;A<日期>`）随日期变化，非字节一致性目标；seg0+sec2 已全对齐
 - **CAD 模态对话框阻塞 MCP**：CAD 偶发弹出 `alert`/错误框（`#32770`）会阻塞
   `atlisp-mcp` eval。用 `python -m tools.cad_dialog_killer <pid> --watch` 自动关闭

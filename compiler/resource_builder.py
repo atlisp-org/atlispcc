@@ -123,6 +123,80 @@ def build_command_module_code(n_funcs: int, vl_idx: int = 2) -> bytes:
     return bytes(out)
 
 
+def count_resource_items(res_stream: bytes) -> int:
+    """CAD seg1 头 ``<len> <items> $`` 的 items 值。
+
+    对拍 CAD 实测：items = **模块注册 GVARINIT 的 st_init** + **函数注册
+    GVARINIT 的 st_init**（即资源流中第一个与最后一个 GVARINIT 的 st_init 和）。
+    - platform: GVARINIT(0,66) + GVARINIT(66,6) = 72
+    - @lisp-env: GVARINIT(0,64) + GVARINIT(64,1) = 65
+    - mid: GVARINIT(0,3) + GVARINIT(3,1) = 4（= count_resource_records 巧合）
+    中间的函数体 fg GVARINIT(0, nsyms) 不计数。
+    """
+    first_st = last_st = 0
+    pos = 0
+    while pos < len(res_stream):
+        op = res_stream[pos]
+        if op == 0x43 and pos + 5 <= len(res_stream):
+            st = struct.unpack("<H", res_stream[pos + 3 : pos + 5])[0]
+            if not first_st:
+                first_st = st
+            last_st = st
+            pos += 5
+        elif op in (0x00, 0x01, 0x02, 0x0A, 0x0B, 0x16, 0x20, 0x23, 0x24, 0x28, 0x29, 0x2A, 0x3A, 0x62, 0x63, 0x1C):
+            pos += 1
+        elif op in (0x1E, 0x1F):
+            pos += 2
+        elif op in (
+            0x03,
+            0x05,
+            0x06,
+            0x07,
+            0x09,
+            0x0C,
+            0x0D,
+            0x0E,
+            0x34,
+            0x37,
+            0x39,
+            0x3C,
+            0x3D,
+            0x5C,
+            0x5D,
+            0x5E,
+        ):
+            pos += 3
+        elif op in (0x14, 0x15, 0x33, 0x35, 0x51, 0x57, 0x67, 0x68, 0x69, 0x6A):
+            pos += 5
+        elif op == 0x32:
+            pos += 2
+        elif op in (0x56, 0x5B):
+            pos += 1
+            while pos < len(res_stream):
+                while pos < len(res_stream) and res_stream[pos] != 0x00:
+                    pos += 1
+                pos += 1
+                if pos >= len(res_stream) or res_stream[pos] == 0x00:
+                    if pos < len(res_stream):
+                        pos += 1
+                    break
+        elif op == 0x55:
+            pos += 1
+            if pos + 2 <= len(res_stream):
+                num = struct.unpack("<H", res_stream[pos : pos + 2])[0]
+                pos += 2
+                for _ in range(num):
+                    if pos + 2 <= len(res_stream):
+                        slen = struct.unpack("<H", res_stream[pos : pos + 2])[0]
+                        pos += 2 + slen
+        elif op == 0x3B:
+            end = res_stream.find(b"\x00", pos + 1)
+            pos = end + 1 if end >= 0 else pos + 1
+        else:
+            pos += 1
+    return first_st + last_st
+
+
 def count_resource_records(res_stream: bytes) -> int:
     """统计资源流中的 GVARINIT(0x43) 与 INIT_DONE(0x1c) 记录数。
 
