@@ -725,6 +725,22 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     if 0 <= new_idx <= 0xFFFF:
                         out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                         continue
+        # 参数写入 SETQ_G（仅多函数）：与参数读取同规则。codegen 对参数
+        # `(setq param ...)` 用 symtab.get_or_add(param) 发射（record.lsp
+        # `(setq lib-name (read lib-name))` 实测 symtab 槽 32），但参数符号
+        # 不注册于资源 fg 表（符号槽末尾，gvar 槽 = nsyms），须按
+        # gvar_slot(arg) - 1 重映射（CAD 实测 `SETQ_G[30]` = nsyms-1）。
+        elif multi and inst.op_name == "SETQ_G" and inst.size == 3 and cur_args is not None and inst.operands:
+            idx = inst.operands[0]
+            _sym = sym_of(idx)
+            if _sym and cur_args and _sym in [a.upper() for a in cur_args]:
+                i = [a.upper() for a in cur_args].index(_sym)
+                if 0 <= i < len(cur_args):
+                    arg = cur_args[i]
+                    new_idx = gvar_slot(arg) - 1 - offset
+                    if 0 <= new_idx <= 0xFFFF:
+                        out += bytes([0x06, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                        continue
         # 其余符号引用：统一用 gvar 槽 - 1。多函数的普通符号走 gvar_map；
         # CONST/STRING 常量引用（PUSH_G 操作数 = gvar 槽 - 1）在单函数
         # 也需修正（codegen 原始槽 = symtab idx，gvar 槽 = idx+1，
