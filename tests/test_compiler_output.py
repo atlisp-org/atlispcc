@@ -293,6 +293,10 @@ CAD_GOLDEN_PAIRS = [
     # 纯顶层 `(setq X (lambda ...))` 多 `-lambda-`（setq-lambda.lsp）：seg0 完整
     # compact stub + 函数目录/第二区符号/fg 表布局 + setq 绑定协议（2026-08-15）。
     ('setq-lambda.lsp', 'cad/setq_lambda_cad.fas'),
+    # 纯顶层 `(set 'X (lambda ...))` + in-package/use-package 真实调用
+    # （bootstrap.lsp）：`set` 函数绑定（非 setq 协议）、模块代码 set-lambda
+    # PUSH_G <-lambda-槽>（不 +1）、连续 STRING 合并 55 块（2026-08-16）。
+    ('bootstrap.lsp', 'cad/bootstrap_cad.fas'),
 ]
 
 #: t-series sources whose compiled output is byte-identical to the CAD golden

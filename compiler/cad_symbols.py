@@ -833,14 +833,11 @@ class CadSymbolCollector:
                     if i >= module_boundary:
                         module_funcs += 1
             elif isinstance(form, (Defpackage, InPackage)):
-                # Defpackage/InPackage：注册符号（InPackage 注册 in-package +
-                # 包名）。Defpackage 按 CAD 模块代码引用序：export 符号先
-                # （PUSH_VALUE <export>… DEFPACKAGE），use 包次之，名字最后
-                # （atlisp_u 实测 :BG-COLOR/:THEME 顺序、:C 包 export 逆序）。
-                for s in (("in-package", form.name) if isinstance(form, InPackage)
-                          else ([(e, False) for e in reversed(form.export or [])]
-                                + [(u, False) for u in (form.use or [])]
-                                + [(form.name, False)])):
+                for s in ((("in-package", False), (form.name, False))
+                  if isinstance(form, InPackage)
+                  else ([(e, False) for e in reversed(form.export or [])]
+                        + [(u, False) for u in (form.use or [])]
+                        + [(form.name, False)])):
                     if _owner_of(s[0]) == i and s[0] not in module_seen:
                         module_seen.add(s[0])
                         self.add(s[0])

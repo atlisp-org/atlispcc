@@ -409,20 +409,35 @@ class ResourceBuilder:
             if _only_lambda_keys and top_lambda_body_syms:
                 _first_n = len(entries) - len(top_lambda_body_syms)
             sym_buf = bytearray()
-            for entry_type, entry_val in entries[:_first_n]:
+            i = 0
+            _first_entries = entries[:_first_n]
+            while i < len(_first_entries):
+                entry_type, entry_val = _first_entries[i]
                 if entry_type == "SYMBOL":
                     sym_buf += self._enc_sym(entry_val) + b"\x00"
+                    i += 1
                 elif entry_type == "STRING":
                     if sym_buf:
                         out += b"\x5b" + bytes(sym_buf) + b"\x00"
                         sym_buf = bytearray()
-                    encoded = self._enc(entry_val)
-                    out += b"\x55\x01\x00" + res_u16(len(encoded)) + encoded
+                    # CAD 合并连续 STRING 为单个 55 块（bootstrap.lsp CAD golden
+                    # 实测 `55 04 00 tmp/ \ temp stable`，与模块注册/符号区一致）。
+                    strs = [entry_val]
+                    j = i + 1
+                    while j < len(_first_entries) and _first_entries[j][0] == "STRING":
+                        strs.append(_first_entries[j][1])
+                        j += 1
+                    out += b"\x55" + res_u16(len(strs))
+                    for sv in strs:
+                        encoded = self._enc(sv)
+                        out += res_u16(len(encoded)) + encoded
+                    i = j
                 else:
                     if sym_buf:
                         out += b"\x5b" + bytes(sym_buf) + b"\x00"
                         sym_buf = bytearray()
                     self._push_entry(out, (entry_type, entry_val))
+                    i += 1
             if sym_buf:
                 out += b"\x5b" + bytes(sym_buf) + b"\x00"
             out += b"\x01" * 2

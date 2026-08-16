@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from compiler.parser import Parser, ParseError
 from compiler.symbol_table import SymbolTable
 from compiler.codegen import CodeGenerator, BytecodeBuffer
+from asm.opcodes import encode_usubr
 from compiler.ast_nodes import (
     Defun,
     Defpackage,
@@ -1084,18 +1085,35 @@ def _build_cad_module_code(
             else:
                 return bytes(pairs_bc)
         if isinstance(form, InPackage):
-            # `(in-package :@)`：CAD 编译为编译期指令，模块代码**不发射**函数
-            # 调用（@lisp_u 实测模块代码无 IN-PACKAGE USUBR；发射 `USUBR(1,
-            # IN-PACKAGE)` 会解析为 `CL::IN-PACKAGE` → "函数错误: CL::IN-PACKAGE"）。
-            # 符号 IN-PACKAGE/:@ 仍经 _collect_symbol_nodes 注册（槽位对齐，
-            # base-function 修复记录）。发射 PUSH_NIL 占位语句保持语句栈平衡
-            # （_emit_stmts 每语句后补 POP）。
-            return bytes([0x01])  # PUSH_NIL（值由 _emit_stmts 的 POP 丢弃）
+            # `(in-package :@)`：CAD 发射真实调用 `PUSH_VALUE <:@>; USUBR(1,
+            # IN-PACKAGE)`（base-function CAD golden 实测 `03 2f 00 35 01 2e 00
+            # 03`；atlisp_u CAD golden 实测 12 次 `GVAR_PUSH 954(:@); FUNC_REF
+            # 937,1`——AGENTS.md "模块代码不发射" 旧注释过时，2026-08-16 勘误）。
+            # 符号 IN-PACKAGE/:@ 经 _collect_symbol_nodes 注册。
+            _pkg_idx = symtab.name_to_idx.get(":@")
+            _fn_idx = symtab.name_to_idx.get("in-package")
+            if _pkg_idx is not None and _fn_idx is not None:
+                return (
+                    bytes([0x03]) + struct.pack("<H", _slot_gv(_pkg_idx))  # PUSH_VALUE :@
+                    + encode_usubr(1, _slot_gv(_fn_idx), 3)  # USUBR(1, in-package)
+                )
+            return bytes([0x01])  # 兜底：槽缺失时退化为 PUSH_NIL 占位
         if isinstance(form, Call) and str(form.name).lower() == "use-package":
-            # `(use-package :autolisp)`：同 in-package，CAD 模块代码不发射函数
-            # 调用（发射 USUBR 会解析为 CL::USE-PACKAGE → 函数错误）。符号
-            # USE-PACKAGE/:AUTOLISP 仍注册（槽位对齐）。
-            return bytes([0x01])  # PUSH_NIL 占位
+            # `(use-package :autolisp)`：同 in-package，CAD 发射真实调用
+            # `PUSH_VALUE <:autolisp>; USUBR(1, USE-PACKAGE)`（base-function CAD
+            # golden 实测 `03 2d 00 35 01 2c 00 03`；atlisp_u CAD golden 实测 7 次）。
+            _arg = form.args[0] if form.args else None
+            _arg_idx = (
+                symtab.name_to_idx.get(_arg.name)
+                if isinstance(_arg, Symbol) else None
+            )
+            _fn_idx = symtab.name_to_idx.get("use-package")
+            if _arg_idx is not None and _fn_idx is not None:
+                return (
+                    bytes([0x03]) + struct.pack("<H", _slot_gv(_arg_idx))  # PUSH_VALUE :autolisp
+                    + encode_usubr(1, _slot_gv(_fn_idx), 3)  # USUBR(1, use-package)
+                )
+            return bytes([0x01])  # 兜底：槽缺失时退化为 PUSH_NIL 占位
         # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，CAD `-lambda-` SUBR）：
         # 模块代码 `PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set`，不经
         # kwote/引用常量（CAD 实测 bootstrap）。`-lambda-` 槽由 seg0 生成阶段
@@ -1125,6 +1143,25 @@ def _build_cad_module_code(
                 _sym_idx = symtab.name_to_idx.get(_tgt)
                 _lam_slot = top_lambda_slots[_tgt]
                 _b = bytearray()
+                # CAD `(set 'X (lambda ...))`（bootstrap CAD golden 实测）：
+                # 模块代码 `PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; USUBR(2,
+                # SET)` ——用 `set` 函数调用绑定（不是 setq 协议）。`-lambda-`
+                # 槽 = _lam_slot（不 +1），SET 为模块注册的 set 内建 gvar 槽。
+                if isinstance(form, Call) and form.name == "set":
+                    _set_idx = symtab.name_to_idx.get("set")
+                    if _sym_idx is not None and _set_idx is not None:
+                        _b += bytes([0x09]) + struct.pack(
+                            "<H", _slot_gv(_sym_idx)
+                        )  # PUSH_G <sym>
+                        _b += bytes([0x57, 0x00, 0x00, 0x00, 0x00])  # JUMP 0
+                        # `-lambda-` 槽是 DEFCODE 区注册的独立 gvar 槽（不在
+                        # symtab/gvar_map），PUSH_G = _lam_slot。不能用 _slot_gv
+                        # （会把槽当 symtab 索引查 entries → 错位到 gvar_map）。
+                        _b += bytes([0x09]) + struct.pack("<H", _lam_slot)  # PUSH_G <-lambda->
+                        _b += encode_usubr(
+                            2, _slot_gv(_set_idx), 3
+                        )  # USUBR(2, set)
+                        return bytes(_b)
                 # CAD 纯顶层 `(setq X (lambda ...))`（setq-lambda.lsp CAD golden
                 # 实测）：模块代码 `JUMP 0; PUSH_G <-lambda-槽>; DUP; SETQ_G <sym>`
                 # ——用 setq 协议绑定（不是 `set` 函数）。JUMP 0 为占位跳转。
