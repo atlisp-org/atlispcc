@@ -406,12 +406,21 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   模块注册（module_entries 循环）连续 STRING 合并为单个 55 块（CAD
   `55 02 00 acad.pgp chs` 实测），此前每个字符串独立 `55 01` 块。
 - **platform.lsp 进度**（2026-08-16）：seg0 字节码完全一致；nsyms 对齐（24）；
-  seg1 模块注册区/DEFCODE 尾/fg 区已对齐。残余：模块代码 setq-lambda 绑定
-  （cc 用函数注册尾、CAD 用 `JUMP 0; PUSH_G <-lambda->; DUP; SETQ_G <sym>`，
-  2 字节差）。相关修复：`_module_code_ctx` 标志——模块代码（顶层表达式）里
-  的跨函数调用用模块注册槽、不分配重复符号槽（否则顶层 cond 调
-  `@::set-locale` 在 fg 区泄漏 `@::SET-LOCALE` 重复槽、VAL 与函数名合并
-  进同一 5b 块、nsyms 多 1）。
+  seg1 模块注册区/DEFCODE 尾/fg 区已对齐；**模块代码 setq-lambda 绑定
+  （`JUMP 0; PUSH_G <-lambda->; DUP; SETQ_G <sym>`，@::fasext PUSH_G 69 /
+  @::vlx PUSH_G 68）与 CAD 一致**。相关修复：
+  - `_module_code_ctx` 标志——模块代码（顶层表达式）里的跨函数调用用模块注册
+    槽、不分配重复符号槽（否则顶层 cond 调 `@::set-locale` 在 fg 区泄漏
+    `@::SET-LOCALE` 重复槽、VAL 与函数名合并进同一 5b 块、nsyms 多 1）。
+  - `_build_cad_module_code` 的 `_reg` 分组：START 注册前 n_pre 个函数（首个
+    顶层语句之前定义，platform 实测 set-locale/get-locale），TAIL 注册其余
+    （跳过顶层 setq-lambda，其绑定由 mid_forms setq 语句发射）。
+  - 混合文件顶层 set/setq-lambda：保留原 form（kwote 改写）到 other_forms +
+    其后插入提升 defun（`_insert_top_lambda_defuns`，seg0 `-lambda-` stub 源码
+    位置交错）。
+  - `top_lambda_slots`（混合）= `_reg` b 槽 - 1 = 2*n_funcs+top_level_count-i。
+  残余（seg1 ~468 字节差异）：模块代码 setq DUP 双发/缺失（多对 setq 末对
+  双 DUP、`(setq X (if ...))` then 分支 DUP 缺失）、items 计数（72 vs 34）。
 - 文件头注释/版本戳（`;A<日期>`）随日期变化，非字节一致性目标；seg0+sec2 已全对齐
 - **CAD 模态对话框阻塞 MCP**：CAD 偶发弹出 `alert`/错误框（`#32770`）会阻塞
   `atlisp-mcp` eval。用 `python -m tools.cad_dialog_killer <pid> --watch` 自动关闭
