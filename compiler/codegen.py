@@ -705,11 +705,14 @@ class CodeGenerator:
                 with self._value_ctx():
                     self._emit_expr(buf, value)
                 if self.stub_format:
-                    # 多对 setq 最后对总是 DUP 保留返回值（CAD p05/i18n 实测
-                    # `PUSH; ...; DUP; SETQ_G`，与 tail 无关）；单对 setq 仅
-                    # 真尾上下文才 DUP（test-cond 模块代码语句 if then 单对
-                    # `PUSH_G; SETQ_G` 无 `0b` 实测）。
-                    if n > 1 and i == n - 1:
+                    # 多对 setq 最后对：值位置（非语句上下文）总是 DUP 保留
+                    # 返回值（CAD p05/i18n 实测 `PUSH; ...; DUP; SETQ_G`，与
+                    # tail 无关）；语句上下文（setq 值被丢弃，如 cond 子句体
+                    # if-then 分支中间的多对 setq）不 DUP（init/sequence 实测
+                    # CAD `32 00; SETQ_G` 无 `0b`）。单对 setq 仅真尾上下文
+                    # 才 DUP（test-cond 模块代码语句 if then 单对 `PUSH_G;
+                    # SETQ_G` 无 `0b` 实测）。
+                    if n > 1 and i == n - 1 and not self._in_stmt_ctx:
                         buf.emit(encode_op_noarg(DUP))
                     elif self._in_tail_context and i == n - 1:
                         buf.emit(encode_op_noarg(DUP))
@@ -1044,7 +1047,13 @@ class CodeGenerator:
         for k, i in enumerate(reversed(range(n))):
             actions = clauses[i][1:]
             buf.label(f"{base}_body_{i}")
-            buf.emit(encode_op_noarg(POP))
+            # CAD stub：空体子句（`(cond (x) ...)`，无动作）不发入口 POP——
+            # 测试值留在栈顶作为 cond 结果，COND_OR 真时直接落到该子句结束
+            # 位置（init/sequence 空体子句 `(@::*bootstrap-state*)` CAD 实测
+            # 无 `0a`，末子句空体后 CLEAR_ARGS 前也无 POP）。非空体才发
+            # POP 弹掉测试值。
+            if actions:
+                buf.emit(encode_op_noarg(POP))
             for a in actions[:-1]:
                 self._emit_stmt(buf, a)
                 # 中间语句丢弃结果：if 自身管理栈（then 末尾已 POP / 无 else 补

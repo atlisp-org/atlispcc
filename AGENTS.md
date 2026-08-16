@@ -318,6 +318,17 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   3. **命令模块缺 `vl-ACAD-defun` 注册**（voice / config-dialog /
      config-sync-config / package-version 等）
   4. **符号槽序 / nsyms ±1**：大量文件，待逐个对拍修复
+  5. **共享参数在函数体引用泄漏**（cl-macros，2026-08-16 修复）：
+     `_collect_forward`（模块代码）本就排除 `self.shared` 共享参数，但
+     `_collect_byteorder`（函数体引用）未排除——`body` 被 set-macro/defmacro
+     共享为参数，却泄漏进 expand-let 的函数体引用（slot 43 多余 `BODY`），
+     使 set-macro 的共享参数注册（slot 67 应为 `BODY`）变成空操作（已在
+     `_name_set`）。修复：在 `_collect_byteorder` 的 Symbol 值引用、Setq 目标、
+     quoted 单符号三处 + locals 循环加 `name not in self.shared` 守卫。
+     **cl-macros 现 symbol_slots 79/79 + nsyms 55/55 与 CAD 一致**（仅 seg0
+     仍有独立 codegen 差异：`@::macro-subst` while 回跳 JUMP 前多余 `PUSH_NIL`、
+     while 体尾 setq 多余 `DUP`，待 codegen 修复）。回归：全量
+     test_compiler_output/test_compile_decompile/test_symbol_table 134 passed。
 - 工作流：`python scripts/mcp_cad.py eval "(vlisp-compile 'st <in> <out>)"`
   （模式 `'st`，CAD 文档打开时才可编译；路径用正斜杠）
 
@@ -454,4 +465,24 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - **CAD 模态对话框阻塞 MCP**：CAD 偶发弹出 `alert`/错误框（`#32770`）会阻塞
   `atlisp-mcp` eval。用 `python -m tools.cad_dialog_killer <pid> --watch` 自动关闭
   （C# 实现，`tools/src/cad_dialog_killer.cs`，实测关闭 alert 解除阻塞）。
+- **多 kwote + 捕获外层参数的 `-lambda-` 参数槽缺失**（sub-system/scheduler，
+  2026-08-16 登记）：`unschedule-task` 的 `(function (lambda (task-item)
+  (= (car task-item) name)))` 捕获外层函数参数 `name` 时，CAD 会把 kwote
+  lambda 参数 `task-item` 注册为符号槽（scheduler golden slot 77 `TASK-ITEM`，
+  kwote 块 `kwote = CAR TASK-ITEM`），而 `_collect_byteorder` 的 kwote 分支
+  用 `arg_names | lambda_args` 排除 lambda 参数 → OURS nsyms 少 1（72 vs 73）、
+  后续槽偏移、`-lambda-` 运行时绑定报 `要绑定的对象不正确: #<SUBR -lambda->`。
+  i18n/06_higher_order 单 kwote（lambda 不捕获外层参数，`(lambda (n) (* n 2))`）
+  用 GET_LOCAL 读取参数、不注册参数槽，byte-identity 正常。区别待确认（可能
+  是"kwote lambda 是否引用外层函数符号"触发 CAD 符号槽注册）。当前编译产物
+  **加载正常**（`(load ...)` OK），仅运行时功能受影响；scheduler 已记录于
+  kernel-fas-load 3 FAIL 修复清单（init/sequence、net/checksum、scheduler
+  重新编译后加载全部 OK）。待修复：kwote lambda 捕获外层参数时参数槽注册 +
+  codegen `-lambda-` 参数读取方式。
+- **cond 空体子句不发入口 POP**（init/sequence，2026-08-16）：`(cond (x) ...)`
+  空体子句（无动作）CAD 不发 `POP` 弹测试值（测试值留栈顶作 cond 结果，
+  init/sequence 的 `(@::*bootstrap-state*)` 实测无 `0a`）。`_emit_cond_stub`
+  对空体分支跳过 `POP`。语句上下文多对 setq 不 DUP（cond 子句体 if-then 中间
+  多对 setq CAD `SETQ_G` 无 `0b`，见 codegen `_emit_setq`）。init/sequence.fas
+  重新编译后 CAD 加载 + 函数可解析 OK。
 - MCP CAD 连接不稳定，建议手动测试

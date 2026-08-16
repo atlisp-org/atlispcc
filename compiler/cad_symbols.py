@@ -544,7 +544,7 @@ class CadSymbolCollector:
                 if locals_last.get(tuple(f.locals)) == i:
                     self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
             for loc in reversed(f.locals):
-                if loc not in claimed_in_body:
+                if loc not in claimed_in_body and loc not in self.shared:
                     self.add(loc)
             for arg in reversed(f.args):
                 if arg in self.shared:
@@ -980,7 +980,11 @@ class CadSymbolCollector:
     def _collect_byteorder(self, node, out, arg_names, in_quote=False):
         """按字节码首次引用序向前收集 (name, forced) 列表（单函数算法）。"""
         if isinstance(node, Symbol):
-            if node.name not in arg_names and not self._seen(out, node.name):
+            if (
+                node.name not in arg_names
+                and node.name not in self.shared
+                and not self._seen(out, node.name)
+            ):
                 out.append((node.name, False))
         elif isinstance(node, InPackage):
             # `(in-package :@)` → `PUSH_VALUE :@; FUNC_REF in-package`：
@@ -1012,7 +1016,11 @@ class CadSymbolCollector:
                 if value:
                     self._collect_byteorder(value, out, arg_names, in_quote)
                 if isinstance(target, Symbol):
-                    if target.name not in arg_names and not self._seen(out, target.name):
+                    if (
+                        target.name not in arg_names
+                        and target.name not in self.shared
+                        and not self._seen(out, target.name)
+                    ):
                         out.append((target.name, False))
                 else:
                     self._collect_byteorder(target, out, arg_names, in_quote)
@@ -1106,7 +1114,7 @@ class CadSymbolCollector:
                     # 'vla-postcommand vla-sendcommand)` CAD 实测 `'vla-postcommand`
                     # → `vla-PostCommand` 符号槽）。
                     _n = normalize_vla_name(node.expr.name)
-                    if _n not in arg_names and not self._seen(out, _n):
+                    if _n not in arg_names and _n not in self.shared and not self._seen(out, _n):
                         out.append((_n, False))
                 else:
                     const = to_const(node.expr)
