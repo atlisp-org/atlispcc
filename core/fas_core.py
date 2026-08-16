@@ -178,6 +178,21 @@ def get_ansi_encoding() -> str:
             return f'cp{ctypes.windll.kernel32.GetACP()}'
         except Exception:
             pass
+    else:
+        # Cygwin/MSYS 等 POSIX Python 下目标 CAD 仍是 Windows：查询注册表
+        # 获得系统 ACP（中文系统 = 936/GBK），否则编译产物字符串按 UTF-8，
+        # 与 CAD(GBK) 逐字节不一致（@lisp-env 的 "唯她" GBK vs UTF-8 实测）。
+        try:
+            import subprocess
+            r = subprocess.run(
+                ['reg', 'query', r'HKLM\SYSTEM\CurrentControlSet\Control\Nls\CodePage',
+                 '/v', 'ACP'],
+                capture_output=True, text=True, timeout=5)
+            m = re.search(r'ACP\s+REG_SZ\s+(\d+)', r.stdout)
+            if m:
+                return f'cp{int(m.group(1))}'
+        except Exception:
+            pass
     return 'utf-8'
 
 

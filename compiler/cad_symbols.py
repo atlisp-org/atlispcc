@@ -818,6 +818,19 @@ class CadSymbolCollector:
             cand = [i for i in (owner_target.get(sym), owner_read.get(sym)) if i is not None]
             return min(cand) if cand else -1
 
+        # 模块区是否有 cond else 键 `t`（force t）：有则所有值位置 t 复用该槽，
+        # 无则值位置 `t` 也注册 T 槽（@lisp-env 实测）。预扫描全部顶层 form。
+        _has_force_t = False
+        for _f in forms_all:
+            if isinstance(_f, (Defun, Defpackage, InPackage)):
+                continue
+            _fr = _SeenList()
+            self._collect_byteorder(_f, _fr, set())
+            if any(isinstance(_n, str) and _n.lower() == 't' and _ff
+                   for _n, _ff in _fr):
+                _has_force_t = True
+                break
+
         module_seen = set()
         module_funcs = 0
         for i in reversed(range(n)):
@@ -862,7 +875,15 @@ class CadSymbolCollector:
                             self.add('T', force=True)
                         continue
                     # 值位置 t/T 与内层 else 键复用 T 槽，跳过（仅 force t 注册）。
+                    # 例外：模块区无任何 cond else 键（force t）时，值位置 `t`
+                    # 也要注册 T 槽（@lisp-env 实测 `(setq x (if c t))` 的 t
+                    # 在模块区注册 SYMBOL T，nsyms 多 1）。
                     if isinstance(name, str) and name.lower() == 't':
+                        if _has_force_t:
+                            continue
+                        if _owner_of(name) != i:
+                            continue
+                        self.add('T', force=force)
                         continue
                     # 符号由"归属 form"独占登记，其它 form 引用不重复发槽
                     # （CAD p04：lang 属 form0 被放尾部，codepage 属 form3）。

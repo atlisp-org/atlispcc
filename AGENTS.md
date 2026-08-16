@@ -297,6 +297,30 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
     Disassembler `03` 单字节占位前总跟 `00`（NIL）判定；连续 STRING 合并 `55` 块；
     中间 if 的 then 值 POP 位于 JUMP 前、模块代码顶层 if-then-setq 补 DUP/无 else 补 PUSH_NIL
 
+### kernel 真机编译逐文件对比（2026-08-16）
+
+对 `../kernel/src/` 下全部 67 个 `.lsp` 逐个编译并与 CAD 真机
+（`(vlisp-compile 'st ...)`，AutoCAD 24.1s）产物逐字节比对：
+
+- **9 个 byte-identical**：platform / version / funlib-download / funlib-record /
+  net-cache / net-http / net-mid / net-registry / sub-system-config-config
+  （nsyms + seg0 + resource_items 全一致）
+- **58 个 DIFF**：多数 nsyms ±1（符号槽序差异），少数大差异
+  （setup 228→166、config-dialog 160→196、package-version 117→124 等）
+- 主要差异类别：
+  1. **模块区值位置 `t` 未注册 T 槽**（@lisp-env / event-bus / platform-api /
+     init-sequence / net-uri）：混合文件模块注册区无 cond else 键（force t）时，
+     值位置 `(setq x (if c t))` 的 `t` 也要注册 SYMBOL T（`_register_module`
+     预扫描 `_has_force_t` 判定，2026-08-16 修复）
+  2. **非 ASCII 字符串编码**：CAD 按系统 ACP（中文系统 GBK）写字符串，
+     atlispcc 在 Cygwin/POSIX Python 下此前用 UTF-8（`get_ansi_encoding`
+     现回退 `reg query` 注册表取 ACP，2026-08-16 修复）
+  3. **命令模块缺 `vl-ACAD-defun` 注册**（voice / config-dialog /
+     config-sync-config / package-version 等）
+  4. **符号槽序 / nsyms ±1**：大量文件，待逐个对拍修复
+- 工作流：`python scripts/mcp_cad.py eval "(vlisp-compile 'st <in> <out>)"`
+  （模式 `'st`，CAD 文档打开时才可编译；路径用正斜杠）
+
 ### 已知限制
 
 - **cond else 键 `t` 的 T 槽位置**（2026-08-15）：CAD 中 T 槽由**外层 cond 的

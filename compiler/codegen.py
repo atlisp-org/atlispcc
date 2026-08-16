@@ -403,7 +403,7 @@ class CodeGenerator:
                     else:
                         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
                     return
-                elif name in self.current_func_args:
+                elif name in self.current_func_args and name in self.local_slots:
                     if len(self._defined_funcs) <= 1:
                         # 单函数参数读取逆序（CAD simple3/t13 实测：`+ Z Y X`、
                         # `> C B A`——源码第 i 个参数 → 槽 nsyms-1-i）。

@@ -1,12 +1,55 @@
 # atlispcc 项目进度报告
 
-> 生成日期：2026-08-15
-> 分支：main · 最新提交 `7e434b1`（setq-lambda byte-identity）
+> 生成日期：2026-08-16
+> 分支：main · 最新提交 `5802d5f`（新进展）
 > 本文档为滚动进度报告；历史周期记录保留于下方，最新周期见第 0 节。
 
 ---
 
-## 0. 本周期（2026-08-15，v0.1.22+）摘要
+## 0. 本周期（2026-08-16，v0.1.22+）摘要
+
+| 指标 | 数值 |
+|------|------|
+| 测试用例 | **348 用例**（304 passed + 35 skip + 9 failed，9 个 failed 为 `tests/compile_src/` fixture 缺失的既有失败） |
+| kernel 编译 | **67/67 全部可编译**（修复 net/reload.lsp 嵌套 lambda 引用外层参数 KeyError） |
+| kernel byte-identity | **9 个逐字节一致**（platform / version / funlib-download / funlib-record / net-cache / net-http / net-mid / net-registry / sub-system-config-config） |
+| CAD 真机编译 | AutoCAD 24.1s `(vlisp-compile 'st ...)` 逐文件对比 |
+
+### 本周期成果
+
+1. **kernel 逐文件编译对拍 CAD 真机**（新增）：
+   - 全部 67 个 `../kernel/src/*.lsp` 用 atlispcc 编译（O0）成功。
+   - 通过 MCP 在 CAD 逐个 `(vlisp-compile 'st ...)` 编译生成 67 份 golden，
+     逐字节比对 nsyms/seg0/resource_items。
+   - **9 个 byte-identical**；58 个 DIFF（多数 nsyms ±1 符号槽序差异，少数
+     大差异如 setup 228→166、config-dialog 160→196、package-version 117→124）。
+2. **编译修复**：
+   - `net/reload.lsp` KeyError：嵌套 `-lambda-` 内引用外层函数参数时走单函数
+     参数读取分支 `self.local_slots[name]` 越界（`codegen.py` 条件改为
+     `name in current_func_args and name in local_slots`）。
+   - 模块区值位置 `t` 注册 T 槽：混合文件模块注册区无 cond else 键（force t）
+     时，值位置 `(setq x (if c t))` 的 `t` 也注册 SYMBOL T
+     （`cad_symbols._register_module` 预扫描 `_has_force_t`），@lisp-env /
+     event-bus 的 nsyms 6/6、31/31 对齐。
+   - `get_ansi_encoding` Cygwin 回退：POSIX Python（Cygwin）下 `ctypes.windll`
+     不可用，现回退 `reg query` 注册表取系统 ACP（中文系统 = cp936/GBK），
+     使字符串编码与 CAD 真机一致（@lisp-env "唯她" GBK vs UTF-8）。
+3. **测试**：`pythonw -m pytest -q` = 304 passed + 35 skip + 9 failed。
+   9 个 failed 全部在 `test_resource_stream.py`，为 `tests/compile_src/`
+   fixture 未入库的**既有失败**（改动前同样 9 个），本次改动无新增回归。
+
+### 已知残余
+
+- 58 个 kernel 文件未 byte-identical：符号槽序 / nsyms ±1（大量）、命令模块
+  `vl-ACAD-defun` 注册（voice/config-dialog/config-sync-config/package-version
+  等）、大差异文件（setup/config-dialog/config-sync-file/package-load/ui-panel
+  等），待逐个对拍修复。
+- `tests/compile_src/`（16 个 fixture：01_math…16_i18n）未入库，导致
+  `test_resource_stream.py` 9 个用例失败，需补齐 fixture 后恢复。
+
+---
+
+## 0.1 本周期（2026-08-15，v0.1.22+）摘要
 
 | 指标 | 数值 |
 |------|------|
