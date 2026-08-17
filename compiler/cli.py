@@ -870,7 +870,19 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     if _sym and _sym in gvar_map:
                         new_idx = gvar_map[_sym] - 1 - offset
                     else:
-                        new_idx = None
+                        # 不在 GVARINIT 表（fg）的符号（如 quoted 数据里的特殊
+                        # 形式 `setq`/`if`/`lambda` 等，@lisp_u safe-form-p 立即
+                        # 应用 lambda 逐元素构建实测）：这些符号注册于资源流
+                        # symbol_slots 高位（可能 > nsyms）。CAD 对这些 quoted
+                        # 数据用 CONST 整体引用（无独立 PUSH_G），我们逐元素
+                        # 构建时须编址到符号槽末尾（gvar 槽 = nsyms，操作数 =
+                        # nsyms-1），否则 PUSH_G 越界 → CAD 0xC0000005。
+                        # 先查资源 symbol_slots 是否命中 < nsyms 的有效槽。
+                        _rs = _res_slot_of(str(_sym)) if _sym else None
+                        if _rs is not None and _rs < nsyms:
+                            new_idx = _rs - 1 - offset
+                        else:
+                            new_idx = nsyms - 1 - offset
                 if etype == "REAL":
                     # 实数常量按值匹配资源段 REAL 槽（codegen symtab 槽可能
                     # 偏离 GVARINIT，base-function 实测 0.001 槽 174→fg[130]）。

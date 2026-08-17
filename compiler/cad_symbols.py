@@ -820,16 +820,27 @@ class CadSymbolCollector:
 
         # 模块区是否有 cond else 键 `t`（force t）：有则所有值位置 t 复用该槽，
         # 无则值位置 `t` 也注册 T 槽（@lisp-env 实测）。预扫描全部顶层 form。
+        # CAD T 槽在模块区**全局唯一**（tcond5 实测：孤立顶层 `T` 与 userinfo
+        # setq 的 cond else 键共享一个 T 槽），位置由 **forward 序第一个引用
+        # T 的 form**（force t 或值位置 t 均可）决定（即 reversed 遍历序
+        # 最后一个引用 T 的 form，tcond5 孤立 T 在 userinfo 之前 → T 槽在
+        # userinfo 符号之后、函数名之前）。其余 form 的 force t / 值位置 t
+        # 均复用该槽，不重复注册。
         _has_force_t = False
-        for _f in forms_all:
+        _t_form = -1
+        for _fi, _f in enumerate(forms_all):
             if isinstance(_f, (Defun, Defpackage, InPackage)):
                 continue
             _fr = _SeenList()
             self._collect_byteorder(_f, _fr, set())
+            _has_t_ref = any(
+                isinstance(_n, str) and _n.lower() == 't' for _n, _ in _fr
+            )
+            if _has_t_ref and _t_form < 0:
+                _t_form = _fi
             if any(isinstance(_n, str) and _n.lower() == 't' and _ff
                    for _n, _ff in _fr):
                 _has_force_t = True
-                break
 
         module_seen = set()
         module_funcs = 0
@@ -866,22 +877,32 @@ class CadSymbolCollector:
                 _t_force_idx = [j for j, (n, f) in enumerate(_rev)
                                 if isinstance(n, str) and n.lower() == 't' and f]
                 _t_reg_idx = _t_force_idx[-1] if _t_force_idx else -1
+                # 模块区 T 槽全局唯一：仅 forward 序第一个引用 T 的 form
+                # （_t_form）注册 T；其余 form 的 force t 与值位置 t 均跳过
+                # 复用该槽（tcond5/atlisp_u 实测孤立 T 与各 cond else 键共享）。
+                _i_is_t_form = i == _t_form
                 for j, (name, force) in enumerate(_rev):
                     # 顶层符号调用（force=True）不登记槽——并入 defun 槽
                     # （CAD p04 form4 cadr/not/codepage 组无 c2l）。例外：
                     # cond else 键 `t`（force=True）在 T 槽位注册（CAD 实测）。
                     if force:
-                        if isinstance(name, str) and name.lower() == 't' and j == _t_reg_idx:
+                        if (
+                            _i_is_t_form
+                            and isinstance(name, str)
+                            and name.lower() == 't'
+                            and j == _t_reg_idx
+                        ):
                             self.add('T', force=True)
                         continue
                     # 值位置 t/T 与内层 else 键复用 T 槽，跳过（仅 force t 注册）。
                     # 例外：模块区无任何 cond else 键（force t）时，值位置 `t`
                     # 也要注册 T 槽（@lisp-env 实测 `(setq x (if c t))` 的 t
-                    # 在模块区注册 SYMBOL T，nsyms 多 1）。
+                    # 在模块区注册 SYMBOL T，nsyms 多 1）。tcond5 实测孤立顶层
+                    # `T`（值位置）若位于 T 槽归属 form，同样注册。
                     if isinstance(name, str) and name.lower() == 't':
-                        if _has_force_t:
+                        if _has_force_t and not _i_is_t_form:
                             continue
-                        if _owner_of(name) != i:
+                        if _owner_of(name) != i and not _i_is_t_form:
                             continue
                         self.add('T', force=force)
                         continue
@@ -976,6 +997,11 @@ class CadSymbolCollector:
                     self._form_read_target(expr, reads, targets, arg_names | set(node.args), in_quote)
         elif isinstance(node, String):
             reads.add('"' + node.value + '"')
+        elif isinstance(node, Real):
+            # 实数常量：模块注册域需归属到 form（`_register_module` 对无归属的
+            # 符号跳过 → REAL 默认值槽缺失，config 类顶层调用 slot 错位）。
+            # 键与 `_collect_byteorder`/symtab.add_real 一致（`__real_<v>__`）。
+            reads.add('__real_%s__' % node.value)
 
     def _collect_byteorder(self, node, out, arg_names, in_quote=False):
         """按字节码首次引用序向前收集 (name, forced) 列表（单函数算法）。"""
@@ -1051,7 +1077,14 @@ class CadSymbolCollector:
             if node.list_expr:
                 self._collect_byteorder(node.list_expr, out, arg_names, in_quote)
             if node.var is not None:
-                self._collect_byteorder(node.var, out, arg_names, in_quote)
+                # foreach 循环变量注册为符号槽（CAD t16_foreach 实测 X 槽、
+                # @lisp_u `(foreach cmd '(...) ...)` 的 CMD 槽）。即使 var 名
+                # 与共享参数同名（@lisp_u `cmd` 同时是 @::cmd2str 等函数参数）
+                # 也独立注册——共享参数排除仅适用于**参数符号引用**，不适用于
+                # foreach 循环变量（CAD 模块区 510 CMD + 函数体区共享参数槽并存）。
+                _v = normalize_vla_name(node.var.name)
+                if _v not in arg_names and not self._seen(out, _v):
+                    out.append((_v, False))
             for expr in node.body:
                 self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, RepeatNode):
@@ -1096,6 +1129,20 @@ class CadSymbolCollector:
                     if "/" in _lambda_args:
                         _lambda_args = _lambda_args[: _lambda_args.index("/")]
                     lambda_args = set(_lambda_args)
+                    # kwote lambda 的 `/ 局部变量` locals 常量 `(quote (locals...))`
+                    # 需注册（codegen `_emit_al_bind_alist_locals` 会 add_constant），
+                    # 否则 symtab 在 codegen 阶段插入新常量导致后续符号索引漂移
+                    # （@lisp_u `(lambda (line / pos) ...)` 的 `(quote (pos))`
+                    # 被推到 nsyms 外，_patch_usubr_idx const_map 找不到 → PUSH_G
+                    # 越界 → CAD 0xC0000005）。常量结构与 codegen 一致
+                    # （`('LIST', (('SYMBOL', loc)...))`）。
+                    _lam_locals = []
+                    if "/" in node.expr.args:
+                        _lam_locals = node.expr.args[node.expr.args.index("/") + 1 :]
+                    if _lam_locals:
+                        _lc = ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))
+                        if not self._seen(out, (CONST_MARK, _lc)):
+                            out.append(((CONST_MARK, _lc), False))
                     for expr in node.expr.body:
                         self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
                 else:

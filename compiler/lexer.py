@@ -91,6 +91,13 @@ def tokenize(source: str) -> List[Token]:
             val = m.group()
             if kind == 'STRING':
                 val = unescape_string(val)
+            elif kind == 'SYMBOL' and '.' in val:
+                # CAD 词法级符号名规范化：含 `.` 的符号名（`:package.install`
+                # `foo.bar` `a.b.c`）截断到第一个 `.`（CAD 真机实测 `'x.y`→`X`
+                # `:package.install`→`:PACKAGE` `(defun foo.bar () ...)` 定义
+                # 的是 `foo`）。独立的 `.` token（dotted pair `(a . b)`）仍走
+                # DOT 分支，不受影响。
+                val = val.split('.', 1)[0]
             tokens.append((kind, val, line, col))
             col += len(m.group())
             pos = m.end()

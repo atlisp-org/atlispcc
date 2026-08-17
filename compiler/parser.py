@@ -65,7 +65,15 @@ class Parser:
             self.advance()
             # `(function X)`：CAD 编译为 kwote 机制（内部 DEFUN/符号引用），
             # 区别于 `'X` 的资源段常量。kwote=True 标记。
-            return QuotedExpr(expr=self.parse_form(quoted=True), kwote=True)
+            # 在引用上下文内（`'(... (function (lambda ...)) ...)`）`(function ...)`
+            # 是**数据**（`FUNCTION` 符号 + lambda 列表），非 kwote 调用——kwote
+            # 仅当处于函数调用上下文（`(function X)` 作为表达式求值）时成立。
+            # 否则 `'(progn (defun ... (function (lambda ...)) ...))` 的 kwote
+            # 使 to_const 失败，CAD 用单个 CONST 引用的 quoted 数据退化为运行时
+            # BUILD_LIST 逐元素构建（@lisp_u @::install 的 `'(progn ...)` 实测）。
+            return QuotedExpr(
+                expr=self.parse_form(quoted=True), kwote=(not quoted)
+            )
         elif kind == 'SYMBOL':
             self.advance()
             return Symbol(name=val)
@@ -168,7 +176,11 @@ class Parser:
             elif name in ('quote', 'function'):
                 expr = self.parse_form(quoted=True)
                 self.expect('RPAREN')
-                return QuotedExpr(expr=expr, kwote=(name == 'function'))
+                # `(function X)` 在引用上下文内（`'(... (function (lambda ...))
+                # ...)`）是数据（FUNCTION 符号 + lambda 列表），非 kwote 调用。
+                # kwote 仅当处于函数调用上下文（`(function X)` 作为表达式求值）
+                # 时成立，否则 to_const 失败导致 quoted 数据退化为 BUILD_LIST。
+                return QuotedExpr(expr=expr, kwote=(name == 'function' and not quoted))
             else:
                 items, dotted = self._parse_items_until_rparen(quoted)
                 if dotted is not None:

@@ -334,6 +334,39 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 
 ### 已知限制
 
+- **quoted 数据内 `(function ...)` 非 kwote**（2026-08-17，@lisp_u @::install 崩溃根因）：
+  引用上下文内（`'(... (function (lambda ...)) ...)`）`(function ...)` 是数据
+  （FUNCTION 符号 + lambda 列表），非 kwote 调用。parser 的 `parse_form` FUNCTION
+  分支与 `parse_list` 的 `(function X)` 分支均需 `kwote=(not quoted)`，否则
+  `to_const` 失败 → quoted 数据退化为 BUILD_LIST 逐元素构建。
+- **kwote lambda `/ 局部变量` locals 常量需收集**（2026-08-17）：codegen
+  `_emit_al_bind_alist_locals` 会 `add_constant((quote (locals...)))`，collector
+  `_collect_byteorder` 的 kwote 分支也须收集（`@lisp_u (lambda (line / pos) ...)`
+  的 `(quote (pos))` 常量），否则 symtab 在 codegen 阶段插入新常量导致后续
+  符号索引漂移到 nsyms 外 → `_patch_usubr_idx` const_map 找不到 → PUSH_G 越界。
+- **不在 fg 表的符号 PUSH_G 越界**（2026-08-17）：quoted 数据里的特殊形式
+  （`setq`/`if`/`lambda` 等）逐元素构建时，codegen 用 symtab 索引，`_patch_usubr_idx`
+  的 SYMBOL 分支对不在 `gvar_map` 的符号此前 `new_idx=None`（原样保留越界索引）。
+  现 fallback 到资源 symbol_slots（`_res_slot_of`），无效则符号槽末尾
+  （gvar 槽 = nsyms，操作数 = nsyms-1），消除 0xC0000005。
+- **模块区 T 槽全局唯一**（2026-08-17，@lisp_u 对拍）：模块区所有 cond else 键
+  `t`、值位置 `T`、孤立顶层 `T` 共享**一个** T 槽，位置由 **forward 序第一个
+  引用 T 的 form**（force t 或值位置 t 均可）决定（tcond5 实测：孤立 `T` 在
+  userinfo 之前 → T 槽在 userinfo 符号之后、函数名之前）。`_register_module`
+  的 `_t_form` 记录该 form，仅它在 `_t_reg_idx`/值位置注册 T，其余 form 跳过。
+  此前逐 form 独立注册 T 会多出 5 个 T 槽（@lisp_u OURS 7 vs CAD 2）。
+- **含 `.` 的符号名截断**（2026-08-17）：CAD 词法级把含 `.` 的符号名截断到
+  第一个 `.`（`x.y`→`X`、`:package.install`→`:PACKAGE`、`fun::e.g`→`fun::e`、
+  `(defun foo.bar ...)` 定义 `foo`）。独立的 `.` token（dotted pair `(a . b)`）
+  不受影响。lexer SYMBOL 分支对含 `.` 的值 `split('.',1)[0]`。
+- **foreach 循环变量独立注册**（2026-08-17）：foreach 变量即使与共享参数同名
+  （`@lisp_u` 的 `cmd` 同时是 `@::cmd2str` 等函数参数）也独立注册符号槽
+  （CAD 模块区 510 CMD + 函数体区共享参数槽并存）。`_collect_byteorder` 的
+  ForeachNode 分支对 var 绕过 `self.shared` 排除。
+- **config 顶层调用的 REAL 默认值槽**（2026-08-17）：`(@::define-config-typed
+  '@::x 2.5 "desc" '(range 0.1 100))` 的默认值 REAL `2.5` 需注册 REAL 槽
+  （CAD slot 67）。`_form_read_target` 此前缺 Real 分支，REAL 默认值无归属
+  → `_register_module` 跳过 → slot 错位。
 - **cond else 键 `t` 的 T 槽位置**（2026-08-15）：CAD 中 T 槽由**外层 cond 的
   else 键**（forward 序第一个 force t，纯顶层 reversed 注册序最后一个）位置
   决定（test-cond 实测 `"chs" ... T "autocad"`——T 在结果体后、测试符号前），
