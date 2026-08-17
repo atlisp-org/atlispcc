@@ -541,12 +541,31 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
             st_init = struct.unpack("<H", res_data[pos + 3 : pos + 5])[0]
             module_id = stack.pop() if stack else None
             table_idx = 0 if module_id is None else 1
-            for idx in range(var_pos + st_init - 1, var_pos - 1, -1):
-                if not stack:
-                    break
-                value = stack.pop()
-                if 0 <= idx < nsyms:
-                    tables[table_idx][idx] = value
+            if table_idx == 1:
+                # 函数 gvar 表（module_id 为 FUNC 结构）：运行时按"资源流顺序/
+                # 自底向上"填槽——加载器线性扫描资源流、依注册序分配槽位，
+                # 运行时 table[o] = 本区第 o 个注册项（CAD 真机 @lisp_u 全部
+                # 6066 个 USUBR 操作数 100% 命中正序栈，倒序弹栈仅 65%；
+                # fg[1078]=@::INIT-ONCE → 操作数 1077 与 CAD 产物一致）。为保持
+                # 既有「gvar 槽 - 1 / operand+1」约定（编译器 operand=槽-1、
+                # 反编译器读 table[o+1]），正序栈右移 1 位填入：
+                # table[var_pos+1+k] = stack[k]，即 table[i] = stack[i-1]。
+                # 小文件函数表栈长 = st_init-1 时与旧倒序弹栈逐位相同（不破
+                # byte-identity）；@lisp_u 栈长 2539 < st_init 2667，旧倒序错位
+                # （init-once 发 1157，真机需 1077），此模型修正。
+                n = min(st_init, len(stack))
+                for k in range(n):
+                    slot = var_pos + 1 + k
+                    if 0 <= slot < nsyms:
+                        tables[table_idx][slot] = stack[k]
+                del stack[:n]
+            else:
+                for idx in range(var_pos + st_init - 1, var_pos - 1, -1):
+                    if not stack:
+                        break
+                    value = stack.pop()
+                    if 0 <= idx < nsyms:
+                        tables[table_idx][idx] = value
             pos += 5
         elif op == 0x23:
             stack.append(("NOT", pop_default()))
