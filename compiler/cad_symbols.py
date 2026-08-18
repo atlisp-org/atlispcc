@@ -899,8 +899,15 @@ class CadSymbolCollector:
                     # 也要注册 T 槽（@lisp-env 实测 `(setq x (if c t))` 的 t
                     # 在模块区注册 SYMBOL T，nsyms 多 1）。tcond5 实测孤立顶层
                     # `T`（值位置）若位于 T 槽归属 form，同样注册。
+                    # 有 force t 时：T 槽位置由外层 cond else 键（_t_reg_idx）
+                    # 决定，值位置 t / 内层 else 键均复用该槽——此前值位置 t
+                    # 在归属 form 按其 _rev 原位注册，会先于 else 键占槽
+                    # （platform.lsp 实测 T 落在 `(strcase ... T)` 前、cht 前，
+                    # CAD 在 else 键体 `chs` 之后）。
                     if isinstance(name, str) and name.lower() == 't':
                         if _has_force_t and not _i_is_t_form:
+                            continue
+                        if _has_force_t and j != _t_reg_idx:
                             continue
                         if _owner_of(name) != i and not _i_is_t_form:
                             continue
