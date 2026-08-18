@@ -544,7 +544,11 @@ class CadSymbolCollector:
                 if locals_last.get(tuple(f.locals)) == i:
                     self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
             for loc in reversed(f.locals):
-                if loc not in claimed_in_body and loc not in self.shared:
+                # 仅**用过**的 / 局部变量注册独立符号槽：used 局部有 body+const
+                # 双槽（i18n LOC-FILE@108+122），unused 局部仅 const 槽
+                # （checksum.lsp 未使用的 `checksum` CAD 无独立槽实测，此前
+                # `not in claimed_in_body` 反向注册 unused → nsyms +1）。
+                if loc in claimed_in_body and loc not in self.shared and loc not in self._name_set:
                     self.add(loc)
             for arg in reversed(f.args):
                 if arg in self.shared:
@@ -715,8 +719,10 @@ class CadSymbolCollector:
             for arg in reversed(all_args):
                 if arg not in self._name_set:
                     self.add(arg)
-            for loc in reversed(f.locals):
-                self.add(loc)
+            # / 局部变量不在此注册独立槽：used 局部已由函数体 refs 注册
+            # （body 槽），unused 局部仅存于 `_al-bind-alist` const（const 槽）
+            # ——与多函数路径 `claimed_in_body` 规则一致（checksum.lsp 未使用
+            # 的 `checksum` CAD 无独立槽实测，此前 `add(loc)` 致 nsyms +1）。
         return self.names
 
     def _module_tail_boundary(self, program) -> int:
