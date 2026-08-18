@@ -302,9 +302,10 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 对 `../kernel/src/` 下全部 67 个 `.lsp` 逐个编译并与 CAD 真机
 （`(vlisp-compile 'st ...)`，AutoCAD 24.1s）产物逐字节比对：
 
-- **2026-08-18 更新**：修复表外字符串/常量 PUSH_G 越界两类后，
-  **67/67 全部通过编译产物验证**（`verify` 无致命越界，可安全 CAD 加载）。
-  byte-identity 仍部分 DIFF（符号槽序/nsyms ±1 属逐文件对齐工作）。
+- **2026-08-18 更新**：修复表外字符串/常量 PUSH_G 越界、模块区 T 槽位置、
+  顶层 progn 语句语义、纯顶层 REAL 槽引用、未使用 / 局部变量槽五类后，
+  **67/67 全部通过编译产物验证**，**byte-identity 13/67**（新增 @lisp-env /
+  constants / net-checksum / platform）。
 - **9 个 byte-identical**：platform / version / funlib-download / funlib-record /
   net-cache / net-http / net-mid / net-registry / sub-system-config-config
   （nsyms + seg0 + resource_items 全一致）
