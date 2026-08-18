@@ -419,6 +419,47 @@ def test_compile_src_fas_structure(name):
         assert find_key(data) is not None, f'{name}: XOR key not located'
 
 
+#: compile_src fixture → CAD golden 逐字节一致回归。
+#: 10_commands = t14_command（c: 命令模块 vl-ACAD-defun 注册）；11_top_level =
+#: t10_init（defun+顶层混合模块代码）。2026-08-18 回归修复：表外字符串索引
+#: ≥ nsyms 时须用 nsyms-1 编址（abc80e1 曾改为真实 symbol_slots 索引 → PUSH_G
+#: 越界 7/8，verify 拦截，golden 逐字节 diff）。
+_COMPILE_SRC_GOLDEN = [
+    ('10_commands', 'cad/t14_command_cad.fas'),
+    ('11_top_level', 'cad/t10_init_cad.fas'),
+]
+
+
+@pytest.mark.parametrize('name,golden', _COMPILE_SRC_GOLDEN,
+                         ids=[n for n, _ in _COMPILE_SRC_GOLDEN])
+def test_compile_src_byte_identity(name, golden):
+    """compile_src fixture 编译产物与 CAD golden 逐字节一致（nsyms/seg0/资源段）。"""
+    from compiler.cli import cmd_compile
+    from decompiler.fas4_decompiler import Fas4Parser
+
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'compile_src', f'{name}.lsp')
+    golden_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), golden)
+    if not (os.path.exists(src) and os.path.exists(golden_path)):
+        pytest.skip(f'missing compile_src golden fixture: {name} / {golden}')
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        ours = Fas4Parser().parse(out)
+        ref = Fas4Parser().parse(golden_path)
+        assert ours.nsyms == ref.nsyms, (
+            f'{name}: nsyms {ours.nsyms} != {ref.nsyms}'
+        )
+        assert ours.bytecode == ref.bytecode, (
+            f'{name}: seg0 bytecode differs from CAD golden\n'
+            f'  ours: {ours.bytecode.hex()}\n'
+            f'  CAD : {ref.bytecode.hex()}'
+        )
+        assert ours.resource_items == ref.resource_items, (
+            f'{name}: seg1 resource items differ from CAD golden'
+        )
+
+
 @pytest.mark.parametrize('name', CAD_T_SERIES_IDENTICAL)
 def test_t_series_byte_identity(name):
     """t-series outputs confirmed byte-identical to CAD `vlisp-compile` goldens.

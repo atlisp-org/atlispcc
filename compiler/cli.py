@@ -858,13 +858,17 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     if gkey in str_map:
                         new_idx = str_map[gkey] - 1 - offset
                     else:
-                        # 表外字符串：操作数 = 其在资源 symbol_slots 的真实索引
-                        # （CAD 实测 PUSH_G 字符串直接引用 symbol_slots 槽）。
-                        # 此前硬编码 nsyms-1（假定注册于符号槽末尾），对多 kwote
-                        # 文件/内联字符串会错槽（platform-api `"platform"` slot 6
-                        # 被改成 nsyms-1 → `-lambda-` 类型错误）。
+                        # 表外字符串：优先用资源 symbol_slots 真实索引（platform-api
+                        # `"platform"` 在 nsyms 内时 CAD 用真实槽），但该索引
+                        # **必须在 gvar 范围内**（t14_command `"Hello from command!"`
+                        # 槽 7 ≥ nsyms 6、t10_init `"Hello from lib!"` 槽 8 ≥ nsyms 4
+                        # CAD 实测都用 nsyms-1）——越界的函数体字符串按符号槽末尾
+                        # 编址（gvar 槽 = nsyms，操作数 = nsyms-1）。
                         _rslot = _res_slot_of(strval)
-                        new_idx = _rslot if _rslot is not None else nsyms - 1
+                        if _rslot is not None and _rslot < nsyms:
+                            new_idx = _rslot - 1 - offset
+                        else:
+                            new_idx = nsyms - 1 - offset
                 else:
                     # 函数体符号（SYMBOL 且不在 GVARINIT 表——fg 表）：
                     # CAD 对 PUSH_G/PUSH_VALUE/SETQ_G 也用 `gvar 槽 - 1`
