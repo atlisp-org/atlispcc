@@ -112,8 +112,8 @@ for f, e in fail:
 PYEOF
 )
   echo "$RT_OUT"
-  RT_OK=$(echo "$RT_OUT" | grep -oP 'OK=\K[0-9]+' || echo 0)
-  RT_FAIL=$(echo "$RT_OUT" | grep -oP 'FAIL=\K[0-9]+' || echo 0)
+  RT_OK=$(echo "$RT_OUT" | grep -oE 'OK=[0-9]+' | cut -d= -f2 | tail -1 || echo 0)
+  RT_FAIL=$(echo "$RT_OUT" | grep -oE 'FAIL=[0-9]+' | cut -d= -f2 | tail -1 || echo 0)
   if [ "$RT_FAIL" -eq 0 ] && [ "$RT_OK" -gt 0 ]; then
     log "往返验证通过 ($RT_OK 文件字节一致)"
     PASS=$((PASS+1))
@@ -166,8 +166,8 @@ print("fail: " + (", ".join(f"{f}: {e}" for f, e in fail) if fail else "-"))
 PYEOF
 )
 echo "$ID_STATE"
-ID_FAIL=$(echo "$ID_STATE" | grep -oP 'FAIL=\K[0-9]+' || echo 0)
-if [ "$ID_FAIL" -eq 0 ] && [ "$(echo "$ID_STATE" | grep -oP 'OK=\K[0-9]+' || echo 0)" -gt 0 ]; then
+ID_FAIL=$(echo "$ID_STATE" | grep -oE 'FAIL=[0-9]+' | cut -d= -f2 | tail -1 || echo 0)
+if [ "$ID_FAIL" -eq 0 ] && [ "$(echo "$ID_STATE" | grep -oE 'OK=[0-9]+' | cut -d= -f2 | tail -1 || echo 0)" -gt 0 ]; then
   log "compile_src 自检: 全部编译+反编译结构通过"
   PASS=$((PASS+1))
 else
@@ -180,7 +180,7 @@ if [ "$CAD_VERIFY" -eq 1 ]; then
   echo "==> [5/5] CAD 真机验证（scripts/cad_verify.py）"
   CAD_OUT=$("$PY" scripts/cad_verify.py 2>&1 | grep -v "Compiled to")
   echo "$CAD_OUT"
-  CAD_FAIL=$(echo "$CAD_OUT" | grep -oP '失败, \K[0-9]+' || echo 0)
+  CAD_FAIL=$(echo "$CAD_OUT" | grep -oE '失败, [0-9]+' | cut -d' ' -f2 | tail -1 || echo 0)
   if [ "$CAD_FAIL" -eq 0 ]; then
     log "CAD 真机验证通过"
     PASS=$((PASS+1))

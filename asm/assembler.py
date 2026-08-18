@@ -326,7 +326,7 @@ def assemble_lasm(lasm_text: str, output_path: str) -> str:
         elif line == ".end_symbols":
             in_symbols = False
         elif line.startswith(".function"):
-            m = re.match(r"\.function\s+(\S+),\s*(\d+)", line)
+            m = re.match(r"\.function\s+(\S+),\s*(-?\d+)", line)
             if m:
                 if in_function:
                     functions.append((current_func_name, current_func_idx, current_func_body))
@@ -501,14 +501,17 @@ def _assemble_compact(output_path: str, symbols_list: List[str], symbol_types: L
     seg0 = bytearray()
     func_offsets: Dict[str, int] = {}
     for fname, _fidx, body_lines in functions:
-        if fname == "__init__":
-            continue
-        off = len(seg0)
         fb = bytearray()
         for line in body_lines:
             bc = _asm_instr(line, symtab, symbols_list, compact=True, wide=wide)
             if bc:
                 fb.extend(bc)
+        if fname == "__init__":
+            # c:init（模块代码 stub / 顶层表达式）在 seg0 中是真实字节，
+            # 必须写回原位（不注册为函数、不进目录、不计数）。
+            seg0.extend(fb)
+            continue
+        off = len(seg0)
         seg0.extend(fb)
         func_offsets[fname] = off
 

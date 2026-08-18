@@ -282,6 +282,40 @@ def test_wide_subr_large_file_roundtrip():
             os.unlink(out_path)
 
 
+def test_cinit_module_stub_roundtrip():
+    """混合模式（defun+顶层）产物的 c:init 模块 stub 段往返写入 seg0。
+
+    回归：ControlFlowAnalyzer 把不在函数目录的模块代码段标记为
+    ``c:init``（sym_idx=-1），disasm 输出为 ``.function __init__, -1``，
+    但 pass1 正则 ``(\\d+)`` 不匹配负索引且 compact 汇编跳过 ``__init__``，
+    导致段被整体丢弃、后续函数偏移错位、seg0 不可恢复。小文件（无
+    c:init 段）不受影响。
+    """
+    from compiler.cli import cmd_compile
+
+    repo = os.path.join(os.path.dirname(__file__), "..")
+    src = os.path.normpath(os.path.join(repo, "tests", "atlisp_u.lsp"))
+    if not os.path.exists(src):
+        return  # fixture 缺失时跳过
+    fas_path = os.path.join(tempfile.gettempdir(), "atlisp_u_cinit.fas")
+    out_path = os.path.join(tempfile.gettempdir(), "atlisp_u_cinit_rt.fas")
+    try:
+        cmd_compile(src, fas_path)
+        lasm_text = disassemble_fas(fas_path)
+        # 含 c:init 段（负索引 `__init__, -1`），是触发回归的必要条件
+        assert ".function __init__, -1" in lasm_text
+        assemble_lasm(lasm_text, out_path)
+        assert _seg0(fas_path) == _seg0(out_path)
+        from decompiler.fas4_decompiler import Fas4Parser
+        o = Fas4Parser().parse(fas_path)
+        n = Fas4Parser().parse(out_path)
+        assert o.nsyms == n.nsyms
+    finally:
+        for p in (fas_path, out_path):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
 def re_wide_usubr(text: str) -> bool:
     """检查 .lasm 是否含宽格式 USUBR（USUBR <argc>, <sym>, <flags>）。"""
     import re
