@@ -1747,6 +1747,7 @@ def cmd_compile(
     show_analysis: bool = False,
     encoding: str = "ansi",
     report_json: str = "",
+    verify: bool = True,
 ) -> str:
     if os.path.exists(source):
         from core.fas_core import decode_source_text
@@ -2359,6 +2360,31 @@ def cmd_compile(
         sec2_items = min_items
 
     output = output or source.replace(".lsp", ".fas")
+    # 编译产物验证：防止 CAD 加载时访问冲突 0xC0000005（越界符号引用/
+    # 误解析/资源段损坏）。致命问题时报错退出（不写 .fas）；warning 仅提示。
+    if verify:
+        try:
+            from compiler.fas_verify import verify_fas
+
+            ok, _vissues = verify_fas(
+                seg0, seg1, fas_nsyms, label=os.path.basename(output) or "output"
+            )
+            _vwarns = [v for v in _vissues if v.startswith("WARN ")]
+            _verrs = [v for v in _vissues if not v.startswith("WARN ")]
+            for _vi in _vwarns:
+                print(f"verify: {_vi}", file=sys.stderr)
+            if _verrs:
+                print("Compile verification FAILED:", file=sys.stderr)
+                for _vi in _verrs:
+                    print(f"  - {_vi}", file=sys.stderr)
+                print(
+                    "FAS not written (would crash CAD with access violation 0xC0000005). "
+                    "Fix the source or report the issue.",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+        except ImportError:
+            pass  # 模块缺失时不阻断（验证是增强项）
     writer = FasWriter(symtab)
     writer.write(output, seg0, seg1, sec2_items=sec2_items, nsyms=fas_nsyms, compact=True)
     print(f"Compiled to {output}")
@@ -2681,6 +2707,13 @@ def main():
         help="string/symbol encoding for FAS output "
         "(ansi=system codepage on Windows, default; or utf-8, gbk, cp936, ...)",
     )
+    p_compile.add_argument(
+        "--no-verify",
+        dest="verify",
+        action="store_false",
+        help="skip post-compile verification (checks for bytecode that could "
+        "crash CAD with access violation 0xC0000005)",
+    )
 
     # decompile
     p_decompile = sub.add_parser("decompile", aliases=["d"], help="Decompile .fas → .lsp")
@@ -2784,6 +2817,7 @@ def main():
             show_analysis=args.analyze,
             encoding=args.encoding,
             report_json=args.report,
+            verify=args.verify,
         )
         return 0
 

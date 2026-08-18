@@ -167,33 +167,45 @@ def parse_fas4(filepath: str, decrypt_seg1: bool = True) -> dict:
 # ─── 资源流（seg1）解析 ──────────────────────────────────────────────────────────
 
 
+_ansi_encoding_cache = None
+
+
 def get_ansi_encoding() -> str:
     """返回 Windows 系统 ANSI 代码页编码（如中文系统 cp936/GBK）。
 
-    非 Windows 平台回退 UTF-8（无 ANSI 概念）。
+    非 Windows 平台回退 UTF-8（无 ANSI 概念）。结果缓存（进程内一次）。
+    Cygwin/MSYS 的 POSIX Python 仍是 Windows 进程，ctypes GetACP 同样可用，
+    避免 shell 出 `reg query`（fork 偶发卡死）。
     """
+    global _ansi_encoding_cache
+    if _ansi_encoding_cache is not None:
+        return _ansi_encoding_cache
+    try:
+        import ctypes
+
+        acp = ctypes.windll.kernel32.GetACP()
+        if acp:
+            _ansi_encoding_cache = f'cp{acp}'
+            return _ansi_encoding_cache
+    except Exception:
+        pass
     if os.name == 'nt':
-        try:
-            import ctypes
-            return f'cp{ctypes.windll.kernel32.GetACP()}'
-        except Exception:
-            pass
-    else:
-        # Cygwin/MSYS 等 POSIX Python 下目标 CAD 仍是 Windows：查询注册表
-        # 获得系统 ACP（中文系统 = 936/GBK），否则编译产物字符串按 UTF-8，
-        # 与 CAD(GBK) 逐字节不一致（@lisp-env 的 "唯她" GBK vs UTF-8 实测）。
-        try:
-            import subprocess
-            r = subprocess.run(
-                ['reg', 'query', r'HKLM\SYSTEM\CurrentControlSet\Control\Nls\CodePage',
-                 '/v', 'ACP'],
-                capture_output=True, text=True, timeout=5)
-            m = re.search(r'ACP\s+REG_SZ\s+(\d+)', r.stdout)
-            if m:
-                return f'cp{int(m.group(1))}'
-        except Exception:
-            pass
-    return 'utf-8'
+        _ansi_encoding_cache = 'utf-8'
+        return _ansi_encoding_cache
+    try:
+        import subprocess
+        r = subprocess.run(
+            ['reg', 'query', r'HKLM\SYSTEM\CurrentControlSet\Control\Nls\CodePage',
+             '/v', 'ACP'],
+            capture_output=True, text=True, timeout=5)
+        m = re.search(r'ACP\s+REG_SZ\s+(\d+)', r.stdout)
+        if m:
+            _ansi_encoding_cache = f'cp{int(m.group(1))}'
+            return _ansi_encoding_cache
+    except Exception:
+        pass
+    _ansi_encoding_cache = 'utf-8'
+    return _ansi_encoding_cache
 
 
 def decode_fas_text(raw: bytes) -> str:
