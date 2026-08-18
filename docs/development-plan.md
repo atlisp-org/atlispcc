@@ -456,6 +456,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 - **当前（2026-08-09）**：`pytest` **314 用例**（313 passed + 1 skip，无 xfail）；t-series byte-identity **18/18**（t01-t18，t22_activex 另锁入回归）；CAD 真机 **24/24**（`scripts/cad_verify.py`）；disasm→asm 往返 43 文件一致；性能基线见 `scripts/benchmark.py`
 - **当前（2026-08-11）**：`pytest` **344 用例**（343 passed + 1 skip，无 xfail）；t-series byte-identity **18/18** 不回归；**t12 链式 quote 常量解码修复**（`(setq lst '(a b c))` + dotted `'(1 . 2)`，见 §12T5）；**`*error*` 真机用例 t24_star_error**（cad_verify 覆盖 22→24 项）；zelx 15/15 样本 payload 复核一致；测试环境恢复（.venv 装 pytest，`PYTHON=.venv/bin/python` 可跑 `scripts/run_tests.sh`）
 - **当前（2026-08-15）**：`pytest` **347 用例**（345 passed + 2 skip，无 xfail）；**纯顶层多 `-lambda-` setq 绑定 byte-identity**（setq-lambda.lsp：seg0+nsyms+resource_items 与 CAD golden 逐字节一致，`test_byte_identity_with_cad_golden[setq-lambda.lsp]`，CAD 真机 `(@::fasext "abc")`→`"abc.fas"`、`(@::vlx "a.vlx")`→`"a.vls"`）；t-series byte-identity **18/18** 不回归
+- **当前（2026-08-18）**：`pytest` **356 用例**（354 passed + 2 skip）；`tests/compile_src/` 16 fixture 入库（此前缺失致 9 个测试在其他环境失败）；**kernel 67/67 编译产物验证全绿**（表外字符串 + CONST fallback 两类 PUSH_G 越界修复，t14_command/t10_init 黄金逐字节恢复，`test_compile_src_byte_identity` 锁入）；bootstrap.lsp 纯顶层 set-lambda fixture 重建 + CAD golden（第二区符号槽序残余 diff 登记，见 AGENTS.md）
 
 ---
 
