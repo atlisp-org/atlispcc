@@ -838,16 +838,23 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                         if gslot is not None:
                             new_idx = gslot - 1 - offset
                         else:
-                            new_idx = idx0 - len(func_args) + 1
+                            # 表外 quoted 单符号：注册于符号槽末尾（gvar 槽 =
+                            # nsyms，操作数 = nsyms-1）。旧公式 idx0-nfuncs+1
+                            # 对大文件（deferred const 区）越界（cache/audit 等
+                            # kernel 文件实测 PUSH_G 69/105 ≥ nsyms）。
+                            new_idx = nsyms - 1 - offset
                     else:
                         fgstruct = _strip_list_markers(const_structure)
                         gslot = const_map.get(fgstruct)
                         if gslot is not None:
                             new_idx = gslot - 1 - offset
                         else:
-                            # 未命中 fg（如简单常量）：沿用原公式
-                            # gvar 槽 = symtab 槽 - nfuncs + 2 → 操作数 = - nfuncs + 1。
-                            new_idx = idx0 - len(func_args) + 1
+                            # 未命中 fg 的常量结构（deferred 字节区间引用，
+                            # kernel 大文件 `_al-bind-alist '(dir)` 等实测）：
+                            # CAD 注册于符号槽末尾，操作数 = nsyms-1
+                            # （cache_cad.fas 实测 PUSH_G[60] = nsyms-1）。
+                            # 旧公式 idx0-len(func_args)+1 会越界。
+                            new_idx = nsyms - 1 - offset
                 elif etype == "STRING":
                     # 字符串 PUSH_G：多函数若字符串已在 GVARINIT 表（fg 含 STRING
                     # 项，i18n 实测 `""` fg[44] → 操作数 42 = gvar-1-offset）则按
