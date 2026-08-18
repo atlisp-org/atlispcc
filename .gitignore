@@ -4,6 +4,7 @@ __pycache__/
 venv/
 *.lsp
 !tests/*.lsp
+!tests/compile_src/*.lsp
 !samples/*.lsp
 !samples/zelx-reversing/*.lsp
 !engine/engine_smoke.lsp

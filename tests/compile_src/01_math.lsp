@@ -1,0 +1,5 @@
+(defun add (a b) (+ a b))
+(defun multiply (a b) (* a b))
+(defun square (x) (* x x))
+(defun sum-of-squares (a b)
+  (+ (square a) (square b)))
