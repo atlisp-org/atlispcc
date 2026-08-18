@@ -50,16 +50,32 @@ ENCODE_POP = bytes([0x0A])
 
 
 def _flatten_top_level_forms(forms):
-    """展开顶层 `(progn ...)` 为其内部各 form。
+    """展开顶层 `(progn ...)`：defun/defpackage 提升为顶层，表达式保持语句块。
 
     AutoLISP 中顶层 progn 的 defun 与表达式等价于直接写在顶层（@lisp 包常
     用 `(progn (defun ...) ...)` 整体包裹），编译时需先展开才能提取 defun。
-    仅展开顶层（递归处理嵌套顶层 progn），不触碰 defun 体内的 progn。
+    但 CAD **不把 progn 的表达式展平为独立顶层 form**——progn 内部表达式
+    按语句编译（setq 无 DUP、值被丢弃；@lisp-env `(progn (setq @::*dev-mode-file*
+    (strcat ...)) (if ...))` CAD golden 实测 `USUBR; SETQ_G` 无 `0b`、`0a`）。
+    故把连续表达式重新包回单个 `Progn` 语句块（保留相对位置），defun/
+    defpackage 提升为独立顶层 form（进 seg0 + 函数注册）。仅处理顶层
+    （递归处理嵌套顶层 progn），不触碰 defun 体内的 progn。
     """
     out = []
     for f in forms:
         if isinstance(f, Progn):
-            out.extend(_flatten_top_level_forms(f.forms))
+            inner = _flatten_top_level_forms(f.forms)
+            run = []
+            for x in inner:
+                if isinstance(x, (Defun, Defpackage, InPackage)):
+                    if run:
+                        out.append(Progn(forms=run))
+                        run = []
+                    out.append(x)
+                else:
+                    run.append(x)
+            if run:
+                out.append(Progn(forms=run))
         else:
             out.append(f)
     return out
@@ -1075,16 +1091,28 @@ def _build_cad_module_code(
                             break
                         v_ok = True
                     elif isinstance(value, _Real):
-                        # 实数常量：内联 PUSH_REAL `3b <ascii> 00`。CAD 用资源
-                        # gvar 表(rg)槽引用，但 atlispcc 实数注册在函数 gvar
-                        # 表(fg)——模块代码(rg 上下文)读不到，此前引用越界/空值错
-                        # （@::*seconds-per-day* 应为 86400.0）。内联保证值正确；
-                        # 用 _real_fmt 补 ".0"（整数值 86400.0 → "86400.0"，
-                        # 否则 CAD 按 fixnum 解析报"不适合 fixnum"）。
-                        from compiler.resource_builder import _real_fmt as _rf
+                        # 实数常量：纯顶层文件（无 defun，无 fg 表）模块代码用
+                        # PUSH_G 引用 REAL 槽（gvar 槽 = 符号槽+1，constants.lsp
+                        # CAD golden 实测 `09 1b 00`）。混合文件（有 defun）实数
+                        # 注册在 fg 表、模块代码(rg 上下文)读不到，内联
+                        # PUSH_REAL `3b <ascii> 00` 保证值正确（@lisp_u
+                        # `(setq @::*seconds-per-day* 86400.0)` 实测）。
+                        if n_funcs == 0:
+                            _rk = f"__real_{value.value}__"
+                            _r_idx = symtab.name_to_idx.get(_rk)
+                            if _r_idx is not None:
+                                pre += bytes([0x09]) + struct.pack("<H", _slot_gv(_r_idx))  # PUSH_G
+                                v_ok = True
+                            else:
+                                from compiler.resource_builder import _real_fmt as _rf
 
-                        pre += b"\x3b" + _rf(float(value.value)).encode("ascii") + b"\x00"
-                        v_ok = True
+                                pre += b"\x3b" + _rf(float(value.value)).encode("ascii") + b"\x00"
+                                v_ok = True
+                        else:
+                            from compiler.resource_builder import _real_fmt as _rf
+
+                            pre += b"\x3b" + _rf(float(value.value)).encode("ascii") + b"\x00"
+                            v_ok = True
                     else:
                         v_idx = _slot_of(symtab, value)
                         if v_idx is None:
