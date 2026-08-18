@@ -389,7 +389,7 @@ class CodeGenerator:
                     # PUSH_T 内联。仅 `(and ...)` 短路尾 / cond else 键等由
                     # 各自发射点处理。SymbolTable 对 t/T 归一化到 `T` 槽。
                     idx = self.symtab.get_or_add(name)
-                    buf.emit(encode_op_u16(PUSH_VALUE, idx))
+                    self._emit_push_value(buf, idx)
                 else:
                     buf.emit(encode_op_noarg(PUSH_T))
             elif self.stub_format:
@@ -417,7 +417,7 @@ class CodeGenerator:
                         idx = self.symtab.get_or_add(name)
                 else:
                     idx = self.symtab.get_or_add(name)
-                buf.emit(encode_op_u16(PUSH_VALUE, idx))
+                self._emit_push_value(buf, idx)
             elif name in self.local_slots:
                 slot = self.local_slots[name]
                 if slot < 256:
@@ -696,6 +696,15 @@ class CodeGenerator:
                 self._emit_expr(buf, value)
                 self._emit_expr(buf, target)
             buf.emit(encode_func(1, self.symtab.get_or_add("set")))
+
+    def _emit_push_value(self, buf: BytecodeBuffer, idx: int):
+        """stub PUSH_VALUE：CAD 对槽 0 恒发单字节 `03`（调用后清理占位与
+        槽 0 符号读取统一编码，golden 92 处实测），idx>0 才发 `03 <u16>`。
+        大文件宽格式不受此约束（flags=3 已内联清理，PV[0] 仍 3 字节）。"""
+        if self.stub_format and idx == 0 and not self.wide_subr:
+            buf.emit(bytes([PUSH_VALUE]))
+        else:
+            buf.emit(encode_op_u16(PUSH_VALUE, idx))
 
     def _emit_setq(self, buf: BytecodeBuffer, node: Setq):
         pairs = list(node.pairs)
@@ -1031,7 +1040,7 @@ class CodeGenerator:
             cond = clause[0]
             if isinstance(cond, Symbol) and cond.name.lower() == "t":
                 idx = self.symtab.get_or_add(cond.name)
-                buf.emit(encode_op_u16(PUSH_VALUE, idx))
+                self._emit_push_value(buf, idx)
             else:
                 self._emit_expr(buf, cond)
             condor_pos = buf.pos()

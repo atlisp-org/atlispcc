@@ -775,8 +775,11 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                         ):
                             new_idx = nsyms - 1 - offset
                     if 0 <= new_idx <= 0xFFFF:
-                        opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
-                        out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                        if inst.op_name == "PUSH_VALUE" and new_idx == 0 and not wide:
+                            out += bytes([0x03])
+                        else:
+                            opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
+                            out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                         continue
                 if sym == "-LAMBDA-":
                     # kwote/立即调用内嵌 `-lambda-`：不参与资源段符号注册，按
@@ -787,8 +790,11 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     _li = lam_order.get(inst.operands[0], 0)
                     new_idx = nsyms - 1 - _li
                     if 0 <= new_idx <= 0xFFFF:
-                        opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
-                        out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                        if inst.op_name == "PUSH_VALUE" and new_idx == 0 and not wide:
+                            out += bytes([0x03])
+                        else:
+                            opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
+                            out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                         continue
             # 常量引用（quoted lambda 等 CONST 条目）：sym_of 只认 SYMBOL/STRING，
             # CONST 在 fg 表里注册为嵌套结构（gvar 槽 = const_map 命中槽），
@@ -813,7 +819,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     if _arg:
                         _ni = gvar_slot(_arg) - 1 - offset
                         if 0 <= _ni <= 0xFFFF:
-                            out += bytes([0x03, _ni & 0xFF, (_ni >> 8) & 0xFF])
+                            out += bytes([0x03] if (inst.op_name == "PUSH_VALUE" and _ni == 0 and not wide) else [0x03, _ni & 0xFF, (_ni >> 8) & 0xFF])
                             continue
                 out += seg0[inst.offset : inst.offset + inst.size]
                 continue
@@ -892,8 +898,11 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     _ridx = real_map.get(_real_fmt(float(symtab.entries[idx0][1])))
                     new_idx = (_ridx - 1 - offset) if _ridx is not None else None
                 if new_idx is not None and 0 <= new_idx <= 0xFFFF:
-                    opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
-                    out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                    if inst.op_name == "PUSH_VALUE" and new_idx == 0 and not wide:
+                        out += bytes([0x03])
+                    else:
+                        opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
+                        out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                     continue
         elif inst.op_name == "USUBR" and len(inst.operands) >= 2:
             argc, idx = inst.operands[0], inst.operands[1]

@@ -406,6 +406,8 @@ class Disassembler:
         # 用符号槽总数（可能 > nsyms），默认退化为 nsyms。
         effective_syms = sym_count if sym_count is not None else nsyms
         prev_op = None
+        prev2_op = None
+        prev3_op = None
         while i < len(bytecode):
             op = bytecode[i]
             entry = self.OPCODES.get(op)
@@ -437,9 +439,20 @@ class Disassembler:
                         # 而真实 3 字节 PUSH_VALUE（符号/参数引用）前为参数/指令。
                         # 故 `prev_op == 0x00` 时判为单字节占位（i18n `03 32 00`
                         # = 占位 + PUSH_INT8 0 实测，否则被误读为 PUSH_VALUE[50]）。
+                        #
+                        # kwote 例外：`(function (lambda ...))` 后 CAD 补
+                        # `00 01 00`（NIL PUSH_NIL NIL），随后压第一个实参时若
+                        # 为符号/参数引用（多函数/混合文件的符号槽 PUSH_VALUE），
+                        # 字节形如 `00 01 00 03 <u16>`。此 `03` 前恰好也是 `00`
+                        # （kwote 清理的第三个 NIL），若按占位误判为单字节，会把
+                        # idx 当指令首字节解析 → 错位/WIDF 一 UNK（scheduler
+                        # `(vl-remove-if (function (lambda ...)) list)` 实测
+                        # `03 0e 00` 被读成 JMP16_IF + UNK）。故当前 3 字节为
+                        # `00 01 00`（kwote 清理尾）且 idx 为有效符号槽时判 3 字节。
                         if i + 2 < len(bytecode):
                             idx = struct.unpack("<H", bytecode[i + 1 : i + 3])[0]
-                            if idx < effective_syms and prev_op != 0x00:
+                            _kwote_tail = (prev_op, prev2_op, prev3_op) == (0x00, 0x01, 0x00)
+                            if idx < effective_syms and (prev_op != 0x00 or _kwote_tail):
                                 inst.operands = [idx]
                                 inst.size = 3
                             else:
@@ -518,6 +531,8 @@ class Disassembler:
                 inst = Instruction(offset=i, opcode=op, op_name=f"UNK_{op:02x}")
                 inst.size = 1
             instructions.append(inst)
+            prev3_op = prev2_op
+            prev2_op = prev_op
             prev_op = op
             i += inst.size
         return instructions
