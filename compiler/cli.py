@@ -988,6 +988,7 @@ def _build_cad_module_code(
     real_map: Optional[dict] = None,
     n_pre: int = 0,
     skip_funcs: Optional[set] = None,
+    n_cmds: int = 0,
 ) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
@@ -1006,7 +1007,10 @@ def _build_cad_module_code(
 
     from compiler.codegen import CodeGenerator, BytecodeBuffer
 
-    module_reg_count = n_funcs + top_level_count
+    # c: 命令混合模式：vl-ACAD-defun 在模块注册段占一个符号（+1），使占位符/
+    # b 槽/C 槽相对普通混合模式全局 +1（large_synthetic CAD 实测 placeholder
+    # 147、reg0 b=277、c=146）。
+    module_reg_count = n_funcs + top_level_count + n_cmds
     out = bytearray(b"\x14\x01\x00\x00\x00")  # DEFUN 模块头
     out += bytes([0x09]) + struct.pack("<H", module_reg_count + 1) + b"\x0a"  # 占位
 
@@ -1286,18 +1290,35 @@ def _build_cad_module_code(
     _emit_stmts(globals_forms, last_no_pop=(n_funcs == 0 and not post_forms))
 
     if n_funcs > 0:
+        # c: 命令混合模式：vl-ACAD-defun 在模块注册段占一个符号（gvar 槽 =
+        # 源码首个命令的符号槽 + 1，large_synthetic 实测槽 19），其后的
+        # 函数 gvar 槽 +1（CMD-000 符号槽 18 → c=20；lgf-var-000 槽 144 →
+        # c=146）。命令注册用 CAD 24 字节模式（含 USUBR 调用 vl-ACAD-defun）。
+        _first_cmd_slot = None
+        if n_cmds and func_names:
+            for _fn in func_names:
+                if str(_fn).lower().startswith("c:"):
+                    _first_cmd_slot = symtab.name_to_idx.get(_fn)
+                    break
+
+        def _is_cmd(i):
+            return bool(func_names) and i < len(func_names) and str(func_names[i]).lower().startswith("c:")
 
         def _reg(i):
             # 有 defun：追加函数注册尾（CAD 实测）。每函数一组
             # `PUSH_G <b>; SETQ_G <c>`，组间 `PUSH_G <c>; POP; JUMP`；
-            # b = 2*n_funcs+1 + top_level_count - i（模块注册偏移）。
+            # b = 2*n_funcs+1 + top_level_count + n_cmds - i（模块注册偏移，
+            # vl-ACAD-defun 符号使占位符/b 槽全局 +1）。
             # c 槽 = 源码注册序：函数占 c = 符号槽 + 1（p03 实测
-            # @::codepage2lang 槽 4 → c=5）；未显式给定函数名时退化为
-            # 相对编号 n_funcs - i。
+            # @::codepage2lang 槽 4 → c=5）；符号槽 ≥ 源码首个命令槽时再 +1
+            # （vl 符号占用其后一个槽）；未显式给定函数名时退化为相对编号
+            # n_funcs - i。
             nonlocal out
-            b = 2 * n_funcs + 1 + top_level_count - i
+            b = 2 * n_funcs + 1 + top_level_count + n_cmds - i
             fn_slot = symtab.name_to_idx.get(func_names[i]) if i < len(func_names) and func_names else None
             c = (fn_slot + 1) if fn_slot is not None else (n_funcs - i)
+            if fn_slot is not None and _first_cmd_slot is not None and fn_slot >= _first_cmd_slot:
+                c += 1
             out += bytes([0x09]) + struct.pack("<H", b)  # PUSH_G b
             out += bytes([0x06]) + struct.pack("<H", c)  # SETQ_G c
             return c
@@ -1305,11 +1326,18 @@ def _build_cad_module_code(
         _skip = skip_funcs or set()
         # START 函数注册：前 n_pre 个函数（定义在首个顶层语句之前，CAD
         # platform 实测 set-locale/get-locale 在 globals 语句前注册）。
-        # 每组 `JUMP; PUSH_G b; SETQ_G c; PUSH_G c; POP`。
+        # 每组 `JUMP; PUSH_G b; SETQ_G c; PUSH_G c; POP`；命令组为 CAD
+        # 24 字节模式 `JUMP; PUSH_G b; SETQ_G c; PUSH_G c; USUBR(1,<vl槽>);
+        # POP; PUSH_G c; POP`（vl-ACAD-defun 注册命令）。
+        _vl_slot = (_first_cmd_slot + 1) if _first_cmd_slot is not None else None
         for i in range(min(n_pre, n_funcs)):
             out += b"\x57\x00\x00\x00\x00"
             c = _reg(i)
-            out += bytes([0x09]) + struct.pack("<H", c) + b"\x0a"
+            out += bytes([0x09]) + struct.pack("<H", c)
+            if _is_cmd(i) and _vl_slot is not None:
+                out += bytes([0x35, 0x01]) + struct.pack("<H", _vl_slot) + bytes([0x01, 0x0a])
+                out += bytes([0x09]) + struct.pack("<H", c)
+            out += b"\x0a"
         # 首个 defun 与最后一个 defun 之间的顶层语句（含 setq-lambda 绑定）。
         _emit_stmts(mid_forms, last_no_pop=False)
         # 其余函数注册（最后一个 defun 之前、post 语句之前）。setq-lambda
@@ -1320,7 +1348,11 @@ def _build_cad_module_code(
             out += b"\x57\x00\x00\x00\x00"
             c = _reg(i)
             if i < n_funcs - 1 or post_forms:
-                out += bytes([0x09]) + struct.pack("<H", c) + b"\x0a"
+                out += bytes([0x09]) + struct.pack("<H", c)
+                if _is_cmd(i) and _vl_slot is not None:
+                    out += bytes([0x35, 0x01]) + struct.pack("<H", _vl_slot) + bytes([0x01, 0x0a])
+                    out += bytes([0x09]) + struct.pack("<H", c)
+                out += b"\x0a"
     else:
         _emit_stmts(mid_forms, last_no_pop=(not post_forms))
     if post_forms:
@@ -2260,6 +2292,7 @@ def cmd_compile(
             top_lambda_slots=top_lambda_slots,
             n_pre=_n_pre,
             skip_funcs=_top_lambda_names,
+            n_cmds=n_cmds,
         )
     elif n_cmds:
         module_code = build_command_module_code(len(defun_forms))
@@ -2292,11 +2325,11 @@ def cmd_compile(
         params_by_name[_lkey.upper()] = params_by_name.get(normalize_vla_name(_oname).upper())
 
     # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
-    # commands 标志：仅纯命令文件（无顶层表达式，走 build_command_module_code）
-    # 用 per-命令 5b 块 + vl-ACAD-defun；commands+顶层混合模式（_build_cad_
-    # module_code）模块注册段用标准 module_entries 顺序（CAD atlisp_u 实测
-    # 65 项无 vl-ACAD-defun 前置）。
-    _rb_commands = n_cmds if not other_forms else 0
+    # commands 标志：纯命令文件（无顶层表达式，走 build_command_module_code）
+    # 与 commands+顶层混合模式均需启用——混合文件 CAD 在模块注册段插入
+    # `56 vl-ACAD-defun 00 00` 块（large_synthetic CAD 实测），且 GVARINIT
+    # st_init 计入 `+commands`。
+    _rb_commands = n_cmds
     seg1 = resource.build(
         func_offsets,
         module_code=module_code,
@@ -2371,6 +2404,7 @@ def cmd_compile(
                 real_map=real_map,
                 n_pre=_n_pre,
                 skip_funcs=_top_lambda_names,
+                n_cmds=n_cmds,
             )
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args,
                             codegen_nsyms=codegen_nsyms,

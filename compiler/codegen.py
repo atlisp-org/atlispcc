@@ -780,6 +780,14 @@ class CodeGenerator:
             buf.patch_label(label_else, buf.pos())
             if node.else_expr:
                 self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
+                if self._in_stmt_ctx and not isinstance(
+                    node.else_expr, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode)
+                ):
+                    # 语句上下文（中间 if，值被丢弃）：else 分支末尾同样 POP 丢弃
+                    # 分支值（large_synthetic lgf-000..119 实测 CAD else 分支
+                    # `USUBR; POP`）。与 then 分支对称；else 为 setq 时 SETQ_G
+                    # 已消费栈顶无需 POP，progn/if/循环由其自身管理栈。
+                    buf.emit(encode_op_noarg(POP))
             elif self._in_tail_context or not self._in_stmt_ctx:
                 # CAD stub：尾上下文 / 值位置无 else 分支时在 else 标签处补隐式
                 # PUSH_NIL（cond 为假时返回 nil），then 分支的 JUMP 跳过它

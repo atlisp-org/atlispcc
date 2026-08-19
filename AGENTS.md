@@ -166,6 +166,7 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - **顶层表达式**（defun 之外的 setq/set 等）编译进 seg1 **模块代码**（非 seg0）：模块代码 = `DEFUN头 + [顶层表达式] + [函数注册尾: JUMP + PUSH_G <模块注册+2>; SETQ_G 1; PUSH_G 1] + END_DEFUN`；gvar 槽 = 符号槽 + 1；简单 `setq 变量 "字符串"` → `PUSH_G 值+1; DUP; SETQ_G 变量+1`；顶部占位 `PUSH_G <模块注册符号数+1>; POP`；`FasWriter` 的代码引用长度 = `total_size`（`len(seg0) + 1`）
 - **模块注册段**（混合 defun+顶层）：注册函数名 + 顶层表达式符号（连续 SYMBOL 合并 5b 块，遇 STRING 分块）；`nsyms = len(entries) - 模块注册符号数 + 1`；函数注册 GVARINIT st_init = nsyms；DEFCODE 后 GVARINIT var_pos = 模块注册符号数 + 2
 - **c: 命令模块代码**（`build_command_module_code`，t14_command 实测）：命令函数在模块注册段每个独立 `5b` 块，首命令后插入 `56 vl-ACAD-defun 00 00`（`0x56` 编码、保留大小写 `Vl-ACAD-defun`）；模块注册 GVARINIT st_init +1、函数注册基址 gv_var_pos +1。`vl-ACAD-defun` **不进** `symtab.entries`（否则 seg0 引用的 function_gvars 槽位 +1）；`commands` 计数 = 1（vl 符号数）。模块代码每命令 `PUSH_G <c>; FUNC_REF 2; PUSH_NIL; POP`（`35 01 02 00 01`）注册；槽位 `var_pos=n_funcs+3`、`a=var_pos-1-i`、`b=var_pos+n_funcs-1-i`、`c=n_funcs+1-i`（末 `c=1`）
+- **c: 命令 + 顶层混合模式**（`_build_cad_module_code` + `n_cmds`，large_synthetic CAD 实测 byte-identity）：命令与顶层表达式并存时，`56 vl-ACAD-defun 00 00` 块插在**源码序第一个命令之前**（模块注册共享 5b 块被 vl 块分割，如 `5b [LGF-TOP-* CMD-090 CMD-060 CMD-030] 00 56 vl-ACAD-defun 00 00 5b [CMD-000 LGF-119...]`）；命令**不**独立成块（t14 纯命令才每命令独立块）。模块注册 GVARINIT st_init = `module_entries_count + 2 + commands`。`_build_cad_module_code` 需 `n_cmds` 参数：vl 符号使 `module_reg_count = n_funcs + top_level_count + n_cmds`（占位 `PUSH_G module_reg_count+1`、b 槽 `2*n_funcs+1+top_level_count+n_cmds-i` 全局 +1）；c 槽在符号槽 ≥ 源码首个命令槽时再 +1（vl 符号占用其后一个槽）。命令注册用 CAD 24 字节模式 `JUMP 0; PUSH_G b; SETQ_G c; PUSH_G c; USUBR(1,<vl槽>); POP; PUSH_G c; POP`（vl 槽 = 源码首个命令符号槽 + 1），非命令仍 15 字节 `JUMP 0; PUSH_G b; SETQ_G c; PUSH_G c; POP`。`cli.py` 的 `_rb_commands` 对混合模式也传 `n_cmds`（不再仅纯命令）
 - **`/ 局部变量` `_al-bind-alist` 协议**（t11_localvars 实测）：含 `/ 局部变量` 的函数，CAD 用 `(_al-bind-alist '(loc1 ...))` 绑定而非 GET_LOCAL。符号收集在函数体符号后、参数前注入 `_al-bind-alist` + `(quote (locals...))` 常量（nsyms 6→8）；codegen 在 INIT_ARGS 后发 `PUSH_G <const>; FUNC 1, <_al-bind-alist>; NIL; PUSH_NIL; NIL; POP`；CLEAR_ARGS = argc + len(locals)；while 体中间 setq 无 POP。`_al-bind-alist` 以 `0x56` 保留大小写独立注册（不进 5b 合并块）
 - **符号槽顺序** = 按源码函数逆序，每函数内"字节码引用序"逆序收集函数体符号、参数紧跟其后；混合（defun+顶层）时顶层表达式符号排在函数体内建之前；递归函数名重复槽（`compiler/cad_symbols.py`）
 - 多函数函数间分隔符 `16`（END_DEFUN；CLEAR_ARGS `19 <argc> 00` 已由 codegen 生成）；多函数代码引用末函数 end = total_size
@@ -286,6 +287,15 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
       SUBR 未实现（复杂 lambda 体需完整参数/USUBR 槽修正）；@lisp_u 的
       @::fasext/@::vlx 绑定为引用数据 LIST（CAD 为可调用 SUBR），调用报
       "函数错误: (LAMBDA ...)"——不影响加载，纯顶层文件（bootstrap 等）正常
+    - **byte-identity 现状**（2026-08-19 对拍）：@lisp_u 与 CAD 真机产物
+      `~/@lisp/@lisp_u_cad.fas` **非 byte-identical**（nsyms 2670 vs 2610、
+      seg0 89437 vs 85008、res 105640 vs 113819），差异为历史遗留（改动前
+      即存在）。来源：混合文件（defun+顶层+大量 kwote）的复杂场景——嵌套
+      defun（CAD 原生内嵌 DEFUN，我们 `_lower_nested_defuns` 降级 setq-lambda）、
+      引用数据内 lambda（`'(lambda ...)` CAD 提取内嵌函数 + EVAL 组装）、
+      `-lambda-` SUBR 未实现（KNOWN_ISSUES）。**功能验证通过**（模块代码
+      完整执行、核心函数可调用），byte-identity 未达成。含变参函数的文件
+      同理无法整文件 byte-identity（CAD 不支持变参）。
 - i18n 混合模式拆件 p01-p07 全部 byte-identity（`tests/cad/i18n_split/`，seg0+seg1+nsyms
   对齐 CAD golden，2026-08-06）✅
   - p04-p07 关键修复：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）；
@@ -338,6 +348,17 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 
 ### 已知限制
 
+- **变参 `&rest`/`&optional`：CAD 不支持，byte-identity 不适用**（2026-08-19
+  澄清，large_synthetic 对拍）：CAD 编译器**不识别变参语义**，把 `&rest`/
+  `&optional` 当**普通参数名**编译（`(a &optional opt &rest rest)` → DEFUN
+  头 argc=5、参数绑定把 `&REST`/`&OPTIONAL` 当符号槽逐个 GET_LOCAL、
+  资源段注册这两个标记符号 nsyms +2）——即 CAD 变参函数**不收集变参列表**，
+  运行行为即错。atlispcc **正确支持**变参（`&optional` 缺省、`&rest` 收集，
+  t19/t21 真机功能验证通过），故变参函数与 CAD 的 seg0/nsyms 差异是**预期
+  且正确**的（每函数约 12 字节、nsyms 差 2），**不应追求 byte-identity**。
+  含变参函数的文件（如 large_synthetic）无法整文件 byte-identity；纯命令/
+  混合命令（无变参）不受影响。相关对拍记录：CAD lgf-var-000 `PUSH_G &OPTIONAL;
+  GET_LOCAL 0; PUSH_G OPT; GET_LOCAL 1; PUSH_G &REST; GET_LOCAL 2; ...`。
 - **纯顶层 set/setq-lambda 第二区符号槽序残余 diff**（2026-08-18，bootstrap
   fixture 重建对拍）：单 `-lambda-` 文件 CAD 用 **reversed-fwd（含 tail-call 与
   参数原位）** 编址（bs4 实测 `STRCAT = SUBSTR - STRLEN .fas FILE` = 逆序引用
@@ -410,6 +431,12 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   仅**裸语句** `if` 才在 then 末尾、JUMP 前发 `POP` 丢弃值。判别标志 `_in_stmt_ctx`
   （`_emit_stmt` 置位；`setq`/算术/实参等值位置经 `_value_ctx` 清位）。回归
   `test_value_position_if_no_then_pop`。
+- **`if` 语句上下文 else 分支末尾 POP**（2026-08-19，large_synthetic 实测）：
+  语句上下文（值被丢弃）的裸语句 `if`，else 分支末尾同样发 `POP` 丢弃分支值
+  （CAD lgf-000..119 实测 else `USUBR; POP`），与 then 分支对称；else 为
+  setq 时 SETQ_G 已消费栈顶无需 POP，progn/if/循环由其自身管理栈。此前
+  codegen 只处理 then 分支 POP，else 分支缺 `0a` → 每函数 1 字节 diff。
+  修复：`_emit_if` else 分支加与 then 相同的 `_in_stmt_ctx` 排除列表判断。
 - **`if` then 分支为 while/foreach/repeat 时无 POP**（2026-08-15）：then 为循环
   节点（自带栈平衡：JUMP 回跳 + CLEAR_ARGS/尾协议）时，`_emit_if` 的语句上下文
   POP 排除列表须含 WhileNode/ForeachNode/RepeatNode，否则循环退出前多 POP

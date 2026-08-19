@@ -277,6 +277,52 @@ def test_value_position_if_no_then_pop():
         assert b'\x32\x02\x06' in bc, f'then SETQ_G pattern missing: {bc.hex()}'
 
 
+def test_stmt_if_else_branch_pop():
+    """A bare statement `if` (value discarded, with a following statement) must
+    POP the else-branch value too — mirroring the then-branch POP.
+
+    Regression for large_synthetic: `(if c (fn1) (fn2)) (list ...)` in a function
+    body previously emitted the then-branch POP but not the else-branch POP
+    (CAD lgf-000..119 else `USUBR; POP`). Each function was 1 byte short.
+    """
+    from compiler.cli import cmd_compile
+    from decompiler.fas4_decompiler import Disassembler
+
+    src = (
+        "(defun f (x) "
+        "(if (> x 0) (princ \"pos\") (princ \"neg\")) "
+        "(princ \"done\"))"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        _, bc, _, _ = _parse_fas(open(out, 'rb').read())
+        dis = Disassembler(short_subr=False)
+        insts = list(dis.disassemble(bc, 10, sym_count=10))
+        ops = [i.op_name for i in insts]
+        # Structure: JMP32_IFNOT; then ...; JUMP; else PUSH_G; USUBR; POP; tail ...
+        # The else branch must emit a POP before the tail statement.
+        ju = ops.index('JUMP') if 'JUMP' in ops else -1
+        assert ju > 0, f'expected JUMP after then-branch: {ops}'
+        # else branch starts right after JUMP; its last op before the tail
+        # statement must be POP
+        else_idx = ju + 1
+        # find the tail statement: the PUSH_G/USUBR after the else POP
+        tail_idx = None
+        for k in range(else_idx, len(ops)):
+            if ops[k] == 'POP':
+                tail_idx = k
+                break
+        assert tail_idx is not None and tail_idx + 1 < len(ops), (
+            f'else-branch missing POP before tail statement: {ops}'
+        )
+        # after the else POP, the next meaningful op is the tail statement
+        # (PUSH_G / PUSH_VALUE / USUBR of the following `(princ "done")`)
+        assert ops[tail_idx + 1] in ('PUSH_G', 'PUSH_VALUE', 'USUBR', 'PUSH_INT8'), (
+            f'unexpected op after else POP: {ops[tail_idx:tail_idx + 3]}'
+        )
+
+
 #: (source, cad_golden) pairs where our compact-stub output must be byte-identical
 #: to the AutoCAD `vlisp-compile` golden (bytecode AND resource items).
 #: 顶层 tests/*.lsp 的 CAD golden（fact/fun/m1/m2/mix/multi/rt_e）已随

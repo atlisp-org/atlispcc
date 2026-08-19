@@ -516,25 +516,47 @@ class ResourceBuilder:
             # 注意：cad_symbols 已把 entries 排为"源码逆序逐 form"（顶层与
             # 函数名交错，mix2=setq 末→`X,B,A`，mix3=setq 首→`B,A,X`），
             # 因此这里直接按 entries 自然序输出即可，勿再单独逆序函数名。
+            _vl_first_cmd = None
             if commands and func_names_all:
-                # CAD 命令模块注册：每个命令函数独立 5b 块，首命令后插入
-                # `56 vl-ACAD-defun 00 00`（t14_command 实测）。该符号保留
-                # 原始大小写（`Vl-ACAD-defun`），不同于普通符号的大写编码。
-                names = list(reversed(func_names_all))
-                for i, fname in enumerate(names):
-                    out += b"\x5b" + self._enc_sym(fname) + b"\x00\x00"
-                    if i == 0:
-                        out += b"\x56" + self._enc("vl-ACAD-defun") + b"\x00\x00"
-                # 命令 + 顶层表达式混合：函数名已单独注册，跳过；其余顶层
-                # 符号/常量仍需登记（atlisp_u 实测），否则模块代码引用的
-                # gvar 槽无符号记录。GVARINIT 计数仍按完整 module_entries。
-                _cmd_names = {str(f).upper() for f in names}
-                module_entries = [e for e in module_entries
-                                  if not (e[0] == "SYMBOL" and str(e[1]).upper() in _cmd_names)]
+                if top_level_count == 0:
+                    # 纯命令文件（无顶层表达式）：每个命令函数独立 5b 块，首命令
+                    # （源码序第一个命令）后插入 `56 vl-ACAD-defun 00 00`
+                    # （t14_command 实测）。该符号保留原始大小写
+                    # （`Vl-ACAD-defun`），不同于普通符号的大写编码。
+                    names = list(reversed(func_names_all))
+                    for i, fname in enumerate(names):
+                        out += b"\x5b" + self._enc_sym(fname) + b"\x00\x00"
+                        if i == 0:
+                            out += b"\x56" + self._enc("vl-ACAD-defun") + b"\x00\x00"
+                    _cmd_names = {str(f).upper() for f in names}
+                    module_entries = [e for e in module_entries
+                                      if not (e[0] == "SYMBOL" and str(e[1]).upper() in _cmd_names)]
+                else:
+                    # 命令 + 顶层表达式混合：命令保留在共享 module_entries 块中，
+                    # `56 vl-ACAD-defun 00 00` 插在源码序第一个命令之前（CAD
+                    # large_synthetic 实测 `5b [LGF-TOP-* CMD-090 CMD-060 CMD-030]
+                    # 00 56 vl-ACAD-defun 00 00 5b [CMD-000 LGF-119...]`）。命令
+                    # 名按 func_names_all（源码序）首字母 `c:` 判定。
+                    for _fn in func_names_all:
+                        if str(_fn).lower().startswith("c:"):
+                            _vl_first_cmd = str(_fn)
+                            break
             mi = 0
             while mi < len(module_entries):
                 entry_type, entry_val = module_entries[mi]
                 if entry_type == "SYMBOL":
+                    if (
+                        _vl_first_cmd is not None
+                        and str(entry_val).upper() == str(_vl_first_cmd).upper()
+                    ):
+                        # 命令+顶层混合：vl-ACAD-defun 插在源码首个命令之前，
+                        # 先刷新当前 5b 块，再发 `56 vl-ACAD-defun 00 00`，
+                        # 新块从该命令继续（CAD large_synthetic 实测）。
+                        if fn_bytes:
+                            out += b"\x5b" + bytes(fn_bytes) + b"\x00"
+                            fn_bytes = bytearray()
+                        out += b"\x56" + self._enc("vl-ACAD-defun") + b"\x00\x00"
+                        _vl_first_cmd = None
                     fn_bytes += self._enc_sym(entry_val) + b"\x00"
                     mi += 1
                 elif entry_type == "STRING":
