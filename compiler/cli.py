@@ -1052,14 +1052,14 @@ def _build_cad_module_code(
         handled = False
 
         def _slot_gv(idx):
-            """symtab idx → 实际 gvar 槽（gvar_map 可用时）；否则 idx+1。"""
+            """symtab idx → 实际 gvar 槽（gvar_map 可用时）；否则 idx+1+n_cmds。"""
             if _gvar and _symtab is not None and 0 <= idx < len(_symtab.entries):
                 _t, _v = _symtab.entries[idx]
                 if _t in ("SYMBOL", "STRING"):
                     _s = _gvar.get(str(_v).upper())
                     if _s is not None:
                         return _s
-            return idx + 1
+            return idx + 1 + n_cmds
 
         if isinstance(form, Setq):
             # 多对 setq：CAD 输出全部 pair。中间 pair 用
@@ -1262,7 +1262,8 @@ def _build_cad_module_code(
                     _setq_off = _i.offset
             if _setq_off is not None:
                 bc = bc[:_setq_off] + b"\x0b" + bc[_setq_off:]
-        return _offset_slots(bc, len(symtab.entries), gvar_map=_gvar, symtab=_symtab, real_map=real_map)
+        return _offset_slots(bc, len(symtab.entries), gvar_map=_gvar, symtab=_symtab, real_map=real_map,
+                             n_cmds=n_cmds)
 
     def _emit_stmts(forms, last_no_pop: bool):
         """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。"""
@@ -1383,7 +1384,8 @@ def _is_empty_quote(node) -> bool:
     return isinstance(node, QuotedExpr) and isinstance(node.expr, ListExpr) and not node.expr.items
 
 
-def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: Optional[dict] = None) -> bytes:
+def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: Optional[dict] = None,
+                  n_cmds: int = 0) -> bytes:
     """把字节码中的符号槽引用 +1（CAD 模块代码用 gvar 槽 = 符号槽+1）。
 
     处理 PUSH_G(0x09)/PUSH_VALUE(0x03)/SETQ_G(0x06)/USUBR(0x35) 的符号槽。
@@ -1393,6 +1395,11 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
     commands 混合模式（atlisp_u）下模块注册把函数名逆序置前、顶层符号在后，
     ``symtab_idx+1`` 不再等于实际 gvar 槽，须用资源段 GVARINIT 重建的
     ``{符号名大写: gvar槽}`` 修正（否则顶层函数调用 USUBR 引用错误槽位）。
+
+    n_cmds（vl-ACAD-defun 符号数）：资源模块注册插入 vl-ACAD-defun 使其后
+    符号 gvar 槽整体 +1。gvar_map 命中者已含该偏移；未命中（表外符号）的
+    fallback ``idx+1`` 须补 ``+n_cmds``，否则模块代码引用错槽
+    （atlisp_u ``(set 'e2o 'vlax-ename->vla-object)`` 的 PUSH_VALUE 实测）。
     """
     from decompiler.fas4_decompiler import Disassembler
 
@@ -1426,19 +1433,19 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
             if slot is not None:
                 out += _subr_bytes(0x35, inst.operands[0], slot, flags=3, wide=wide)
             else:
-                out += _subr_bytes(0x35, inst.operands[0], inst.operands[1] + 1, flags=3, wide=wide)
+                out += _subr_bytes(0x35, inst.operands[0], inst.operands[1] + 1 + n_cmds, flags=3, wide=wide)
         elif name == "FUNC" and len(inst.operands) >= 2:
             slot = _slot_for(inst.operands[1])
             if slot is not None:
                 out += _subr_bytes(0x51, inst.operands[0], slot, flags=1, wide=wide)
             else:
-                out += _subr_bytes(0x51, inst.operands[0], inst.operands[1] + 1, flags=1, wide=wide)
+                out += _subr_bytes(0x51, inst.operands[0], inst.operands[1] + 1 + n_cmds, flags=1, wide=wide)
         elif name in ("PUSH_G", "SETQ_G", "PUSH_G_ALT") and len(inst.operands) >= 1:
             slot = _slot_for(inst.operands[0])
             if slot is not None:
                 out += bytes([raw[0]]) + struct.pack("<H", slot)
             else:
-                out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1)
+                out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1 + n_cmds)
         elif name == "PUSH_VALUE":
             # stub：PUSH_VALUE[0] 单字节 03；idx>0 为 3 字节。
             if len(inst.operands) == 1 and inst.operands[0] == 0 and inst.size == 1:
@@ -1448,7 +1455,7 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
                 if slot is not None:
                     out += bytes([raw[0]]) + struct.pack("<H", slot)
                 else:
-                    out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1)
+                    out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1 + n_cmds)
             else:
                 out += raw
         else:

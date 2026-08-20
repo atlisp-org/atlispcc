@@ -338,8 +338,8 @@
 ;; ── platform-api.lsp ──────────────────────────────────────────
 ;; @provides platform-api
 (vl-load-com)
-(in-package :@)
-(use-package :autolisp)
+;;(in-package :@)
+;;(use-package :autolisp)
 
 ;; Self-contained platform abstraction layer
 ;; Only uses basic AutoLISP + base-function.lsp primitives
@@ -550,41 +550,43 @@ T
   (setq prefix (ascii "%"))
   (setq code '(48 49 50 51 52 53 54 55 56 57 65 66 67 68 69 70))
   (setq res-lst nil)
-  (foreach n (s2l str)
+  (foreach n (vl-string->list str)
     (cond
       ((> n 255)
-       (setq res-lst (append
-                       (reverse
-                         (s2l (strcat "%u" (@::dec2hex n))))
-                       res-lst)))
+        (setq res-lst (append
+            (reverse
+              (vl-string->list (strcat "%u" (@::dec2hex n))))
+            res-lst)))
       ((or (> 256 n 127) (member n (vl-string->list " ;/?:&=+$,#")))
-       (setq res-lst (cons prefix res-lst))
-       (setq res-lst (cons (nth (fix (/ n 16)) code) res-lst))
-       (setq res-lst (cons (nth (rem n 16) code) res-lst)))
+        (setq res-lst (cons prefix res-lst))
+        (setq res-lst (cons (nth (fix (/ n 16)) code) res-lst))
+        (setq res-lst (cons (nth (rem n 16) code) res-lst)))
       ((< n 128)
-       (setq res-lst (cons n res-lst)))))
+        (setq res-lst (cons n res-lst)))))
   (vl-list->string (reverse res-lst)))
-(defun @::string-to-list (str separator / i j slen sep-len lst)
-  (if (eq 'STR (type-of str))
+(defun @::string-to-list (str separator / s2la)
+  "字符串转成列表，拆分字符串，指定字符来分隔字符串。"
+  "拆分后的列表"
+  (defun s2la (str separator / pos)
+    (if (setq pos (vl-string-search separator str))
+      (cons (substr str 1 pos)
+        (s2la(substr str (+ pos 1 (strlen separator)))
+          separator))
+      (list str)))
+  (if (and (p:stringp separator)
+      (p:stringp str))
+    (if(= "" separator)
+      (mapcar (function (lambda (x)
+            (chr x)))
+        (vl-string->list  str))
+      (s2la str separator)
+    )
     (progn
-      (setq slen   (strlen str)
-            sep-len (strlen separator)
-            i      1
-            j      1
-            lst    nil)
-      (while (<= i slen)
-        (if (eq separator (substr str i sep-len))
-          (progn
-            (setq lst (cons (substr str j (- i j)) lst))
-            (setq i (+ i sep-len -1))
-            (setq j (1+ i))))
-        (setq i (1+ i)))
-      (if (<= j slen)
-        (setq lst (cons (substr str j) lst))
-        (if (null lst) (setq lst (cons "" lst))))
-      (reverse lst))))
-(if (null string:to-list)
-  (setq string:to-list @::string-to-list))
+      (@:log "ERROR" "parameter is not a string")
+      nil)
+))
+
+(setq string:to-list @::string-to-list)
 (defun @::list-to-string (slist separator / result n buf)
   (setq buf nil)
   (foreach n slist
@@ -595,8 +597,7 @@ T
     (setq result (apply 'strcat (reverse buf)))
     (setq result ""))
   result)
-(if (null string:from-list)
-  (setq string:from-list @::list-to-string))
+(setq string:from-list @::list-to-string)
 (defun @::to-string (para)
   (cond
     ((eq 'INT (type-of para)) (itoa para))
@@ -618,10 +619,10 @@ T
   (if (> (strlen str-old) 0)
     (progn
       (setq len (strlen str-new)
-            inc 0)
+        inc 0)
       (while (setq inc (vl-string-search str-old str inc))
         (setq str (vl-string-subst str-new str-old str inc)
-              inc (+ inc len)))))
+          inc (+ inc len)))))
   str)
 (set '@::string-subst string:subst-all)
 (defun string-capitalize (str)
@@ -636,6 +637,7 @@ T
       (vl-remove-if
         (function (lambda (m) (< m 256)))
         codes))))
+
 
 ;; ── lib/version-utils.lsp ──────────────────────────────────────────
 ;; @depends string-utils
@@ -1069,15 +1071,17 @@ T
 ;; @provides base-function
 (in-package :@)
 (use-package :autolisp)
+(setq @::*acadver* (atof (getvar "acadver")))
+(defun @::acadver () @::*acadver*)
 (set '$platform (read (getvar "platform")))
-(if (null textpage) (set 'textpage textscr))
-(if (@::platform-is-linux-p)
-  (defun vla-postcommand (doc cmdstr)
-    "Send a command string to the specified document, and return the result."
-    (princ doc)
-    (princ cmdstr)
-    (command (vl-string-trim (chr 27) cmdstr))))
-(if (null vla-postcommand) (set 'vla-postcommand vla-sendcommand))
+;; (set 'textpage textscr)
+;;  (if (@::platform-is-linux-p)
+;;  (defun vla-postcommand (doc cmdstr)
+;;    "Send a command string to the specified document, and return the result."
+;;    (princ doc)
+;;    (princ cmdstr)
+;;    (command (vl-string-trim (chr 27) cmdstr))))
+;; (set 'vla-postcommand vla-sendcommand)
 (defun @::handle-keywords (expr)
   "处理关键字: 将 :xxx 形式的符号注册为当前包的关键字"
   "symbol or list"
@@ -1097,11 +1101,11 @@ T
      expr)
     (t expr)))
 (set 'handle-keywords @::handle-keywords)
-(@::handle-keywords
-  '(:dialog :row :column :boxed-row :boxed-column :button :edit-box :list-box :popup-list :text
-            :image :toggle :radio-button :radio-column :slider :spacer :spacer-0 :spacer-1 :ok-cancel
-            :ok-only :ok-cancel-help :cancel-only :label :value :key :width :height :alignment :fixed-width
-            :fixed-height :children-alignment :children-fixed-width :children-fixed-height))
+;;(@::handle-keywords
+;;  '(:dialog :row :column :boxed-row :boxed-column :button :edit-box :list-box :popup-list :text
+;;            :image :toggle :radio-button :radio-column :slider :spacer :spacer-0 :spacer-1 :ok-cancel
+;;           :ok-only :ok-cancel-help :cancel-only :label :value :key :width :height :alignment :fixed-width
+;;            :fixed-height :children-alignment :children-fixed-width :children-fixed-height))
 (defun @::timestamp (/ timestamp)
   "生成当前时间戳字符串 (Unix秒-毫秒)"
   "string"
@@ -1468,29 +1472,25 @@ T
 ;; @depends platform version base-function
 ;; @provides bootstrap
 (in-package :@)
-(setq @::*acadver* (atof (getvar "acadver")))
-(set '@::acadver (lambda () @::*acadver*))
-(set '@::progname "atlisp")
-(set 'start-time (@::get-timer))
-(set '$platform (if (boundp '$platform) $platform (read (getvar "platform"))))
-(set
-  '$userhome
-  (cond
-    ((@::platform-is-linux-p)
-     (getenv "HOME"))
-    (t
-     (getenv "userprofile"))))
-;; @lisp基本变量
-(setq @::*prefix*        (@::path-os (strcat $userhome "/@lisp/"))
+(setq @::progname "atlisp"
+      start-time         (@::get-timer)
+      $platform          (if (boundp '$platform) $platform (read (getvar "platform")))
+      $userhome          (cond
+                      ((@::platform-is-linux-p) (getenv "HOME"))
+                      (t(getenv "userprofile")))
+      @::*prefix*        (@::path-os (strcat $userhome "/@lisp/"))
       @::*prefix-config* (@::path-os (strcat $userhome "/.atlisp/")))
-(if (null @::*edition*) (setq @::*edition* "stable"))
-(setq @::*tmp-path*             (@::path-os
+(setq @::*tmp-path* (@::path-os
                                   (if (getenv "temp")
                                     (strcat (getenv "temp") "\\")
                                     (strcat @::*prefix* "tmp/")))
       @::*app-tmp-path*         (strcat @::*prefix* "tmp/")
-      @::*fingerprint-checksum* 246)
-(setq my-fingerprint '(33 21 23 28 29 34 25 29 24))
+      @::*fingerprint-checksum* 246
+      my-fingerprint            '(33 21 23 28 29 34 25 29 24))
+(if (null @::*edition*) (setq @::*edition* "stable"))
+
+
+
 
 ;; ── error/safe-eval.lsp ──────────────────────────────────────────
 ;; @depends base-function platform
