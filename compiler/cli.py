@@ -866,6 +866,25 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 out += seg0[inst.offset : inst.offset + inst.size]
                 continue
             if multi:
+                # 字符串（如 `"OFFLINE"`）必须走 str_map（大小写敏感），不能
+                # 经 gvar_map——否则与同名符号（net/probe `"OFFLINE"` vs
+                # 符号 OFFLINE）冲突，映射到符号槽（fg[11] → 操作数 10）而非
+                # 字符串槽（fg[9] → 操作数 8，CAD 实测）。
+                if (
+                    0 <= inst.operands[0] < len(symtab.entries)
+                    and symtab.entries[inst.operands[0]][0] == "STRING"
+                    and inst.op_name in ("PUSH_G", "PUSH_VALUE", "SETQ_G")
+                ):
+                    _sv = str(symtab.entries[inst.operands[0]][1])
+                    if _sv in str_map:
+                        new_idx = str_map[_sv] - 1
+                        if 0 <= new_idx <= 0xFFFF:
+                            if inst.op_name == "PUSH_VALUE" and new_idx == 0 and not wide:
+                                out += bytes([0x03])
+                            else:
+                                opcode = {"PUSH_VALUE": 0x03, "PUSH_G": 0x09, "SETQ_G": 0x06}[inst.op_name]
+                                out += bytes([opcode, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
+                            continue
                 sym = sym_of(inst.operands[0])
                 if sym and sym in gvar_map:
                     new_idx = gvar_map[sym] - 1

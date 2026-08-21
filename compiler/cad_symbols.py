@@ -531,19 +531,40 @@ class CadSymbolCollector:
                     _rest.append(_x)
                     _pos += 1
             _rev = list(reversed(_rest))
-            for _kw, _body, _caller in reversed(_kwote_blocks):
+            # 多 kwote 同调用者（probe-network-uris 双 kwote 都跟在
+            # @::network-circuit-trip 后，CAD 实测 `[OFFLINE, kwote, @::EVENT-EMIT,
+            # NETWORK-STATUS-CHANGED]` = reversed(`[kwote, NETWORK-STATUS-CHANGED,
+            # @::EVENT-EMIT, kwote, OFFLINE]`)）：合并为「逆序块体 + kwote」链
+            # （每个块 `[body_rev, kwote]`，按块逆序拼接，kwote 去重）。单 kwote
+            # （net/proxy/cache/reload）保持 `[kwote, body_rev]`。
+            if len(_kwote_blocks) >= 2 and len({_b[2] for _b in _kwote_blocks}) == 1:
+                _merged = []
+                for _kw, _body, _caller in reversed(_kwote_blocks):
+                    _merged += _body + [_kw]
+                _caller = _kwote_blocks[0][2]
                 if _caller is not None:
                     for _j, (_m, _) in enumerate(_rev):
                         if _m == _caller:
-                            _rev = _rev[: _j + 1] + [_kw] + _body + _rev[_j + 1 :]
+                            _rev = _rev[: _j + 1] + _merged + _rev[_j + 1 :]
                             break
                     else:
-                        _rev = [_kw] + _body + _rev
+                        _rev = _merged + _rev
                 else:
-                    # kwote 块无后续调用者（调用者已被跨函数去重，net/cache
-                    # @::uri-safe 的 vl-catch-all-apply 被前一函数占用）：CAD
-                    # 把 `kwote` 放在块体之前（实测 [kwote, @::uri]）。
-                    _rev = [_kw] + _body + _rev
+                    _rev = _merged + _rev
+            else:
+                for _kw, _body, _caller in reversed(_kwote_blocks):
+                    if _caller is not None:
+                        for _j, (_m, _) in enumerate(_rev):
+                            if _m == _caller:
+                                _rev = _rev[: _j + 1] + [_kw] + _body + _rev[_j + 1 :]
+                                break
+                        else:
+                            _rev = [_kw] + _body + _rev
+                    else:
+                        # kwote 块无后续调用者（调用者已被跨函数去重，net/cache
+                        # @::uri-safe 的 vl-catch-all-apply 被前一函数占用）：CAD
+                        # 把 `kwote` 放在块体之前（实测 [kwote, @::uri]）。
+                        _rev = [_kw] + _body + _rev
             for name, force in _rev:
                 if str(name).lower() == "t":
                     # CAD T 槽：模块注册区（顶层 cond else 键）与函数体区

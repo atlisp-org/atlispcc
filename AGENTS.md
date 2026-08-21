@@ -753,4 +753,17 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      `[kwote, @::EVENT-EMIT, NETWORK-STATUS-CHANGED, OFFLINE]`（reversed 插入
      kwote1 在前、kwote 在 body 前）。待"双 kwote 同调用者时块序/体内符号序"
      语义判定。
+- **2026-08-21 增补 9（net/probe byte-identical，24/67）**：双 kwote 同调用者
+  块序 + 字符串/符号名冲突修复，net/probe **seg0+nsyms+seg1 完全一致**：
+  1. **多 kwote 同调用者链式插入**（`cad_symbols.py`）：≥2 kwote 块且调用者全
+     相同时，合并为「逆序块体 + kwote」链（每块 `[body_rev, kwote]` 按块逆序
+     拼接，kwote 去重）插入调用者后。probe-network-uris 双 kwote 实测
+     `[OFFLINE, kwote, @::EVENT-EMIT, NETWORK-STATUS-CHANGED]` = reversed
+     (`[kwote, NETWORK-STATUS-CHANGED, @::EVENT-EMIT, kwote, OFFLINE]`)。
+     单 kwote（net/proxy/cache/reload）保持 `[kwote, body_rev]`。
+  2. **STRING 与同名符号冲突**（`cli.py` `_patch_usubr_idx` `multi` 路径）：
+     `"OFFLINE"` 字符串若与符号 `OFFLINE` 同名，`sym_of` 返回字符串值后经
+     `gvar_map`（符号优先）映射到**符号槽**（fg[11] → 操作数 10），CAD 用
+     **字符串槽**（fg[9] → 操作数 8）。修复：`multi` 路径先判 STRING 条目，
+     走 `str_map`（大小写敏感）；表外字符串落回原 STRING 分支。
 - MCP CAD 连接不稳定，建议手动测试
