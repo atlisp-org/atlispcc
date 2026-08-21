@@ -473,6 +473,17 @@ class CadSymbolCollector:
         for _i, _k in enumerate(reversed(kept_refs)):
             if any(str(n).lower() == "t" for n, _ in _k):
                 t_last = _i
+        # 局部变量同时是**其它函数参数**（net/probe `cached` = internetp 的
+        # `/ cached` 局部 + check-cached-online 的参数）：CAD 把该槽注册在参数
+        # 函数的 args 循环（fg[75]），不在声明它的函数的函数体组（internetp
+        # fg[5]）。故函数体组收集与 locals 循环都跳过它，由参数函数 args 循环
+        # 注册（该参数经 arg_names 排除、不参与 body 收集）。
+        _local_is_param = {
+            loc
+            for func in defuns
+            for loc in func.locals
+            if any(loc in g.args for g in defuns)
+        }
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             # 函数体符号逆序注册；CAD 对 kwote 块（kwote + lambda 体，由
             # `__kwote_end__` 标记）保持收集序整体插到**调用者**（块后第一个
@@ -492,13 +503,26 @@ class CadSymbolCollector:
                         _pos += 1
                     _pos += 1  # 跳过 __kwote_end__
                     _caller = None
-                    for _c in kept[_pos:]:
+                    _cj = _pos
+                    while _cj < len(kept):
+                        _c = kept[_cj]
+                        if _c[0] == "kwote":
+                            # 跳过后续 kwote 块（含其体）：多 kwote 时前一 kwote
+                            # 的调用者在后续 kwote 块之后（probe-network-uris 双
+                            # kwote 实测 kwote1 调用者 = @::network-circuit-trip，
+                            # 在 kwote2 块之后；不跳过则误判为 `kwote` 标记）。
+                            _cj += 1
+                            while _cj < len(kept) and kept[_cj][0] != "__kwote_end__":
+                                _cj += 1
+                            _cj += 1
+                            continue
                         if not str(_c[0]).startswith(('"', "'", "(")) and str(_c[0]) not in (
                             "nil",
                             "T",
                         ):
                             _caller = _c[0]
                             break
+                        _cj += 1
                     # kwote lambda 体符号逆序注册（与其他函数体符号一致；
                     # net/proxy.lsp 双函数 kwote 实测 `VL-STRING-SEARCH @proxy.exe
                     # vlax-release-object ...` 逆序，net/reload 单函数同）。
@@ -522,17 +546,21 @@ class CadSymbolCollector:
                     _rev = [_kw] + _body + _rev
             for name, force in _rev:
                 if str(name).lower() == "t":
-                    if i != t_last:
-                        continue
                     # CAD T 槽：模块注册区（顶层 cond else 键）与函数体区
                     # （函数 cond else 键）各自独立注册（platform.lsp CAD 实测
                     # 两处 `T`：模块 [27] + 函数体 [43]，后者喂 fg 表 gvar 槽）。
                     # T 已在模块区注册过（_name_set 含 T）时直接追加重复槽，
                     # 否则走 add() 常规注册。
+                    if i != t_last:
+                        continue
                     if "T" in self._name_set:
                         self.names.append("T")
                     else:
                         self.add("T", force=True)
+                    continue
+                if name in f.locals and name in _local_is_param:
+                    # 局部同时是其它函数参数（net/probe `cached`）：由参数函数
+                    # args 循环注册，函数体组不收集。
                     continue
                 self.add(
                     name,
@@ -564,6 +592,10 @@ class CadSymbolCollector:
                 # 注册时才 add——实际已由函数体组注册，此处为安全 no-op。
                 _kept_names = {n for n, _ in kept}
                 if loc in _kept_names and loc not in self.shared and loc not in self._name_set:
+                    if loc in _local_is_param:
+                        # 局部同时是其它函数参数（net/probe `cached`）：由参数
+                        # 函数 args 循环注册（fg[75]），locals 循环不注册。
+                        continue
                     self.add(loc)
             for arg in reversed(f.args):
                 if arg in self.shared:

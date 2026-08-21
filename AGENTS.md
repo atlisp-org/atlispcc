@@ -734,4 +734,23 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      不重复（命令块已留 `PUSH_G c`）。
   compat.lsp（另一 defpackage 文件）仍 DIFF（`#-sbcl` 条件符号、use-package、
   Progn 等复杂顶层形式未对齐），非本次引入的回归。
+- **2026-08-21 增补 8（net/probe 分析，seg0 diff 167→9）**：net/probe 仍 DIFF
+  （双 kwote 块序残余），但 `_local_is_param` 语义已修复、其余 23 文件不受影响：
+  1. **局部变量同时是其它函数参数**（net/probe `cached` = internetp 的
+     `/ cached` 局部 + check-cached-online 的参数）：CAD 把该槽注册在参数函数
+     args 循环（fg[75]），不在声明它的函数（internetp）函数体组（fg[5]）。
+     `_collect_multi` 新增 `_local_is_param` 集合，函数体组收集循环与 locals
+     循环都跳过它，由参数函数 args 循环注册（该参数经 arg_names 排除、不参与
+     body 收集）。net/cache `result` 仅是局部（非参数）不受影响。
+  2. **kwote 调用者跳过嵌套 kwote 块**（`_kwote_blocks` 调用者检测）：多 kwote
+     时前一 kwote 的调用者在后续 kwote 块之后（probe-network-uris 双 kwote
+     实测 kwote1 调用者 = `@::network-circuit-trip`，在 kwote2 块之后；不跳过
+     则误判为 `kwote` 标记）。net/proxy 单 kwote 不受影响。
+  3. **net/probe 残余 DIFF（未决）**：probe-network-uris 双 kwote（两 lambda
+     均由 vl-catch-all-apply 调用、调用者同为 @::network-circuit-trip）的 kwote
+     块序。CAD 实测 `[OFFLINE, kwote, @::EVENT-EMIT, NETWORK-STATUS-CHANGED]`
+     （kwote2 的 body OFFLINE 在 kwote 前、kwote2 块在 kwote1 块前）；OURS 为
+     `[kwote, @::EVENT-EMIT, NETWORK-STATUS-CHANGED, OFFLINE]`（reversed 插入
+     kwote1 在前、kwote 在 body 前）。待"双 kwote 同调用者时块序/体内符号序"
+     语义判定。
 - MCP CAD 连接不稳定，建议手动测试
