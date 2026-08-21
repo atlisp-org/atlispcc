@@ -688,4 +688,19 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      res[108] - 11 - 1 = fg[96]，operand 95）。旧 fallback `nsyms-1` 偏移 2
      （build_mvar_tables 未把该符号放入 fg 表）。net/probe 其余 167 处 diff
      为 `/ 局部变量`（cached 等）在函数体组的槽位排序问题，暂留 DIFF。
+- **2026-08-21 增补 6（sub-system/command 分析）**：`defpackage`/`in-package`
+  模块注册段修复（res diff 2810→433），command 暂留 DIFF（kwote lambda
+  `_al-bind-alist`/const 排序与 net/proxy 冲突）：
+  1. **`defpackage` 关键字符号**（`_register_module`）：CAD 模块注册 =
+     `DEFPACKAGE + :EXPORT + 逆序 export + :USE + use 包 + 包名`（command
+     实测 `DEFPACKAGE :EXPORT :@DIAG :@AI :@@ ... :@@W :USE :CL :C`）。
+     旧实现只登记 name/use/export 漏 `defpackage`/`:export`/`:use` → 后续
+     export 符号槽位错位。`_owner_of` 需能查到这些关键字（加入 reads）。
+  2. **kwote lambda `_al-bind-alist` 排序冲突（未决）**：command `@::F`
+     （kwote lambda `/ req resp boot` 嵌套在 `/ ok req` 函数内）CAD 实测
+     `const(req resp boot), VL-LOAD-COM, _al-bind-alist, const(ok req)`，
+     net/proxy（kwote lambda locals == 函数 locals）需 kwote 分支早注册
+     `_al-bind-alist`。两者冲突——去掉 kwote 分支 `_al-bind-alist` 破 net/
+     proxy，保留则 command 的 `_al-bind-alist` 提前到 VL-LOAD-COM 之前。
+     需"kwote lambda locals 与函数 locals 相同时才早注册"语义判定。
 - MCP CAD 连接不稳定，建议手动测试

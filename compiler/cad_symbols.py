@@ -881,6 +881,10 @@ class CadSymbolCollector:
                 r.add(form.name)
                 r.update(form.use or [])
                 r.update(form.export or [])
+                # `defpackage`/`:export`/`:use` 关键字符号登记（CAD sub-system/
+                # command 模块注册 = DEFPACKAGE + :EXPORT + 逆序 export + :USE +
+                # use 包 + 包名）。
+                r.update(("defpackage", ":export", ":use"))
             else:
                 # 顶层 `(set/setq 'sym (lambda ...))`：**纯顶层文件**（无 defun）
                 # 时 lambda 体符号不进模块注册段（由第二区 `_collect_forward`
@@ -983,11 +987,22 @@ class CadSymbolCollector:
                     if i >= module_boundary:
                         module_funcs += 1
             elif isinstance(form, (Defpackage, InPackage)):
-                for s in ((("in-package", False), (form.name, False))
-                  if isinstance(form, InPackage)
-                  else ([(e, False) for e in reversed(form.export or [])]
-                        + [(u, False) for u in (form.use or [])]
-                        + [(form.name, False)])):
+                # Defpackage `(defpackage :C (:use :cl) (:export :@@W ...))`：
+                # CAD 模块注册 = DEFPACKAGE + :EXPORT + 逆序 export 符号
+                # （sub-system/command CAD 实测 `DEFPACKAGE :EXPORT :@DIAG :@AI
+                # :@@ :@X :@T :@H :@W :@F :@C :@1 ATLISP :@ :@@W`）；in-package
+                # = in-package + 包名。`defpackage`/`:export` 关键字符号需登记
+                # （旧实现漏掉 → 后续 export 符号槽位错位）。
+                if isinstance(form, InPackage):
+                    _dp_items = [("in-package", False), (form.name, False)]
+                else:
+                    _dp_items = [("defpackage", False), (":export", False)]
+                    _dp_items += [(e, False) for e in reversed(form.export or [])]
+                    if form.use:
+                        _dp_items.append((":use", False))
+                    _dp_items += [(u, False) for u in (form.use or [])]
+                    _dp_items += [(form.name, False)]
+                for s in _dp_items:
                     if _owner_of(s[0]) == i and s[0] not in module_seen:
                         module_seen.add(s[0])
                         self.add(s[0])
