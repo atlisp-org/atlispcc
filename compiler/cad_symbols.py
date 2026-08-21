@@ -474,16 +474,31 @@ class CadSymbolCollector:
             if any(str(n).lower() == "t" for n, _ in _k):
                 t_last = _i
         # 局部变量同时是**其它函数参数**（net/probe `cached` = internetp 的
-        # `/ cached` 局部 + check-cached-online 的参数）：CAD 把该槽注册在参数
-        # 函数的 args 循环（fg[75]），不在声明它的函数的函数体组（internetp
-        # fg[5]）。故函数体组收集与 locals 循环都跳过它，由参数函数 args 循环
-        # 注册（该参数经 arg_names 排除、不参与 body 收集）。
+        # `/ cached` 局部 + check-cached-online 的参数；cmd.lsp `pkg-name` =
+        # C:@DEP/C:@R 局部 + @::package-remove 参数）：CAD 把该槽注册在**后处理
+        # 的拥有者**处——参数拥有者处理更晚（net/probe check-cached-online
+        # reversed idx 2 > internetp idx 0）时由参数函数 args 循环注册
+        # （fg[75]）；局部拥有者处理更晚（cmd.lsp C:@DEP reversed idx 1 >
+        # @::package-remove idx 0）时由局部拥有者函数体组/局部注册（fg[75]）。
+        # 先处理的拥有者须跳过（否则 `_name_set` 抢先占用低位槽）。
+        _n_funcs = len(defuns)
         _local_is_param = {
             loc
             for func in defuns
             for loc in func.locals
             if any(loc in g.args for g in defuns)
         }
+        _local_is_param_order = {}
+        for _loc in _local_is_param:
+            _local_last = max(
+                (_n_funcs - 1 - _j for _j, _f in enumerate(defuns) if _loc in _f.locals),
+                default=-1,
+            )
+            _param_last = max(
+                (_n_funcs - 1 - _j for _j, _f in enumerate(defuns) if _loc in _f.args),
+                default=-1,
+            )
+            _local_is_param_order[_loc] = "local" if _local_last >= _param_last else "param"
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             # 函数体符号逆序注册；CAD 对 kwote 块（kwote + lambda 体，由
             # `__kwote_end__` 标记）保持收集序整体插到**调用者**（块后第一个
@@ -579,9 +594,9 @@ class CadSymbolCollector:
                     else:
                         self.add("T", force=True)
                     continue
-                if name in f.locals and name in _local_is_param:
-                    # 局部同时是其它函数参数（net/probe `cached`）：由参数函数
-                    # args 循环注册，函数体组不收集。
+                if name in f.locals and name in _local_is_param and _local_is_param_order.get(name) == "param":
+                    # 局部同时是其它函数参数、且参数拥有者后处理（net/probe
+                    # `cached`）：由参数函数 args 循环注册，函数体组不收集。
                     continue
                 self.add(
                     name,
@@ -613,9 +628,10 @@ class CadSymbolCollector:
                 # 注册时才 add——实际已由函数体组注册，此处为安全 no-op。
                 _kept_names = {n for n, _ in kept}
                 if loc in _kept_names and loc not in self.shared and loc not in self._name_set:
-                    if loc in _local_is_param:
-                        # 局部同时是其它函数参数（net/probe `cached`）：由参数
-                        # 函数 args 循环注册（fg[75]），locals 循环不注册。
+                    if loc in _local_is_param and _local_is_param_order.get(loc) == "param":
+                        # 局部同时是其它函数参数、且参数拥有者后处理（net/probe
+                        # `cached`）：由参数函数 args 循环注册（fg[75]），locals
+                        # 循环不注册。
                         continue
                     self.add(loc)
             for arg in reversed(f.args):
@@ -623,6 +639,11 @@ class CadSymbolCollector:
                     # 逆序迭代索引 i 对应源码索引 nfuncs-1-i。
                     if shared_first_user.get(arg) == nfuncs - 1 - i:
                         self.add(arg)
+                elif arg in _local_is_param and _local_is_param_order.get(arg) == "local":
+                    # 局部拥有者后处理（cmd.lsp `pkg-name`：C:@DEP reversed idx 1
+                    # > @::package-remove idx 0）：由局部拥有者函数体组/局部注册，
+                    # 参数 args 循环不注册（否则抢先占用低位槽）。
+                    continue
                 elif arg not in self._name_set:
                     self.add(arg)
 

@@ -766,4 +766,13 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      `gvar_map`（符号优先）映射到**符号槽**（fg[11] → 操作数 10），CAD 用
      **字符串槽**（fg[9] → 操作数 8）。修复：`multi` 路径先判 STRING 条目，
      走 `str_map`（大小写敏感）；表外字符串落回原 STRING 分支。
+- **2026-08-21 增补 10（_local_is_param 顺序感知）**：局部同时是其它函数参数
+  时，槽注册在**后处理**的拥有者处（net/probe `cached` = internetp 局部 +
+  check-cached-online 参数，参数拥有者 reversed idx 2 > 局部 idx 0 → 参数 args
+  循环注册 fg[75]；cmd.lsp `pkg-name` = C:@DEP/C:@R 局部 + @::package-remove
+  参数，局部拥有者 reversed idx 1 > 参数 idx 0 → 局部函数体组注册 fg[75]）。
+  `_local_is_param_order` 判定：`local`（局部拥有者后处理）时函数体组/局部循环
+  不跳过、参数 args 循环跳过；`param`（参数拥有者后处理）时函数体组/局部循环
+  跳过、参数 args 循环注册。先处理者若抢先 add 会占用低位槽（`_name_set` 去重）。
+  net/probe 保持 byte-identical，cmd.lsp seg0 diff 70→12（kwote 块序残余）。
 - MCP CAD 连接不稳定，建议手动测试
