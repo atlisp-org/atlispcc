@@ -1296,14 +1296,56 @@ def _build_cad_module_code(
             # IN-PACKAGE)`（base-function CAD golden 实测 `03 2f 00 35 01 2e 00
             # 03`；atlisp_u CAD golden 实测 12 次 `GVAR_PUSH 954(:@); FUNC_REF
             # 937,1`——AGENTS.md "模块代码不发射" 旧注释过时，2026-08-16 勘误）。
-            # 符号 IN-PACKAGE/:@ 经 _collect_symbol_nodes 注册。
-            _pkg_idx = symtab.name_to_idx.get(":@")
+            # 包名取 form.name（command.lsp `(in-package :C)`，勿硬编码 :@）。
+            # 符号 IN-PACKAGE/<包名> 经 _collect_symbol_nodes 注册。
+            _pkg_idx = symtab.name_to_idx.get(form.name)
             _fn_idx = symtab.name_to_idx.get("in-package")
             if _pkg_idx is not None and _fn_idx is not None:
                 return (
                     bytes([0x03]) + struct.pack("<H", _slot_gv(_pkg_idx))  # PUSH_VALUE :@
                     + encode_usubr(1, _slot_gv(_fn_idx), 3)  # USUBR(1, in-package)
                 )
+            return bytes([0x01])  # 兜底：槽缺失时退化为 PUSH_NIL 占位
+        if isinstance(form, Defpackage):
+            # `(defpackage :C (:use :cl) (:export ...))`：CAD 编译为（sub-system/
+            # command CAD golden 实测）：
+            #   PUSH_VALUE :C（包名）
+            #   PUSH_VALUE :CL; USUBR 1, :USE        # 每个 (:use 包) 子句
+            #   PUSH_VALUE <exports 正序>; USUBR <n>, :EXPORT
+            #   USUBR 3, DEFPACKAGE
+            # 各子调用结果都保留在栈上供 defpackage 取用，内部**无** `NIL;
+            # PUSH_VALUE 0` 清理（CAD command 实测 raw：`03 26 00 03 25 00 35
+            # 01 24 00 03 03 23 00 ... 35 0d 16 00 03 35 03 15 00 03 0a`——
+            # 仅 _emit_stmts 在语句末尾补 POP）。USUBR argc=3 取包名、use 结果、
+            # export 结果。`defpackage`/`:use`/`:export`/包名/包名列表符号经
+            # _collect_symbol_nodes 的 Defpackage 分支注册。
+            _fn_defpkg = symtab.name_to_idx.get("defpackage")
+            _fn_use = symtab.name_to_idx.get(":use")
+            _fn_export = symtab.name_to_idx.get(":export")
+            if _fn_defpkg is not None and _fn_use is not None and _fn_export is not None:
+                _name_idx = symtab.name_to_idx.get(form.name)
+                if _name_idx is not None:
+                    parts = [bytes([0x03]) + struct.pack("<H", _slot_gv(_name_idx))]
+                    ok = True
+                    for _u in form.use:
+                        _u_idx = symtab.name_to_idx.get(_u)
+                        if _u_idx is None:
+                            ok = False
+                            break
+                        parts.append(bytes([0x03]) + struct.pack("<H", _slot_gv(_u_idx)))
+                        parts.append(encode_usubr(1, _slot_gv(_fn_use), 3))
+                    if ok:
+                        for _e in form.export:
+                            _e_idx = symtab.name_to_idx.get(_e)
+                            if _e_idx is None:
+                                ok = False
+                                break
+                            parts.append(bytes([0x03]) + struct.pack("<H", _slot_gv(_e_idx)))
+                        if ok:
+                            if form.export:
+                                parts.append(encode_usubr(len(form.export), _slot_gv(_fn_export), 3))
+                            parts.append(encode_usubr(3, _slot_gv(_fn_defpkg), 3))
+                            return b"".join(parts)
             return bytes([0x01])  # 兜底：槽缺失时退化为 PUSH_NIL 占位
         if isinstance(form, Call) and str(form.name).lower() == "use-package":
             # `(use-package :autolisp)`：同 in-package，CAD 发射真实调用
@@ -1433,6 +1475,7 @@ def _build_cad_module_code(
 
     _emit_stmts(globals_forms, last_no_pop=(n_funcs == 0 and not post_forms))
 
+    _last_reg_cmd = False
     if n_funcs > 0:
         # c: 命令混合模式：vl-ACAD-defun 在模块注册段占一个符号（gvar 槽 =
         # 源码首个命令的符号槽 + 1，large_synthetic 实测槽 19），其后的
@@ -1491,17 +1534,23 @@ def _build_cad_module_code(
                 continue
             out += b"\x57\x00\x00\x00\x00"
             c = _reg(i)
-            if i < n_funcs - 1 or post_forms:
+            _last_reg_cmd = _is_cmd(i)
+            if i < n_funcs - 1 or post_forms or _is_cmd(i):
                 out += bytes([0x09]) + struct.pack("<H", c)
                 if _is_cmd(i) and _vl_slot is not None:
                     out += bytes([0x35, 0x01]) + struct.pack("<H", _vl_slot) + bytes([0x01, 0x0a])
                     out += bytes([0x09]) + struct.pack("<H", c)
-                out += b"\x0a"
+                # 命令注册 `PUSH_G c; USUBR; POP; PUSH_G c` 对**末尾**命令也发射
+                # （CAD command 实测末函数 C:@DIAG 有 vl-ACAD-defun USUBR），但
+                # 末尾命令（无后续注册/post_forms）不再跟 `0a` POP（END_DEFUN 前
+                # CAD 实测 `... 09 01 00 35 01 12 00 01 0a 09 01 00 16`）。
+                if i < n_funcs - 1 or post_forms:
+                    out += b"\x0a"
     else:
         _emit_stmts(mid_forms, last_no_pop=(not post_forms))
     if post_forms:
         _emit_stmts(post_forms, last_no_pop=True)
-    elif not top_after_defun:
+    elif not top_after_defun and not _last_reg_cmd:
         out += bytes([0x09]) + struct.pack("<H", 1)  # PUSH_G 1
     out += b"\x16"  # END_DEFUN
     return bytes(out)
@@ -1623,10 +1672,23 @@ def _collect_symbol_nodes(node):
         LambdaNode,
         Cond,
         InPackage,
+        Defpackage,
     )
 
     if isinstance(node, Symbol) or isinstance(node, String):
         yield node
+    elif isinstance(node, Defpackage):
+        # `(defpackage :C (:use :cl) (:export ...))` → 符号 `defpackage`、
+        # `:use`、`:export`、包名、use 包、export 符号（CAD 模块代码引用，
+        # 与 _register_module 的模块注册顺序一致）。
+        yield Symbol("defpackage")
+        yield Symbol(":use")
+        yield Symbol(":export")
+        yield Symbol(node.name)
+        for _u in node.use:
+            yield Symbol(_u)
+        for _e in node.export:
+            yield Symbol(_e)
     elif isinstance(node, InPackage):
         # `(in-package :@)` → 符号 `in-package` + 包名 `:@`（CAD 模块代码引用）。
         yield Symbol("in-package")
@@ -2108,9 +2170,10 @@ def cmd_compile(
             symtab.get_or_add(sym)
 
     # 顶层表达式符号（defun 之外）：CAD 把它们的符号并入模块注册段。
-    # InPackage `(in-package :@)` 也编译进模块代码（PUSH_VALUE :@; FUNC_REF
-    # in-package，CAD 实测），故保留在 other_forms 中；Defpackage 仍过滤。
-    other_forms = [f for f in program.forms if not isinstance(f, (Defun, Defpackage))]
+    # InPackage/Defpackage 也编译进模块代码（InPackage `PUSH_VALUE :@; FUNC_REF
+    # in-package`，Defpackage `PUSH_VALUE :C; (:use ...); (:export ...);
+    # USUBR 3, DEFPACKAGE`，CAD 实测），故保留在 other_forms 中。
+    other_forms = [f for f in program.forms if not isinstance(f, Defun)]
     # 顶层 form 数（CAD seg1 头 items 公式用），区别于符号数 top_level_count。
     top_form_count = len(other_forms)
     from compiler.ast_nodes import Symbol as _Sym
@@ -2175,9 +2238,11 @@ def cmd_compile(
     codegen._module_mode = True
     codegen._module_code_ctx = True
     for form in other_forms:
-        if isinstance(form, InPackage):
-            # `(in-package :@)` 由 _build_cad_module_code 单独发射
-            # （PUSH_VALUE :@; FUNC_REF in-package），此处跳过占位生成。
+        if isinstance(form, (InPackage, Defpackage)):
+            # `(in-package :@)`/`(defpackage ...)` 由 _build_cad_module_code 单独
+            # 发射（in-package `PUSH_VALUE :@; FUNC_REF in-package`、defpackage
+            # `PUSH_VALUE :C; (:use ...); (:export ...); USUBR 3, DEFPACKAGE`），
+            # 此处跳过占位生成。
             continue
         # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：由
         # _build_cad_module_code 按 top_lambda_slots 特判发射 `-lambda-` 绑定，
@@ -2420,12 +2485,12 @@ def cmd_compile(
                     _first_defun_pos = _i
                 _last_defun_pos = _i
         # 首个 defun 之前的顶层语句数（模块全局初始化，CAD 在其后立即注册
-        # 第一个函数，i18n/p04 实测）。InPackage `(in-package :@)` 已并入
-        # other_forms（模块代码发射 PUSH_VALUE :@; FUNC_REF in-package），
-        # 计入 globals 组，使其排在函数注册 JUMP 之前（CAD base-function/
-        # platform-api 实测 use-package/in-package 均在函数注册前）。
+        # 第一个函数，i18n/p04 实测）。InPackage/Defpackage 均已并入
+        # other_forms（模块代码发射调用），计入 globals 组，使其排在函数注册
+        # JUMP 之前（CAD base-function/platform-api/command 实测 use-package/
+        # in-package/defpackage 均在函数注册前）。
         _n_globals = (
-            sum(1 for _f in program.forms[:_first_defun_pos] if not isinstance(_f, (_Defun, _Defpackage)))
+            sum(1 for _f in program.forms[:_first_defun_pos] if not isinstance(_f, _Defun))
             if _first_defun_pos >= 0
             else len(other_forms)
         )
@@ -2442,10 +2507,11 @@ def cmd_compile(
             else 0
         )
         # START `_reg` 函数数 = 首个顶层语句之前定义的 defun 数（CAD platform
-        # 实测 set-locale/get-locale 在 globals 语句前注册）。
+        # 实测 set-locale/get-locale 在 globals 语句前注册）。Defpackage 是
+        # 顶层语句（进 globals 组），不计入 n_pre。
         _n_pre = 0
         for _f in program.forms:
-            if isinstance(_f, (Defun, Defpackage)):
+            if isinstance(_f, Defun):
                 _n_pre += 1
             else:
                 break

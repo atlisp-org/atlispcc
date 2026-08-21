@@ -412,7 +412,7 @@ class CadSymbolCollector:
             refs = _SeenList()
             arg_names = set(f.args)
             for expr in strip_docstring(f.body):
-                self._collect_byteorder(expr, refs, arg_names)
+                self._collect_byteorder(expr, refs, arg_names, cur_locals=set(f.locals))
             # 同一函数内对函数名的多次调用共享同一个重复槽（t09 中 sum-of-squares
             # 两次调用 square 仅 1 个重复 SQUARE 槽；CAD 实测）。
             seen_forced = set()
@@ -1151,8 +1151,12 @@ class CadSymbolCollector:
             # 键与 `_collect_byteorder`/symtab.add_real 一致（`__real_<v>__`）。
             reads.add('__real_%s__' % node.value)
 
-    def _collect_byteorder(self, node, out, arg_names, in_quote=False):
+    def _collect_byteorder(self, node, out, arg_names, in_quote=False, cur_locals=None):
         """按字节码首次引用序向前收集 (name, forced) 列表（单函数算法）。"""
+        if cur_locals is None:
+            cur_locals = getattr(self, "_cur_locals", None)
+        elif cur_locals is not None:
+            self._cur_locals = cur_locals
         if isinstance(node, Symbol):
             if (
                 node.name not in arg_names
@@ -1298,15 +1302,21 @@ class CadSymbolCollector:
                     if "/" in node.expr.args:
                         _lam_locals = node.expr.args[node.expr.args.index("/") + 1 :]
                     if _lam_locals:
-                        # locals 常量先注册、`_al-bind-alist` 助手随后——kwote 块
-                        # 收集体逆序注册（net/proxy.lsp CAD 实测槽 33
-                        # `_al-bind-alist` 在槽 34-37 locals 之前，0x56 块在
-                        # `39 04 00` const 之前）。
+                        # locals 常量先注册。`_al-bind-alist` 助手：仅当 kwote
+                        # lambda locals == 外层函数 locals（net/proxy kwote
+                        # lambda `/ shell exec stdout result` == 函数 locals，
+                        # CAD `_al-bind-alist` 在 locals 之前、0x56 块在 const
+                        # 前）时早注册；kwote lambda locals ≠ 函数 locals
+                        # （command `@::F` kwote /req resp boot ≠ 函数 /ok req，
+                        # CAD 实测 `const(req resp boot), VL-LOAD-COM,
+                        # _al-bind-alist, const(ok req)`）则 `_al-bind-alist` 由
+                        # 外层函数 locals 处理统一注册，不在此提前。
                         _lc = ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))
                         if not self._seen(out, (CONST_MARK, _lc)):
                             out.append(((CONST_MARK, _lc), False))
-                        if not self._seen(out, "_al-bind-alist"):
-                            out.append(("_al-bind-alist", False))
+                        if set(_lam_locals) == set(cur_locals or []):
+                            if not self._seen(out, "_al-bind-alist"):
+                                out.append(("_al-bind-alist", False))
                     for expr in node.expr.body:
                         self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
                 else:

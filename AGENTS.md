@@ -703,4 +703,35 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      `_al-bind-alist`。两者冲突——去掉 kwote 分支 `_al-bind-alist` 破 net/
      proxy，保留则 command 的 `_al-bind-alist` 提前到 VL-LOAD-COM 之前。
      需"kwote lambda locals 与函数 locals 相同时才早注册"语义判定。
+- **2026-08-21 增补 7（sub-system/command byte-identical，23/67）**：
+  `_al-bind-alist` 排序冲突解决 + defpackage 模块代码发射，command **seg0+nsyms+seg1
+  完全一致**（与 net/proxy 一样 byte-identical）：
+  1. **`_al-bind-alist` 条件早注册**（`cad_symbols.py` `_collect_byteorder`）：
+     kwote lambda locals **== 外层函数 locals**（net/proxy）时 kwote 分支早注册
+     `_al-bind-alist`；kwote lambda locals ≠ 函数 locals（command `@::F`
+     `/ req resp boot` ≠ `/ ok req`）时不早注册（`_al-bind-alist` 由外层
+     函数 locals 统一注册）。`cur_locals` 经 `_collect_byteorder` 新参数传入，
+     多函数路径（defun 体调用）传 `set(f.locals)`，递归调用经
+     `self._cur_locals` 持久（`cur_locals=None` 时读取）。
+  2. **Defpackage 模块代码**（`cli.py` `_stmt_bytes` + `other_forms` 纳入 +
+     `_collect_symbol_nodes` 分支）：`(defpackage :C (:use :cl) (:export ...))`
+     编译为 `PUSH_VALUE :C; PUSH_VALUE :CL; USUBR 1, :USE; PUSH_VALUE <exports
+     正序>; USUBR <n>, :EXPORT; USUBR 3, DEFPACKAGE`——各子调用结果留在栈上
+     **内部无** `NIL; PUSH_VALUE 0` 清理，仅 `_emit_stmts` 语句末尾 POP（CAD
+     command 实测 raw `03 26 00 03 25 00 35 01 24 00 03 03 23 00 ... 35 0d 16
+     00 03 35 03 15 00 03 0a`）。`defpackage`/`:use`/`:export`/包名/use 包/
+     export 符号经 `_collect_symbol_nodes` Defpackage 分支注册。
+  3. **InPackage 包名用 `form.name`**（原硬编码 `:@`，command `(in-package :C)`
+     错发 `:@`）。
+  4. **`n_globals` 含 Defpackage**（`_n_globals` 只排除 Defun；`_n_pre` 只计
+     Defun 不计 Defpackage）——defpackage/in-package 进 globals 组、排函数注册
+     JUMP 之前（CAD 实测在函数注册前）。`top_level_code` 循环（seg0）跳过
+     Defpackage（与 InPackage 同，由 `_build_cad_module_code` 发射）。
+  5. **末命令函数注册**（`_reg` rest 循环）：命令注册 `PUSH_G c; USUBR; POP;
+     PUSH_G c` 对**末尾**命令也发射（CAD 实测末函数 C:@DIAG 有 vl-ACAD-defun
+     USUBR），但末尾命令不再跟 `0a` POP（END_DEFUN 前 CAD 实测 `... 09 01 00
+     35 01 12 00 01 0a 09 01 00 16`）；`_last_reg_cmd` 标志使尾部 `PUSH_G 1`
+     不重复（命令块已留 `PUSH_G c`）。
+  compat.lsp（另一 defpackage 文件）仍 DIFF（`#-sbcl` 条件符号、use-package、
+  Progn 等复杂顶层形式未对齐），非本次引入的回归。
 - MCP CAD 连接不稳定，建议手动测试
