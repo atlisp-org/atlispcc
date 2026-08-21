@@ -675,4 +675,17 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      setq-lambda（锁定测试）需 pop-logic，net/wget 需 last-form——保留 pop-logic，
      net/wget 的 `null` 被误当尾调用、从体符号剔除 → 暂 DIFF。待更细的
      "尾调用 = 最后 body form 的值（setq 值/末表达式）"语义判定。
+- **2026-08-21 增补 5**：新增 sub-system/condition/cn-commands 一个 byte-identical
+  （22/67），关键修复：
+  1. **`_strip_list_markers` dotted 引用归一化**（cn-commands `'((:vlr-unknownCommand
+     . parse-cmdunknown))`）：symtab 常量 `('LIST', (a, b), True)`（dotted）→ fg
+     表的 `('CONS', a, b)`（build_mvar_tables `0x2A`），否则 const_map 失配 →
+     PUSH_G 落 nsyms-1。`_strip_list_markers` 新增 len==3 dotted LIST 分支。
+  2. **`_patch_usubr_idx` 顶层变量函数体引用编址**（`module_reg_count` 参数）：
+     顶层 `(setq @::*x* ...)` 变量同时注册于模块区（低位）与函数体区（高位
+     ≥ nsyms），函数体 PUSH_VALUE 引用用**函数体区槽** = 资源槽 - 模块注册数
+     - 1（fg[0] 代码引用占位：net/probe `@::*network-failure-count*`
+     res[108] - 11 - 1 = fg[96]，operand 95）。旧 fallback `nsyms-1` 偏移 2
+     （build_mvar_tables 未把该符号放入 fg 表）。net/probe 其余 167 处 diff
+     为 `/ 局部变量`（cached 等）在函数体组的槽位排序问题，暂留 DIFF。
 - MCP CAD 连接不稳定，建议手动测试

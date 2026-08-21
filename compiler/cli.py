@@ -503,7 +503,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                      params_by_name: Optional[dict] = None, lambda_args_by_func: Optional[dict] = None,
                      has_top_forms: bool = False, n_real_funcs: int = 1,
                      top_lambda_args: Optional[list] = None,
-                     top_lambda_offsets: Optional[dict] = None) -> bytes:
+                     top_lambda_offsets: Optional[dict] = None,
+                     module_reg_count: Optional[int] = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
     CAD 实测逆向：
@@ -677,6 +678,16 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         if isinstance(v, tuple) and len(v) == 2:
             if v[0] == "LIST":
                 return tuple(_strip_list_markers(i) for i in v[1])
+        if isinstance(v, tuple) and len(v) == 3 and v[0] == "LIST" and v[2]:
+            # dotted 引用 `'(a . b)`：symtab 常量 `('LIST', (a, b), True)`，fg 表
+            # 用 `('CONS', a, b)` 表示（build_mvar_tables `0x2A` 操作）——结构匹配
+            # 须归一化为 CONS，否则 const_map 失配 → PUSH_G 落 nsyms-1
+            # （cn-commands `'((:vlr-unknownCommand . parse-cmdunknown))` 实测）。
+            _items = list(v[1])
+            if len(_items) == 2:
+                return ("CONS", _strip_list_markers(_items[0]), _strip_list_markers(_items[1]))
+            return tuple(_strip_list_markers(i) for i in _items)
+        if isinstance(v, tuple) and len(v) == 2:
             if v[0] == "SYMBOL":
                 # 符号名统一大写，但 vla-/vlax- 与 VLISP 大小写保留符号保持
                 # 原大小写（与 resource_builder._enc_sym 一致）：fg 表里这些
@@ -1033,6 +1044,19 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                         _rs = _res_slot_of(str(_sym)) if _sym else None
                         if _rs is not None and _rs < nsyms:
                             new_idx = _rs - 1 - offset
+                        elif _rs is not None and module_reg_count is not None:
+                            # 顶层变量在函数体引用（net/probe `@::*network-failure-count*`）：
+                            # 符号同时注册于模块区（低位）与函数体区（高位 ≥ nsyms），
+                            # 函数体引用用**函数体区槽** = 资源槽 - 模块注册数 - 1
+                            # （fg[0] 为代码引用占位：res[108] - 11 - 1 = fg[96]，
+                            # operand 95）；旧 fallback `nsyms-1` 偏移 2
+                            # （build_mvar_tables 未把该符号放入 fg 表）。仅当
+                            # 符号在函数体区注册（末次出现 ≥ nsyms）时适用。
+                            _body_slot = _rs - module_reg_count - 1
+                            if 0 <= _body_slot < nsyms:
+                                new_idx = _body_slot - 1 - offset
+                            else:
+                                new_idx = nsyms - 1 - offset
                         else:
                             new_idx = nsyms - 1 - offset
                 if etype == "REAL":
@@ -2560,7 +2584,8 @@ def cmd_compile(
                             n_real_funcs=len(defun_forms),
                             top_lambda_args=[_lambda_real_args(la) for _, la in top_lambda_binds]
                             if top_lambda_binds and not defun_forms else None,
-                            top_lambda_offsets=_top_lambda_offsets)
+                            top_lambda_offsets=_top_lambda_offsets,
+                            module_reg_count=module_reg_count)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(
         func_offsets,
