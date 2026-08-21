@@ -599,12 +599,15 @@ class CodeGenerator:
             buf.emit(encode_op_noarg(PUSH_T))
             buf.emit(encode_op_noarg(EXIT_IF_NOT_ZERO))
             return
-        idx = self.symtab.get_or_add(normalize_vla_name(name))
+        # CAD 把 `command` 内建 SUBR 的调用目标注册为独立符号槽 `ads-cmd`
+        # （base-function CAD 实测 `(command ...)` → `ads-cmd`），与值引用
+        # 的普通符号槽 `COMMAND`（platform 实测）分离——两者是不同的槽。
+        # `command` 本身**不**注册（net/wget 实测无 COMMAND 符号，仅 ads-cmd），
+        # 需在 `get_or_add(name)` 之前特判，否则多出 COMMAND 槽。
         if self.stub_format and name == "command":
-            # CAD 把 `command` 内建 SUBR 的调用目标注册为独立符号槽 `ads-cmd`
-            # （base-function CAD 实测 `(command ...)` → `ads-cmd`），与值引用
-            # 的普通符号槽 `COMMAND`（platform 实测）分离——两者是不同的槽。
             idx = self.symtab.get_or_add("ads-cmd")
+        else:
+            idx = self.symtab.get_or_add(normalize_vla_name(name))
         if (
             self.stub_format
             and not self._module_mode
@@ -698,11 +701,16 @@ class CodeGenerator:
             buf.emit(encode_func(1, self.symtab.get_or_add("set")))
 
     def _emit_push_value(self, buf: BytecodeBuffer, idx: int):
-        """stub PUSH_VALUE：CAD 对槽 0 恒发单字节 `03`（调用后清理占位与
-        槽 0 符号读取统一编码，golden 92 处实测），idx>0 才发 `03 <u16>`。
-        大文件宽格式不受此约束（flags=3 已内联清理，PV[0] 仍 3 字节）。"""
+        """stub PUSH_VALUE：真实符号读取恒发 3 字节 `03 <u16>`（即便 symtab
+        槽为 0——模块区注册的顶层变量在函数体区有独立重复槽，codegen 用
+        symtab[0] 占位，`_patch_usubr_idx` 需按 gvar 槽重映射；单字节 `03`
+        会丢失符号引用信息）。调用后的清理占位 `03` 由 `_emit_subr_cleanup`
+        独立发射（golden 实测清理占位前必有 NIL）。大文件宽格式不受此约束
+        （flags=3 已内联清理，PV[0] 仍 3 字节）。"""
         if self.stub_format and idx == 0 and not self.wide_subr:
-            buf.emit(bytes([PUSH_VALUE]))
+            # 槽 0 无法区分"清理占位"与"真实槽 0 读取"，统一发 3 字节；
+            # 仅 _emit_subr_cleanup 发射单字节清理占位。
+            buf.emit(encode_op_u16(PUSH_VALUE, idx))
         else:
             buf.emit(encode_op_u16(PUSH_VALUE, idx))
 
@@ -844,6 +852,15 @@ class CodeGenerator:
         if self._in_tail_context and self.stub_format:
             buf.emit(encode_op_noarg(POP))
         for i, form in enumerate(node.body):
+            last_in_body = i == len(node.body) - 1
+            if self.stub_format and last_in_body and self._in_tail_context:
+                # 尾 while 的最后一个体语句是 while 的"值"（尾协议由 loop 头
+                # PUSH_NIL 占位 + 体首 POP 处理）：尾上下文发射（setq 补 DUP
+                # 保留值，net/headers @::set-headers-ext `(while ... (setq i ...))`
+                # CAD 实测 `DUP SETQ_G`）。中间语句仍语句上下文（调用值 POP
+                # 丢弃）。单语句体（base-function @::sleep `(princ)`）不受影响。
+                self._emit_expr(buf, form, _tail=True)
+                continue
             self._emit_stmt(buf, form)
             # CAD stub：中间 setq 无 POP（SETQ_G 自身消费栈顶）；尾 while
             # 体各语句不 POP（值留栈，loop 头 PUSH_NIL 占位由 CLEAR_ARGS/
@@ -853,7 +870,7 @@ class CodeGenerator:
             if self.stub_format:
                 if isinstance(form, (Setq, WhileNode, IfNode)):
                     continue
-                if self._in_tail_context:
+                if self._in_tail_context and last_in_body:
                     continue
                 buf.emit(encode_op_noarg(POP))
             elif i < len(node.body) - 1:
@@ -1444,8 +1461,8 @@ class CodeGenerator:
 
     def _emit_al_bind_alist_locals(self, buf: BytecodeBuffer, locals_list: List[str]):
         const = ("LIST", tuple(("SYMBOL", l) for l in locals_list))
-        const_idx = self.symtab.add_constant(const)
         al_idx = self.symtab.get_or_add("_al-bind-alist")
+        const_idx = self.symtab.add_constant(const)
         if self.stub_format:
             buf.emit(encode_op_u16(PUSH_G, const_idx))
             self._emit_func3(buf, 1, al_idx)

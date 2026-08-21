@@ -531,7 +531,44 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     整体错位、加载报参数太少）。
     """
     if not has_top_forms and n_real_funcs <= 1:
-        return seg0
+        # 单函数无 kwote（`-lambda-`）文件：codegen 槽已与资源 symbol_slots 一致，
+        # 重映射反而破坏正确输出（多 kwote PUSH_G 字符串被 `nsyms-1` 回退改错槽、
+        # kwote FUNC 槽错位 → CAD 加载报 `-lambda-` 类型错误），直接原样返回。
+        # 含内嵌 kwote `-lambda-` 的单函数文件（net/reload.lsp 双 kwote 实测）：
+        # `-lambda-` 不参与资源符号注册，按其在所有 `-lambda-` 条目中的序号
+        # 编址（lambda i 槽 = nsyms - i，操作数 = nsyms - 1 - i；与多函数
+        # lam_order 同规则）。codegen 用 symtab 槽（首个 = codegen 末尾，
+        # 与 nsyms-1 通常一致，但多 kwote 时首 lambda 槽 ≠ nsyms-1），须重映射
+        # PUSH_G `-lambda-` 引用。仅重映射 `-lambda-`，不动其它符号。
+        _lam_entries = [
+            (_ei, _e[1]) for _ei, _e in enumerate(symtab.entries)
+            if isinstance(_e, tuple) and len(_e) == 2
+            and _e[0] == "SYMBOL" and str(_e[1]).upper() == "-LAMBDA-"
+        ]
+        if not _lam_entries:
+            return seg0
+        # symtab 中 `-lambda-` 槽 → CAD 槽（nsyms-1-lam_idx），lam_idx 按
+        # symtab 出现序。
+        _lam_slot_map = {_ei: (nsyms - 1 - _i) for _i, (_ei, _) in enumerate(_lam_entries)}
+        from decompiler.fas4_decompiler import Disassembler
+
+        _wide = nsyms > 256
+        try:
+            _insts = Disassembler(short_subr=not _wide).disassemble(
+                seg0, nsyms, sym_count=len(symtab.entries))
+        except Exception:
+            return seg0
+        _out = bytearray()
+        for _inst in _insts:
+            if _inst.op_name == "PUSH_G" and _inst.operands and _inst.size == 3:
+                _i0 = _inst.operands[0]
+                if _i0 in _lam_slot_map:
+                    _ni = _lam_slot_map[_i0]
+                    if 0 <= _ni <= 0xFFFF:
+                        _out += bytes([0x09, _ni & 0xFF, (_ni >> 8) & 0xFF])
+                        continue
+            _out += seg0[_inst.offset : _inst.offset + _inst.size]
+        return bytes(_out)
     offset = 0
     if codegen_nsyms is not None and nsyms > codegen_nsyms:
         _trailing_lam = 0
@@ -607,11 +644,21 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         _res_symbol_slots = []
 
     def _res_slot_of(value: str) -> Optional[int]:
-        """字符串/符号在资源 symbol_slots 中的索引；未找到返回 None。"""
+        """字符串/符号在资源 symbol_slots 中的索引；未找到返回 None。
+
+        返回**最后一个**出现位置：资源流先注册模块区符号（函数名 + 顶层
+        表达式符号），后注册函数体符号（fg 表）。函数体 PUSH_G/PUSH_VALUE
+        引用的是 fg 表槽，符号同时出现在模块区与函数体区时（如顶层变量
+        `@::*offline-mode*` 在 net/uri.lsp 的 symslot[3] 模块区 + [57] 函数
+        体区，nsyms=25）必须取函数体区槽（57 ≥ nsyms → CAD 用 nsyms-1）；
+        取模块区槽（3）会算出 3-1=2 的错误操作数。仅出现在模块区（函数名
+        等）的符号在函数体区无槽位，取末次=模块区槽，语义不变。
+        """
+        _found: Optional[int] = None
         for _i, _v in enumerate(_res_symbol_slots):
             if str(_v) == value:
-                return _i
-        return None
+                _found = _i
+        return _found
 
     def _strip_list_markers(v):
         """symtab 常量结构 → fg 表可比较形式（规范化大小写/INT/REAL/LIST）。
@@ -620,16 +667,37 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         整数为裸 int、实数裸 float；symtab CONST entry 保留 `('LIST', items)`、
         `('SYMBOL', name)`、`('INT', v)` 等标记。递归转换以便结构匹配。
         """
+        if isinstance(v, tuple) and len(v) == 1 and v[0] == "NIL":
+            # fg 表里 NIL（PUSH_NIL 内联）表示为 None（build_mvar_tables
+            # `op 0x00/0x01` → stack.append(None)），symtab 常量保留
+            # `('NIL',)` 标记——结构匹配须归一化为 None，否则 quoted lambda
+            # 含 NIL 参数时 const_map 查不到 → PUSH_G 落 nsyms-1（net/headers
+            # @::set-timeouts `'(lambda () ...)` 的 `('NIL',)` 实测）。
+            return None
         if isinstance(v, tuple) and len(v) == 2:
             if v[0] == "LIST":
                 return tuple(_strip_list_markers(i) for i in v[1])
             if v[0] == "SYMBOL":
-                return ("SYMBOL", str(v[1]).upper())
+                # 符号名统一大写，但 vla-/vlax- 与 VLISP 大小写保留符号保持
+                # 原大小写（与 resource_builder._enc_sym 一致）：fg 表里这些
+                # 符号保留源码大小写（net/headers `(lambda ... vlax-invoke ...)`
+                # 的 vlax-invoke fg 槽小写），结构匹配若大写则 const_map 失配
+                # → PUSH_G 落 nsyms-1。
+                _sn = str(v[1])
+                _lower = _sn.lower()
+                if _lower.startswith(("vla-", "vlax-")):
+                    return ("SYMBOL", _sn)
+                from compiler.resource_builder import _VLISP_CASE_PRESERVE as _vcp
+
+                for _canon in _vcp:
+                    if _lower == _canon.lower():
+                        return ("SYMBOL", _canon)
+                return ("SYMBOL", _sn.upper())
             if v[0] in ("INT", "INT8", "INT32"):
                 return int(v[1])
             if v[0] == "REAL":
                 return float(v[1])
-            if v[0] in ("STRING", "T", "NIL"):
+            if v[0] in ("STRING", "T"):
                 return v
         if isinstance(v, (list, tuple)):
             return tuple(_strip_list_markers(i) for i in v)
@@ -656,7 +724,17 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
 
     def gvar_slot(name: str) -> int:
         # 资源段符号名已大写（_enc_sym），参数名为小写，查找时统一大写。
-        return gvar_map.get(str(name).upper(), nsyms)
+        # 返回 (槽位, 是否命中 gvar 表)。未命中返回 (nsyms, False)——CAD 对
+        # 表外符号（参数/末尾常量等）按 gvar 槽 = nsyms 编址，此时才需减
+        # offset 补偿 `-lambda-` 额外槽；命中 gvar 表的符号其槽位已含
+        # `-lambda-` 偏移，不再减（net/cache.lsp 实测 body 符号 gvar-1、
+        # 表外参数 nsyms-1-offset 并存）。
+        _key = str(name).upper()
+        _v = gvar_map.get(_key)
+        if _v is not None:
+            return _v, True
+        return nsyms, False
+
     def sym_of(idx: int):
         if 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] in ("SYMBOL", "STRING"):
             v = symtab.entries[idx][1]
@@ -721,7 +799,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
         if (multi or top_lambda_args) and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
             arg = cur_args[arg_i]
-            new_idx = gvar_slot(arg) - 1 - offset
+            _gs, _hit = gvar_slot(arg)
+            new_idx = _gs - 1 - (0 if _hit else offset)
             if 0 <= new_idx <= 0xFFFF:
                 out += bytes([0x09, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                 arg_i += 1
@@ -738,7 +817,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 i = [a.upper() for a in cur_args].index(_sym)
                 if 0 <= i < len(cur_args):
                     arg = cur_args[i]
-                    new_idx = gvar_slot(arg) - 1 - offset
+                    _gs, _hit = gvar_slot(arg)
+                    new_idx = _gs - 1 - (0 if _hit else offset)
                     if 0 <= new_idx <= 0xFFFF:
                         out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                         continue
@@ -754,7 +834,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 i = [a.upper() for a in cur_args].index(_sym)
                 if 0 <= i < len(cur_args):
                     arg = cur_args[i]
-                    new_idx = gvar_slot(arg) - 1 - offset
+                    _gs, _hit = gvar_slot(arg)
+                    new_idx = _gs - 1 - (0 if _hit else offset)
                     if 0 <= new_idx <= 0xFFFF:
                         out += bytes([0x06, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
                         continue
@@ -776,7 +857,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             if multi:
                 sym = sym_of(inst.operands[0])
                 if sym and sym in gvar_map:
-                    new_idx = gvar_map[sym] - 1 - offset
+                    new_idx = gvar_map[sym] - 1
                     # 大文件（wide）SETQ_G：目标符号 fg 槽若与 rg 表列表常量
                     # 槽冲突（@lisp_u 的 foreach 变量 ITEM fg[905] vs
                     # :DIALOG 列表 rg[905] → CAD 报 symbolp），fallback 符号槽
@@ -830,10 +911,19 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 and nsyms - len(cur_args) <= idx0 < nsyms
             ):
                 if top_lambda_args:
-                    _pi = idx0 - (nsyms - len(cur_args))
+                    # codegen `-lambda-` 参数读取约定：单 lambda（net/wget，1 个
+                    # 顶层 lambda）用 `nsyms-1-slot`（源码第 i 个参数 → 槽
+                    # nsyms-1-i，uri/outfile/extra-headers → 30/29/28，idx0 越大
+                    # 参数越靠前）；多 lambda（setq-lambda，2 个）用真实符号槽
+                    # `get_or_add`（idx0 - (nsyms-len) 直接索引 cur_args）。
+                    if len(top_lambda_args) == 1:
+                        _pi = (nsyms - 1) - idx0
+                    else:
+                        _pi = idx0 - (nsyms - len(cur_args))
                     _arg = cur_args[_pi] if 0 <= _pi < len(cur_args) else None
                     if _arg:
-                        _ni = gvar_slot(_arg) - 1 - offset
+                        _gs, _hit = gvar_slot(_arg)
+                        _ni = _gs - 1 - (0 if _hit else offset)
                         if 0 <= _ni <= 0xFFFF:
                             out += bytes([0x03] if (inst.op_name == "PUSH_VALUE" and _ni == 0 and not wide) else [0x03, _ni & 0xFF, (_ni >> 8) & 0xFF])
                             continue
@@ -852,7 +942,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     ):
                         gslot = gvar_map.get(str(const_structure[1]).upper())
                         if gslot is not None:
-                            new_idx = gslot - 1 - offset
+                            new_idx = gslot - 1
                         else:
                             # 表外 quoted 单符号：注册于符号槽末尾（gvar 槽 =
                             # nsyms，操作数 = nsyms-1）。旧公式 idx0-nfuncs+1
@@ -863,8 +953,37 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                         fgstruct = _strip_list_markers(const_structure)
                         gslot = const_map.get(fgstruct)
                         if gslot is not None:
-                            new_idx = gslot - 1 - offset
+                            new_idx = gslot - 1
                         else:
+                            # `_al-bind-alist` 的 locals 常量 `(quote (loc1 ...))`：
+                            # 常量 gvar 槽 = `_al-bind-alist` 槽 + 1（t11_localvars
+                            # CAD 实测 fg[6]=_al-bind-alist、常量 PUSH_G=6；net/proxy
+                            # fg[32]=_al-bind-alist、常量 PUSH_G=32），即 PUSH_G
+                            # 操作数 = `_al-bind-alist` 槽。该常量仅在资源流注册
+                            # 位置（紧随 `_al-bind-alist`）有意义；build_mvar_tables
+                            # 对内嵌 `-lambda-` 的 DEFCODE 会消耗常量，const_map
+                            # 查不到 → 需按此关系编址，否则 `nsyms-1` 回退偏移 2
+                            # （net/proxy.lsp 实测 OURS 34 vs CAD 32）。
+                            if (
+                                isinstance(const_structure, tuple)
+                                and len(const_structure) == 2
+                                and const_structure[0] == "LIST"
+                                and isinstance(const_structure[1], (list, tuple))
+                                and all(
+                                    isinstance(x, tuple)
+                                    and len(x) == 2
+                                    and x[0] == "SYMBOL"
+                                    for x in const_structure[1]
+                                )
+                            ):
+                                _al_slot = gvar_map.get("_AL-BIND-ALIST")
+                                if _al_slot is not None:
+                                    new_idx = _al_slot - offset
+                                    if 0 <= new_idx <= 0xFFFF:
+                                        out += bytes(
+                                            [0x09, new_idx & 0xFF, (new_idx >> 8) & 0xFF]
+                                        )
+                                        continue
                             # 未命中 fg 的常量结构（deferred 字节区间引用，
                             # kernel 大文件 `_al-bind-alist '(dir)` 等实测）：
                             # CAD 注册于符号槽末尾，操作数 = nsyms-1
@@ -879,7 +998,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     strval = symtab.entries[idx0][1]
                     gkey = str(strval)  # 字符串大小写敏感（`"date"`/`"DATE"` 异槽）
                     if gkey in str_map:
-                        new_idx = str_map[gkey] - 1 - offset
+                        new_idx = str_map[gkey] - 1
                     else:
                         # 表外字符串：优先用资源 symbol_slots 真实索引（platform-api
                         # `"platform"` 在 nsyms 内时 CAD 用真实槽），但该索引
@@ -901,7 +1020,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     # symtab 槽与资源段 gvar 槽错位，CAD 报 `函数错误: :DIALOG`。
                     _sym = sym_of(idx0)
                     if _sym and _sym in gvar_map:
-                        new_idx = gvar_map[_sym] - 1 - offset
+                        new_idx = gvar_map[_sym] - 1
                     else:
                         # 不在 GVARINIT 表（fg）的符号（如 quoted 数据里的特殊
                         # 形式 `setq`/`if`/`lambda` 等，@lisp_u safe-form-p 立即
@@ -923,7 +1042,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     # 保留完整 float（`(/ 1.0 24.0)`=0.041666666666666664 vs
                     # 资源 `'0.0416666666666667'`），直接 float 比较会失配 → 越界。
                     _ridx = real_map.get(_real_fmt(float(symtab.entries[idx0][1])))
-                    new_idx = (_ridx - 1 - offset) if _ridx is not None else None
+                    new_idx = (_ridx - 1) if _ridx is not None else None
                 if new_idx is not None and 0 <= new_idx <= 0xFFFF:
                     if inst.op_name == "PUSH_VALUE" and new_idx == 0 and not wide:
                         out += bytes([0x03])
@@ -936,7 +1055,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             flags = inst.operands[2] if len(inst.operands) >= 3 else 3
             sym = sym_of(idx)
             if sym and sym in gvar_map:
-                new_idx = gvar_map[sym] - 1 - offset
+                new_idx = gvar_map[sym] - 1
                 out += _subr_bytes(0x35, argc, new_idx, flags, wide=wide)
             elif sym and 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
                 # 符号槽末尾（超出 gvar 表，fg 仅 nsyms 项）的符号：CAD 按
@@ -957,7 +1076,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             flags = inst.operands[2] if len(inst.operands) >= 3 else 3
             sym = sym_of(idx)
             if sym and sym in gvar_map:
-                new_idx = gvar_map[sym] - 1 - offset
+                new_idx = gvar_map[sym] - 1
                 out += _subr_bytes(0x51, argc, new_idx, flags, wide=wide)
             elif sym and 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
                 # 同 USUBR：符号槽末尾（超出 gvar 表）的 FUNC 目标 gvar 槽 = nsyms。
@@ -2200,11 +2319,14 @@ def cmd_compile(
         _syms = []
         _lam_seen = set()  # 跨 lambda 去重（strcat 出现在两个 lambda 体只注册一次）
         for _sym, _lam in reversed(top_lambda_binds):
+            from compiler.ast_nodes import Call as _TLCall
+
             _lam_col = _SeenList()
             for _be in _lam.body:
                 CadSymbolCollector()._collect_byteorder(_be, _lam_col, set())
             _fwd = [n for n, _ in _lam_col if n != "__kwote_end__" and n != "kwote"]
-            # 最后调用名（strcat）移末尾。
+            # 最后调用名 = forward 末尾的符号（如 strcat，pop 掉字符串/参数）。
+            # 兼容 setq-lambda（vlx 体 strcat 是 setq 值、pop 后得 strcat）。
             _tc = None
             while _fwd and (
                 not isinstance(_fwd[-1], str) or str(_fwd[-1]).startswith('"')
@@ -2214,14 +2336,31 @@ def cmd_compile(
             if _fwd and isinstance(_fwd[-1], str) and not str(_fwd[-1]).startswith('"'):
                 _tc = _fwd[-1]
                 _fwd = _fwd[:-1]
+            # 真参数 = `/` 之前；`/` 后的局部变量照常注册为体符号。
+            _lam_params = _lam.args
+            if "/" in _lam_params:
+                _lam_params = _lam_params[:_lam_params.index("/")]
             for _n in reversed(_fwd):
-                if isinstance(_n, str) and _n in _lam.args:
+                if isinstance(_n, str) and _n in _lam_params:
                     continue
                 if isinstance(_n, str) and _n in _lam_seen:
                     continue
                 _lam_seen.add(_n)
                 _syms.append(_n)
-            for _a in reversed(_lam.args):
+            # `/ 局部变量`：注入 `_al-bind-alist` 助手 + locals 常量
+            # （net/wget CAD 实测 `_al-bind-alist` 在 body 后、参数前）。
+            _lam_locals = []
+            if "/" in _lam.args:
+                _lam_locals = _lam.args[_lam.args.index("/") + 1 :]
+            if _lam_locals:
+                if "_al-bind-alist" not in _lam_seen:
+                    _lam_seen.add("_al-bind-alist")
+                    _syms.append("_al-bind-alist")
+                _lc = tuple(("SYMBOL", l) for l in _lam_locals)
+                if _lc not in _lam_seen:
+                    _lam_seen.add(_lc)
+                    _syms.append(("__const__", ("LIST", _lc)))
+            for _a in reversed(_lam_params):
                 if _a not in _lam_seen:
                     _lam_seen.add(_a)
                     _syms.append(_a)
@@ -2419,7 +2558,7 @@ def cmd_compile(
                             lambda_args_by_func=lambda_args_by_func,
                             has_top_forms=bool(other_forms),
                             n_real_funcs=len(defun_forms),
-                            top_lambda_args=[list(la.args) for _, la in top_lambda_binds]
+                            top_lambda_args=[_lambda_real_args(la) for _, la in top_lambda_binds]
                             if top_lambda_binds and not defun_forms else None,
                             top_lambda_offsets=_top_lambda_offsets)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。

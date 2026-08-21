@@ -479,16 +479,16 @@ class CadSymbolCollector:
             # 函数名）之后：base-function getf 实测 `[CADR, VL-MEMBER-IF,
             # kwote, VL-PRIN1]`，i18n load-mt 实测 `[REVERSE, @::WITH-FILE-
             # LINES, kwote, ...]`（kwote 不随其它符号逆序沉底）。
-            _kwote_blocks = []  # (块内 items 保持收集序, 调用者名)
+            _kwote_blocks = []  # (kwote 项, 块体逆序, 调用者名)
             _rest = []
             _pos = 0
             while _pos < len(kept):
                 _x = kept[_pos]
                 if _x[0] == "kwote":
-                    _items = [_x]
                     _pos += 1
+                    _body = []
                     while _pos < len(kept) and kept[_pos][0] != "__kwote_end__":
-                        _items.append(kept[_pos])
+                        _body.append(kept[_pos])
                         _pos += 1
                     _pos += 1  # 跳过 __kwote_end__
                     _caller = None
@@ -499,21 +499,27 @@ class CadSymbolCollector:
                         ):
                             _caller = _c[0]
                             break
-                    _kwote_blocks.append((_items, _caller))
+                    # kwote lambda 体符号逆序注册（与其他函数体符号一致；
+                    # net/proxy.lsp 双函数 kwote 实测 `VL-STRING-SEARCH @proxy.exe
+                    # vlax-release-object ...` 逆序，net/reload 单函数同）。
+                    _kwote_blocks.append((_x, list(reversed(_body)), _caller))
                 else:
                     _rest.append(_x)
                     _pos += 1
             _rev = list(reversed(_rest))
-            for _items, _caller in _kwote_blocks:
+            for _kw, _body, _caller in reversed(_kwote_blocks):
                 if _caller is not None:
                     for _j, (_m, _) in enumerate(_rev):
                         if _m == _caller:
-                            _rev = _rev[: _j + 1] + _items + _rev[_j + 1 :]
+                            _rev = _rev[: _j + 1] + [_kw] + _body + _rev[_j + 1 :]
                             break
                     else:
-                        _rev = _items + _rev
+                        _rev = [_kw] + _body + _rev
                 else:
-                    _rev = _items + _rev
+                    # kwote 块无后续调用者（调用者已被跨函数去重，net/cache
+                    # @::uri-safe 的 vl-catch-all-apply 被前一函数占用）：CAD
+                    # 把 `kwote` 放在块体之前（实测 [kwote, @::uri]）。
+                    _rev = [_kw] + _body + _rev
             for name, force in _rev:
                 if str(name).lower() == "t":
                     if i != t_last:
@@ -548,7 +554,16 @@ class CadSymbolCollector:
                 # 双槽（i18n LOC-FILE@108+122），unused 局部仅 const 槽
                 # （checksum.lsp 未使用的 `checksum` CAD 无独立槽实测，此前
                 # `not in claimed_in_body` 反向注册 unused → nsyms +1）。
-                if loc in claimed_in_body and loc not in self.shared and loc not in self._name_set:
+                # 注意：claimed_in_body 的局部由**引用它的函数**的函数体组注册
+                # （CAD 槽在所属函数体组内），此处不重复注册——否则跨函数共享
+                # 局部（net/cache 的 `result` 被 3 个函数声明、仅 cache-store
+                # 体 `setq result` 引用）会在先处理的声明函数（逆序首个 =
+                # uri-safe）提前注册，错位到函数体组前。unused 局部（checksum
+                # 的 `checksum`）同样不注册（CAD 无独立槽）。故仅当局部在
+                # **当前函数体**引用（`loc in 本函数 kept`）且未被函数体组
+                # 注册时才 add——实际已由函数体组注册，此处为安全 no-op。
+                _kept_names = {n for n, _ in kept}
+                if loc in _kept_names and loc not in self.shared and loc not in self._name_set:
                     self.add(loc)
             for arg in reversed(f.args):
                 if arg in self.shared:
@@ -577,20 +592,24 @@ class CadSymbolCollector:
         # lambda）仍走全局逆序（test-cond/setcmp/set5/setqa byte-identity）。
         from compiler.ast_nodes import LambdaNode as _TLN, QuotedExpr as _TQ
 
+        def _is_top_lam(v):
+            # 顶层 `(set/setq 'sym (lambda ...))`：lambda 可为 kwote QuotedExpr
+            # 或裸 LambdaNode（net/wget `(set '@::wget (lambda ...))` AST 实测
+            # arg1 是裸 LambdaNode，kwote=False；cli `_lambda_of` 两种都认）。
+            return isinstance(v, _TLN) or (isinstance(v, _TQ) and isinstance(v.expr, _TLN))
+
         _has_top_lam = any(
-            isinstance(_f, Setq)
-            and any(isinstance(_v, _TQ) and _v.kwote and isinstance(_v.expr, _TLN)
-                    for _t, _v in _f.pairs)
+            (isinstance(_f, Setq)
+             and any(isinstance(_t, Symbol) and _is_top_lam(_v) for _t, _v in _f.pairs))
             or (isinstance(_f, Call) and _f.name == "set" and len(_f.args) == 2
-                and isinstance(_f.args[1], _TQ) and _f.args[1].kwote
-                and isinstance(_f.args[1].expr, _TLN))
+                and _is_top_lam(_f.args[1]))
             for _f in others
         )
         if program and defuns:
             self._register_module(program)
             self.module_reg_count = len(self.names)
         elif _has_top_lam:
-            self._register_module(program)
+            self._register_module(program, _skip_lam_bodies=True)
             self.module_reg_count = len(self.names)
         elif others:
             # 纯顶层文件：顶层 refs 按字节码引用序收集后全局逆序注册。
@@ -632,17 +651,20 @@ class CadSymbolCollector:
         from compiler.ast_nodes import LambdaNode as _LN, QuotedExpr as _Q
 
         _lam_seen = set()  # 3b 内部去重：跨 lambda 的重复符号（strcat）只注册一次
-        for form in reversed(others) if _has_top_lam else ():
+        # 仅**纯顶层**（无 defun）文件走第二区 `-lambda-` 处理（net/wget/
+        # setq-lambda.lsp）；混合文件（platform 等，有 defun）的顶层 setq-lambda
+        # 是引用数据，其体符号已在模块注册段，不在此重复处理。
+        for form in reversed(others) if (_has_top_lam and not defuns) else ():
             _lam = None
             if isinstance(form, Setq):
                 for _t, _v in form.pairs:
-                    if isinstance(_v, _Q) and _v.kwote and isinstance(_v.expr, _LN):
-                        _lam = _v.expr
+                    if isinstance(_v, _LN) or (isinstance(_v, _Q) and isinstance(_v.expr, _LN)):
+                        _lam = _v if isinstance(_v, _LN) else _v.expr
                         break
             elif isinstance(form, Call) and form.name == "set" and len(form.args) == 2:
                 _v1 = form.args[1]
-                if isinstance(_v1, _Q) and _v1.kwote and isinstance(_v1.expr, _LN):
-                    _lam = _v1.expr
+                if isinstance(_v1, _LN) or (isinstance(_v1, _Q) and isinstance(_v1.expr, _LN)):
+                    _lam = _v1 if isinstance(_v1, _LN) else _v1.expr
             if _lam is None:
                 continue
             # CAD `-lambda-` 体符号顺序（setq-lambda.lsp golden 实测 @::vlx 体
@@ -654,7 +676,10 @@ class CadSymbolCollector:
             for expr in _lam.body:
                 self._collect_byteorder(expr, refs, set())
             _fwd = [(n, f) for n, f in refs if n != "__kwote_end__" and n != "kwote"]
-            # 最后调用名 = forward 末尾的符号（如 strcat，非字符串/参数）。
+            # 最后调用名 = forward 末尾的符号（如 strcat，pop 掉字符串/参数）。
+            # setq-lambda vlx 体以 `str-vlx` 符号结尾但 strcat 是其 setq 值，
+            # pop 掉参数后得 strcat；net/wget 体以 `outfile` 符号结尾、pop 后
+            # 得 null（if 条件函数）——用 pop 策略兼容 setq-lambda。
             _tail_call = None
             while _fwd and (
                 not isinstance(_fwd[-1][0], str)
@@ -666,22 +691,38 @@ class CadSymbolCollector:
                 _tail_call = _fwd[-1][0]
                 _fwd = _fwd[:-1]
             # 逆序注册体符号（去 strcat）。
+            _lam_real_params = set(_lam.args)
+            if "/" in _lam.args:
+                _lam_real_params = set(_lam.args[: _lam.args.index("/")])
             for name, force in reversed(_fwd):
-                if isinstance(name, str) and name in _lam.args:
-                    continue  # 参数最后注册
+                if isinstance(name, str) and name in _lam_real_params:
+                    continue  # 真参数最后注册（`/` 后的局部变量照常注册为体符号）
                 if isinstance(name, str) and name in _lam_seen:
                     continue
                 _lam_seen.add(name)
                 self.add(name, force=True)
-            # 参数（逆序）。
-            for arg in reversed(_lam.args):
+            # 参数（逆序）：`/` 分隔符之后是 `/ 局部变量`（走 `_al-bind-alist`
+            # 绑定，不注册为参数槽；`/` 本身也不注册——net/wget
+            # `(lambda (uri outfile extra-headers / cmd headers) ...)` CAD 实测
+            # 只注册 URI/OUTFILE/EXTRA-HEADERS，CMD/HEADERS 由函数体 + const 注册）。
+            _lam_params = _lam.args
+            _lam_locals = []
+            if "/" in _lam_params:
+                _lam_params = _lam_params[:_lam_params.index("/")]
+                _lam_locals = _lam.args[_lam.args.index("/") + 1 :]
+            # `/ 局部变量`：注入 `_al-bind-alist` 助手 + `(quote (locals...))`
+            # 常量（net/wget CAD 实测 `_al-bind-alist` 在 body 后、参数前，
+            # const 紧随其后），与 defun locals 同协议。
+            if _lam_locals:
+                self.add("_al-bind-alist")
+                self.add((CONST_MARK, ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))))
+            for arg in reversed(_lam_params):
                 if arg not in self._name_set:
                     self.add(arg)
             # 最后调用名（strcat，跨 lambda 去重）。
             if _tail_call is not None and _tail_call not in _lam_seen:
                 _lam_seen.add(_tail_call)
-                self.add(_tail_call, force=True)
-        #    递归函数名：多次自身调用共享同一个重复槽（t03 递归两次仅 1 个重复
+                self.add(_tail_call, force=True)        #    递归函数名：多次自身调用共享同一个重复槽（t03 递归两次仅 1 个重复
         #    FIB 槽；fact 递归一次 1 个重复槽）。
         for f in reversed(defuns):
             all_args = f.args + f.optional + ([f.rest] if f.rest else [])
@@ -697,7 +738,52 @@ class CadSymbolCollector:
                 deduped.append((name, force))
                 if force:
                     seen_forced.add(name)
-            for name, force in reversed(deduped):
+            # CAD 对 kwote 块（kwote + lambda 体）：lambda 体符号按收集序逆序
+            # 注册（与其他函数体符号一致），`kwote` 符号插到调用者之后而非随
+            # 体逆序沉底（net/reload.lsp 单函数双 kwote 实测：
+            # `@::EVENT-EMIT LIST MODULE-RELOADED @::LOAD-MODULE
+            # VL-CATCH-ALL-APPLY kwote RESULT ...`——两个 lambda 体逆序分列
+            # 调用者前后，kwote 在调用者 VL-CATCH-ALL-APPLY 之后）。
+            _kwote_blocks = []  # (kwote 项, 调用者名)
+            _rest = []
+            _pos = 0
+            while _pos < len(deduped):
+                _x = deduped[_pos]
+                if _x[0] == "kwote":
+                    _pos += 1
+                    _body = []
+                    while _pos < len(deduped) and deduped[_pos][0] != "__kwote_end__":
+                        _body.append(deduped[_pos])
+                        _pos += 1
+                    _pos += 1  # 跳过 __kwote_end__
+                    _caller = None
+                    for _c in deduped[_pos:]:
+                        if not str(_c[0]).startswith(('"', "'", "(")) and str(_c[0]) not in (
+                            "nil",
+                            "T",
+                        ):
+                            _caller = _c[0]
+                            break
+                    # lambda 体符号逆序（与其他函数体符号一致）
+                    _kwote_blocks.append((_x, list(reversed(_body)), _caller))
+                else:
+                    _rest.append(_x)
+                    _pos += 1
+            _rev = list(reversed(_rest))
+            # kwote 块：体逆序注册（kwote 之后的顺序），kwote 插到调用者之后。
+            # 多块共享调用者时（net/reload 两个 vl-catch-all-apply），块按
+            # 源码逆序插入，kwote 去重后位于调用者之后、最后一个块的体之前。
+            for _kw, _body, _caller in reversed(_kwote_blocks):
+                if _caller is not None:
+                    for _j, (_m, _) in enumerate(_rev):
+                        if _m == _caller:
+                            _rev = _rev[: _j + 1] + [_kw] + _body + _rev[_j + 1 :]
+                            break
+                    else:
+                        _rev = [_kw] + _body + _rev
+                else:
+                    _rev = _body + _rev
+            for name, force in _rev:
                 # kwote 块结束标记（`__kwote_end__`）仅作收集分隔，不注册符号。
                 if name == "__kwote_end__":
                     continue
@@ -751,7 +837,7 @@ class CadSymbolCollector:
                         break
         return last
 
-    def _register_module(self, program):
+    def _register_module(self, program, _skip_lam_bodies: bool = False):
         """模块注册域：按源码逆序逐 form 交错注册（defun 与顶层表达式均参与）。
 
         defun → 函数名；顶层 → _collect_byteorder 字节码引用符号（逆序注册）。
@@ -796,7 +882,41 @@ class CadSymbolCollector:
                 r.update(form.use or [])
                 r.update(form.export or [])
             else:
-                self._form_read_target(form, r, t, set())
+                # 顶层 `(set/setq 'sym (lambda ...))`：**纯顶层文件**（无 defun）
+                # 时 lambda 体符号不进模块注册段（由第二区 `_collect_forward`
+                # 单独收集，net/wget 实测模块区仅 SET/@::WGET/#-SBCL）；混合
+                # 文件（有 defun，platform 等）的顶层 lambda 是引用数据，体
+                # 符号照常在模块注册段。
+                from compiler.ast_nodes import (
+                    LambdaNode as _ModLN,
+                    QuotedExpr as _ModQE,
+                )
+
+                _skip_lam = False
+                if _skip_lam_bodies:
+                    if isinstance(form, Setq):
+                        for _t, _v in form.pairs:
+                            if isinstance(_t, Symbol) and (
+                                isinstance(_v, _ModLN)
+                                or (isinstance(_v, _ModQE) and isinstance(_v.expr, _ModLN))
+                            ):
+                                _skip_lam = True
+                                t.add(_t.name)
+                                break
+                    elif isinstance(form, Call) and form.name == "set" and len(form.args) == 2:
+                        _t0 = form.args[0]
+                        _v1 = form.args[1]
+                        if isinstance(_v1, _ModLN) or (
+                            isinstance(_v1, _ModQE) and isinstance(_v1.expr, _ModLN)
+                        ):
+                            _skip_lam = True
+                            r.add("set")
+                            if isinstance(_t0, _ModQE) and isinstance(_t0.expr, Symbol):
+                                t.add(_t0.expr.name)
+                if _skip_lam:
+                    pass
+                else:
+                    self._form_read_target(form, r, t, set())
             reads.append(r)
             targets.append(t)
         # 符号归属：setq 目标优先 → 最早赋值的 form；否则 → 最早读取的 form。
@@ -1033,6 +1153,16 @@ class CadSymbolCollector:
             if not self._seen(out, 'in-package'):
                 out.append(('in-package', False))
         elif isinstance(node, Call):
+            if node.name == "command":
+                # CAD 把 `(command a b ...)` 编译为每参数独立 `FUNC 1 <ads-cmd>`
+                # 调用，符号收集序 = 每参数后紧跟 ads-cmd（net/wget `(command
+                # "shell" (strcat ...))` 实测 forward = shell, ads-cmd, 其余；
+                # 逆序注册 = 其余, ads-cmd, shell）。故 args[0] 后立即收 ads-cmd。
+                for _ai, _a in enumerate(node.args):
+                    self._collect_byteorder(_a, out, arg_names, in_quote)
+                    if _ai == 0 and not self._seen(out, "ads-cmd"):
+                        out.append(("ads-cmd", False))
+                return
             for a in node.args:
                 self._collect_byteorder(a, out, arg_names, in_quote)
             if node.name in ('and', 'or'):
@@ -1153,9 +1283,15 @@ class CadSymbolCollector:
                     if "/" in node.expr.args:
                         _lam_locals = node.expr.args[node.expr.args.index("/") + 1 :]
                     if _lam_locals:
+                        # locals 常量先注册、`_al-bind-alist` 助手随后——kwote 块
+                        # 收集体逆序注册（net/proxy.lsp CAD 实测槽 33
+                        # `_al-bind-alist` 在槽 34-37 locals 之前，0x56 块在
+                        # `39 04 00` const 之前）。
                         _lc = ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))
                         if not self._seen(out, (CONST_MARK, _lc)):
                             out.append(((CONST_MARK, _lc), False))
+                        if not self._seen(out, "_al-bind-alist"):
+                            out.append(("_al-bind-alist", False))
                     for expr in node.expr.body:
                         self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
                 else:

@@ -65,18 +65,64 @@ def decrypt_stream(encrypted: bytes, key: bytes) -> bytes:
 
 
 def find_key(data: bytes) -> bytes | None:
-    """通过 crunch 标记向前查找 XOR 密钥。"""
+    """通过 crunch 标记向前查找 XOR 密钥。
+
+    密钥长度字节（lbp 处的 key_len）可被多个 rlen 同时满足（log.fas 实测
+    rlen=8 与 rlen=9 均成立，但只有 rlen=9 能解出合法的 seg1 模块头
+    `14 01 01 01 00`）。collect 全部候选，用「解密后是否以模块头开头」
+    判优：唯一命中合法头的候选即为真密钥（CAD 产物实测）。仅当无候选
+    能解出模块头时才回退到第一个候选（兼容无法验证的场景）。
+    """
     pos = data.find(CRUNCH_MARKER)
     if pos < 0:
         return None
+    candidates: list = []
     for rlen in range(6, 12):
         key_start = pos - rlen
         key_end = pos + len(CRUNCH_MARKER)
         key_len = key_end - key_start
         lbp = key_start - 1
         if lbp >= 0 and data[lbp] == key_len:
-            return data[key_start:key_end]
-    return None
+            candidates.append(data[key_start:key_end])
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        # 从 FAS4 头部解析 seg1 加密数据（`<nsyms> $` 后为 seg0，段尾
+        # `$\r\n<seg1_size> <items> $` 后接加密资源段）。用 seg1_size
+        # 精确定界，避免把密钥/尾部误算进解密输入。
+        enc = _extract_seg1_encrypted(data)
+        if enc:
+            for key in candidates:
+                dec = decrypt_stream(enc, key)
+                if dec[:5] == b"\x14\x01\x01\x01\x00":
+                    return key
+    return candidates[0]
+
+
+def _extract_seg1_encrypted(data: bytes) -> bytes | None:
+    """提取 FAS4 的加密 seg1 资源段（用于密钥候选判优）。"""
+    import struct as _struct
+
+    hpos, hdr = find_fas4_magic(data)
+    if hpos is None:
+        return None
+    after = hpos + len(hdr)
+    size_end = data.find(b"\r\n", after)
+    if size_end < 0:
+        return None
+    total_size = int(data[after:size_end])
+    payload_start = size_end + 2
+    m = re.match(rb"(\d+) \$", data[payload_start : payload_start + total_size])
+    if not m:
+        return None
+    after_payload = payload_start + total_size
+    rest = data[after_payload:]
+    m2 = re.search(rb"(\d+) (\d+) \$", rest)
+    if not m2:
+        return None
+    seg1_size = int(m2.group(1))
+    seg1_start = after_payload + m2.end()
+    return data[seg1_start : seg1_start + seg1_size]
 
 
 # ─── 文件解析 ──────────────────────────────────────────────────────────────────
@@ -106,8 +152,14 @@ def parse_fas4(filepath: str, decrypt_seg1: bool = True) -> dict:
     size_end = data.find(b"\r\n", after)
     total_size = int(data[after:size_end])
     payload_start = size_end + 2
+    # 纯顶层（无 defun）文件 seg0 为空：`total_size=1`、payload 仅 `{nsyms} $`
+    # （CAD set5/setcmp/bootstrap 实测 `1 $ $`），seg1 头紧随其后的 `$\r\n`。
+    # 此时 total_size 无法覆盖 `{nsyms} $` 头，payload 止于首个 `$`。
     payload = data[payload_start : payload_start + total_size]
-
+    if total_size <= 8 and b"\x16\x24\r\n" not in payload:
+        _dollar = data.find(b"$", payload_start)
+        if 0 < _dollar - payload_start < 16:
+            payload = data[payload_start : _dollar + 1]
     m = re.match(rb"(\d+) \$", payload)
     if not m:
         raise ValueError("Cannot find nsyms header")

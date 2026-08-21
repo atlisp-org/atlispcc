@@ -457,14 +457,43 @@ class ResourceBuilder:
                 out += self._func_ranges_bytes(func_offsets, total_size or 1)
                 _lam_syms = list(top_lambda_body_syms or [])
                 _sym_buf = bytearray()
-                for _bs in _lam_syms:
+                _i = 0
+                while _i < len(_lam_syms):
+                    _bs = _lam_syms[_i]
                     if isinstance(_bs, str) and _bs.startswith('"'):
                         if _sym_buf:
                             out += b"\x5b" + bytes(_sym_buf) + b"\x00"
                             _sym_buf = bytearray()
-                        out += b"\x55\x01\x00" + res_u16(len(_bs) - 2) + self._enc(_bs[1:-1])
+                        # 合并连续 STRING 为单个 55 块（net/wget CAD 实测
+                        # `55 02 " 2>/dev/null" " "`，与符号区规则一致）。
+                        _strs = [_bs]
+                        _j = _i + 1
+                        while _j < len(_lam_syms) and isinstance(_lam_syms[_j], str) and _lam_syms[_j].startswith('"'):
+                            _strs.append(_lam_syms[_j])
+                            _j += 1
+                        out += b"\x55" + res_u16(len(_strs))
+                        for _sv in _strs:
+                            _enc = self._enc(_sv[1:-1])
+                            out += res_u16(len(_enc)) + _enc
+                        _i = _j
+                    elif isinstance(_bs, tuple) and len(_bs) == 2 and _bs[0] == "__const__":
+                        if _sym_buf:
+                            out += b"\x5b" + bytes(_sym_buf) + b"\x00"
+                            _sym_buf = bytearray()
+                        out += self._const_bytes(_bs[1])
+                        _i += 1
+                    elif _bs == "_al-bind-alist" or _bs == "ads-cmd":
+                        # `/ 局部变量` 助手 / `command` 调用目标：保留大小写、
+                        # 独立 0x56 单符号块（net/wget CAD 实测
+                        # `56 _al-bind-alist` / `56 ads-cmd`）。
+                        if _sym_buf:
+                            out += b"\x5b" + bytes(_sym_buf) + b"\x00"
+                            _sym_buf = bytearray()
+                        out += b"\x56" + self._enc(_bs) + b"\x00\x00"
+                        _i += 1
                     else:
                         _sym_buf += self._enc_sym(_bs) + b"\x00"
+                        _i += 1
                 if _sym_buf:
                     out += b"\x5b" + bytes(_sym_buf) + b"\x00"
                 out += b"\x5c\x00\x00" + res_gvar_init(0, len(_lam_syms) + 1) + b"\x0a"
@@ -500,7 +529,16 @@ class ResourceBuilder:
         func_names_all = list(func_offsets.keys()) if func_offsets else [self._entry_name(entries[0])]
         if stub_format:
             # kwote 内嵌 `-lambda-`：不作为模块注册函数名，仅参与函数目录。
-            module_func_names = [k for k in func_names_all if func_offsets.get(k) not in nested_offs]
+            # 纯顶层 `(set/setq 'sym (lambda ...))` 提升的 `-lambda-` 同样不
+            # 算模块函数名（DEFCODE 区注册，net/wget 实测模块段仅顶层符号
+            # SET/@::WGET/#-SBCL，`-lambda-` 使 module_entries 多 1 → FINDFILE
+            # 误入模块段 → 函数体段错位）。
+            module_func_names = [
+                k
+                for k in func_names_all
+                if func_offsets.get(k) not in nested_offs
+                and not (_only_lambda_keys and ResourceBuilder._is_lambda_key(k))
+            ]
             func_names_all = module_func_names
             # 模块注册：全部 defun 名 + 顶层表达式符号（CAD @lisp_u 实测
             # 模块注册 1339 个名字/544 函数，非"尾块 48"）。module_func_count
@@ -557,7 +595,17 @@ class ResourceBuilder:
                             fn_bytes = bytearray()
                         out += b"\x56" + self._enc("vl-ACAD-defun") + b"\x00\x00"
                         _vl_first_cmd = None
-                    fn_bytes += self._enc_sym(entry_val) + b"\x00"
+                    if str(entry_val) in ("_al-bind-alist", "kwote", "ads-cmd"):
+                        # CAD 模块注册：`kwote` 机制符号保留大小写、独立 0x56
+                        # 单符号块（setup.lsp CAD 实测 `5b ...MAPCAR 00 00
+                        # 56 kwote 00 00 5b @::*URIS*...`）。与函数体符号区
+                        # （`_al-bind-alist`/`kwote` 同规则）一致。
+                        if fn_bytes:
+                            out += b"\x5b" + bytes(fn_bytes) + b"\x00"
+                            fn_bytes = bytearray()
+                        out += b"\x56" + self._enc(entry_val) + b"\x00\x00"
+                    else:
+                        fn_bytes += self._enc_sym(entry_val) + b"\x00"
                     mi += 1
                 elif entry_type == "STRING":
                     if fn_bytes:
@@ -618,7 +666,7 @@ class ResourceBuilder:
                         # （ref i18n-cad 实测），不进符号块。
                         i += 1
                         continue
-                    if str(entry_val) in ("_al-bind-alist", "kwote"):
+                    if str(entry_val) in ("_al-bind-alist", "kwote", "ads-cmd"):
                         # CAD `/ 局部变量` 助手与 kwote 机制符号：保留大小写、
                         # 独立 0x56 单符号块（t11_localvars / i18n-cad 实测）。
                         if symbol_bytes:

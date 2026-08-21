@@ -316,10 +316,87 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   顶层 progn 语句语义、纯顶层 REAL 槽引用、未使用 / 局部变量槽五类后，
   **67/67 全部通过编译产物验证**，**byte-identity 13/67**（新增 @lisp-env /
   constants / net-checksum / platform）。
-- **9 个 byte-identical**：platform / version / funlib-download / funlib-record /
-  net-cache / net-http / net-mid / net-registry / sub-system-config-config
-  （nsyms + seg0 + resource_items 全一致）
-- **58 个 DIFF**：多数 nsyms ±1（符号槽序差异），少数大差异
+- **2026-08-21 更新**：新增 net-uri / net-reload 两个 byte-identical（15/67），
+  关键修复：
+  1. **`_res_slot_of` 取末次出现**（net/uri）：符号同时注册于模块区与函数体区
+     时（顶层变量 `@::*offline-mode*` symslot[3] 模块区 + [57] 函数体区），
+     函数体 PUSH_VALUE 引用须取函数体区槽（≥ nsyms → nsyms-1）；此前取模块
+     区槽（3）算出 2 的错误操作数。
+  2. **`find_key` 多候选密钥判优**（log.fas）：密钥长度字节可被多个 rlen 满足
+     （rlen=8 与 9 均成立），按「解密后是否以 `14 01 01 01 00` 模块头开头」
+     判优选真密钥；此前取首个候选解出乱码资源。
+  3. **模块注册 kwote 0x56 块**（setup.lsp）：模块注册段连续 SYMBOL 块中遇
+     `kwote` 须独立 `56 kwote 00 00` 单块（与函数体符号区同规则）。
+  4. **单函数 kwote 块体逆序 + `-lambda-` 槽重映射**（net/reload）：单函数
+     双 kwote 的 lambda 体符号按收集序逆序注册、`kwote` 插到调用者之后；
+     `-lambda-` 槽按 `nsyms-1-lam_idx` 编址（`_patch_usubr_idx` 对单函数
+     kwote 文件仅重映射 PUSH_G `-lambda-` 引用）。
+- **2026-08-21 增补**：新增 net/proxy 一个 byte-identical（19/67，累计含
+  init/sequence / net/progress / net/http / net/registry / net/mid 等），关键修复：
+  1. **多函数 kwote 块体逆序**（net/proxy，`cad_symbols.py`）：函数体符号逆序
+     注册的路径（`_collect_single` 与多函数 `_collect_byteorder` 两处）对
+     kwote 块统一按「kwote + 块体**逆序**」重构（`_kwote_blocks` 存
+     `(kwote 项, 块体逆序, 调用者名)`，`reversed()` 迭代插入）；`kwote` 插到
+     调用者之后、块体逆序随其后（net/proxy 双 kwote 实测 `VL-STRING-SEARCH
+     @proxy.exe vlax-release-object RESULT ReadAll STDOUT vlax-get StdOut
+     EXEC vlax-invoke tasklist Exec SHELL vlax-get-or-create-object
+     WScript.Shell`）。
+  2. **kwote lambda `/ locals` 常量与 `_al-bind-alist` 槽序**（net/proxy）：
+     `_collect_byteorder` kwote 分支收集 locals 常量时，先收 `(quote (locals...))`
+     常量、后收 `_al-bind-alist`——kwote 块逆序后 `_al-bind-alist` 落在
+     locals 之前（CAD 槽 33 `_al-bind-alist`、34-37 locals，`56` 块在
+     `39 04 00` const 之前）。
+  3. **`_patch_usubr_idx` 的 `_al-bind-alist` locals 常量编址**（net/proxy）：
+     `(quote (loc1 ...))` 常量未被 fg 表收录（内嵌 `-lambda-` DEFCODE 消耗
+     常量作 module 参数，build_mvar_tables 无法映射）→ `const_map` 查不到，
+     旧 fallback `nsyms-1` 偏移 2（34 vs CAD 32）。修复：常量结构为纯 SYMBOL
+     列表且 `_AL-BIND-ALIST` 在 gvar_map 时，PUSH_G 操作数 = `_AL-BIND-ALIST`
+     槽 - offset（CAD 常量 gvar 槽 = `_al-bind-alist` 槽 + 1，t11 实测
+      fg[6]=_al-bind-alist、常量 PUSH_G=6）。注意 gvar_map 键统一大写
+      （`"_AL-BIND-ALIST"`，小写 `.get()` 返回 None）。
+- **2026-08-21 增补 2**：新增 net/cache 一个 byte-identical（20/67），关键修复：
+  1. **kwote 块无调用者时 `kwote` 放在块体之前**（net/cache @::uri-safe，`cad_symbols.py`
+     多函数路径）：kwote lambda 的调用者（vl-catch-all-apply）被跨函数去重后，
+     `_caller=None` → 旧 `_rev = _body + _rev` 丢弃 `kwote` 符号本身（OURS kwote
+     @[19] vs CAD @[3]）。修复：caller 为空时 `_rev = [_kw] + _body + _rev`
+     （CAD 实测 `[kwote, @::URI]`）。
+  2. **`claimed_in_body` 局部变量不重复注册**（net/cache `result`）：`result` 是
+     3 个函数共用的 `/ 局部变量`，cache-store 体 `(setq result ...)` 已注册 body
+     槽。旧 `if loc in claimed_in_body` 在逆序首个声明函数（uri-safe）提前注册 →
+     OURS `result`@[5] vs CAD@[9]（cache-store 体组）。修复：仅当局部在**当前
+     函数体**引用（`loc in 本函数 kept`）且未被函数体组注册时才 add——实际已由
+     函数体组注册，为安全 no-op。注意**不能**直接 `not in claimed_in_body`
+     （会把 net/checksum 未使用的 `checksum` 反向注册 → nsyms +1）；用「本函数
+     kept」判定同时满足 net/cache（跨函数共享局部不提前注册）与 net/checksum
+     （unused 局部不注册）。
+  3. **`_patch_usubr_idx` offset 仅作用于表外符号**（net/cache params）：`-lambda-`
+     额外槽的 offset=1 只应补偿**不在 gvar 表**的符号（参数/末尾常量按 gvar 槽
+     = nsyms 编址）。命中的 gvar 表符号槽位已含偏移，不再减——旧代码对所有路径
+     `gvar_map[sym] - 1 - offset` 统一减，致 body 符号（result fg[8]→SETQ_G 6 vs
+     CAD 7）错 1。修复：`gvar_slot()` 返回 (槽位, 是否命中)，仅 `_hit=False`
+     （表外 fallback `nsyms-1-offset`）时减 offset；命中的 `gvar_map/const_map/
+     str_map/real_map` 均 `- 1` 不减。i18n（原 offset=1 对象）的 byte-identity
+     测试已 2026-08-12 skip，此改动不影响现 regressions。
+- **2026-08-21 增补 3**：新增 net/headers 一个 byte-identical（21/67），关键修复：
+  1. **尾 while 多语句体的中间语句 POP + 尾语句 DUP**（net/headers @::set-headers-ext
+     `(while ... (vlax-invoke ...) (setq i ...))`，`codegen.py` `_emit_while`）：
+     尾 while 的体语句旧代码全按 `_in_tail_context` 跳过 POP，多语句体中间
+     `(vlax-invoke ...)` 缺 POP（CAD 实测 `USUBR; NIL; PV0; POP`）、尾
+     `(setq i ...)` 缺 DUP（CAD 实测 `DUP; SETQ_G`）。修复：体循环里仅**最后
+     一个**语句在尾上下文发射（`_emit_expr(_tail=True)` 补 DUP 保留值），中间
+     语句仍语句上下文（调用值 POP 丢弃）；单语句体（base-function @::sleep
+     `(while ... (princ))`）不受影响。回归：test_compiler_output 全绿。
+  2. **`_strip_list_markers` 的 NIL 归一化**（net/headers @::set-timeouts
+     `'(lambda () ...)`，`cli.py`）：symtab 常量的 `('NIL',)` 是 1 元组，旧
+     `len(v)==2` 分支不命中 → 结构匹配保留 `('NIL',)`，但 fg 表把 NIL 表示为
+     None → const_map 失配 → PUSH_G 落 nsyms-1。修复：顶层单独处理
+     `len(v)==1 and v[0]=='NIL'` → None。
+  3. **`_strip_list_markers` 的 vla-/vlax- 大小写保留**（net/headers quoted lambda
+     内 `vlax-invoke`，`cli.py`）：fg 表对 vla-/vlax- 符号保留源码大小写
+     （`vlax-invoke` 小写），`_strip_list_markers` 一律 `.upper()` 致 const_map
+     失配。修复：vla-/vlax- 前缀与 `_VLISP_CASE_PRESERVE` 符号保持原大小写
+     （与 `resource_builder._enc_sym` 一致），其余大写。
+- **46 个 DIFF**：多数 nsyms ±1（符号槽序差异），少数大差异
   （setup 228→166、config-dialog 160→196、package-version 117→124 等）
 - 主要差异类别：
   1. **模块区值位置 `t` 未注册 T 槽**（@lisp-env / event-bus / platform-api /
@@ -569,4 +646,33 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   对空体分支跳过 `POP`。语句上下文多对 setq 不 DUP（cond 子句体 if-then 中间
   多对 setq CAD `SETQ_G` 无 `0b`，见 codegen `_emit_setq`）。init/sequence.fas
   重新编译后 CAD 加载 + 函数可解析 OK。
+- **2026-08-21 增补 4（net/wget 分析）**：纯顶层 `(set '@::wget (lambda ...))`
+  文件修复多类问题（模块区、`-lambda-` 第二区、command/字符串），net/wget 暂
+  留 DIFF（null 尾调用歧义），其余 21 文件保持 byte-identical：
+  1. **纯顶层 lambda 体不进模块注册段**（`_register_module` `_skip_lam_bodies`）：
+     仅**纯顶层**（无 defun，`_has_top_lam and not defuns`）跳过 setq-lambda 体；
+     混合文件（platform）体符号照常入模块区。`_has_top_lam` 检测需识别裸
+     LambdaNode（`_is_top_lam`，net/wget `(set '@::wget (lambda ...))` 的 arg1
+     是裸 LambdaNode 非 kwote QuotedExpr）。
+  2. **`-lambda-` 体符号**：`/ locals` 照常注册为体符号（`_lam_real_params` 只
+     跳过 `/` 前真参数）；注入 `_al-bind-alist` + `(quote (locals...))` 常量。
+     `_top_lambda_body_syms`（cli.py）同步——`/` 后 locals、`_al-bind-alist`、
+     const 计入 `1 + len(_top_lambda_body_syms)`（net/wget nsyms=31）。
+  3. **`command` 收集序**：`(command a b ...)` 每参数独立 `FUNC 1 ads-cmd`，
+     `_collect_byteorder` args[0] 后立即收 `ads-cmd`（逆序注册得
+     `其余, ads-cmd, shell`）；codegen `command` 本身**不**注册 COMMAND 槽
+     （仅 ads-cmd，`get_or_add(name)` 前特判）。
+  4. **`ads-cmd` 0x56 块**：`ads-cmd` 同 `_al-bind-alist`/`kwote` 保留大小写、
+     独立 `56` 单符号块（resource_builder 模块区/函数体区/`-lambda-` 第二区）。
+  5. **第二区连续 STRING 合并**：`-lambda-` 第二区连续字符串合并为单个 `55`
+     块（与符号区一致）。
+  6. **`module_func_names` 过滤仅纯顶层**：`-lambda-` key 只在 `_only_lambda_keys`
+     （全部 func_offsets 都是 `-lambda-`，纯顶层）时从模块函数名排除——混合
+     文件（platform 有真实 defun 名 + `-lambda-`）排除会使 module_entries 少
+     2、函数体段错位（GET-LOCALE 泄漏到 fg[2]）。
+  7. **net/wget 尾调用歧义（未决）**：`_tail_call` 提取 pop-logic（兼容
+     setq-lambda 的 strcat）vs last-form-based（net/wget 的 null 非尾值）冲突。
+     setq-lambda（锁定测试）需 pop-logic，net/wget 需 last-form——保留 pop-logic，
+     net/wget 的 `null` 被误当尾调用、从体符号剔除 → 暂 DIFF。待更细的
+     "尾调用 = 最后 body form 的值（setq 值/末表达式）"语义判定。
 - MCP CAD 连接不稳定，建议手动测试
