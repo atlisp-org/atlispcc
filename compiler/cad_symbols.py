@@ -48,7 +48,6 @@ _VLA_METHOD_MAP = {
     "vla-endundomark": "vla-EndUndoMark",
     "vla-insertinmenubar": "vla-InsertInMenuBar",
     "vla-item": "vla-Item",
-    "vla-object": "vla-Object",
     "vla-regen": "vla-Regen",
     "vla-removefrommenubar": "vla-RemoveFromMenuBar",
     "vla-startundomark": "vla-StartUndoMark",
@@ -114,7 +113,11 @@ def normalize_vla_name(name):
             return mapped
         rest = name[len("vla-"):]
         if rest and rest[0].islower():
-            return "vla-" + rest[0].upper() + rest[1:]
+            # 不在方法表的无子前缀 vla- 名（voice.lsp `vla-object` 类型名，
+            # CAD fg[88] 实测 VLA-OBJECT 大写）：返回大写形式——resource_builder
+            # `_enc_sym` 对 vla- 前缀不 `.upper()`，此处直接给全大写。此前首字母
+            # 大写 fallback（vla-Object）对类型名错（CAD 用全大写）。
+            return name.upper()
         return name
     return name
 
@@ -351,13 +354,25 @@ class CadSymbolCollector:
                 name = 'T'
             if not force and name.lower() == 'nil':
                 return
-            if name not in self._name_set:
+            if not self._in_name_set(name):
                 self.names.append(name)
                 self._name_set.add(name)
             return
-        if force or name not in self._name_set:
+        if force or not self._in_name_set(name):
             self.names.append(name)
             self._name_set.add(name)
+
+    def _in_name_set(self, name) -> bool:
+        """_name_set 大小写不敏感检查（非 vla-/vlax- 符号）。CAD 符号槽全大写、
+        大小写不敏感：quoted 'Count 与 local count / 跨函数 'Status 合并一个槽。
+        vla-/vlax- 保留大小写（ActiveX 方法大小写敏感，voice.lsp 'GetVoices 等）。"""
+        if isinstance(name, str) and not name.lower().startswith(("vla-", "vlax-")):
+            nk = name.upper()
+            return any(
+                isinstance(s, str) and not s.lower().startswith(("vla-", "vlax-")) and s.upper() == nk
+                for s in self._name_set
+            )
+        return name in self._name_set
 
     @staticmethod
     def _seen(out, name=None):
@@ -367,6 +382,13 @@ class CadSymbolCollector:
             if is_const_entry(name):
                 structure = name[1]
                 return structure in out.structs
+            # 符号大小写不敏感（CAD 符号槽全大写）：quoted 'Status 与 local
+            # status 收集层合并一个（位置 = 首次出现），否则逆序注册时 status
+            # 排在 vlax-get-property 前、CAD 在后者（voice.lsp 实测）。vla-/
+            # vlax- 保留大小写（ActiveX 方法大小写敏感）。
+            if isinstance(name, str) and not name.lower().startswith(("vla-", "vlax-")):
+                nk = name.upper()
+                return any(isinstance(n, str) and n.upper() == nk for n in out.names)
             return name in out.names
         if is_const_entry(name):
             structure = name[1]

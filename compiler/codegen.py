@@ -66,7 +66,10 @@ def normalize_vla_name(name):
             pass
         rest = name[len("vla-"):]
         if rest and rest[0].islower():
-            return "vla-" + rest[0].upper() + rest[1:]
+            # 不在方法表的无子前缀 vla- 名（voice.lsp `vla-object` 类型名）：
+            # CAD 用大写（VLA-OBJECT），返回大写形式（resource_builder _enc_sym
+            # 对 vla- 不 .upper()）。此前首字母大写（vla-Object）对类型名错。
+            return name.upper()
         return name
     return name
 from compiler.symbol_table import SymbolTable
