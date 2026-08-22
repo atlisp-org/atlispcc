@@ -1069,6 +1069,16 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     _sym = sym_of(idx0)
                     if _sym and _sym in gvar_map:
                         new_idx = gvar_map[_sym] - 1
+                    elif _sym and cur_args and any(
+                        str(a).lower() == _sym.lower() for a in cur_args
+                    ):
+                        # net/wget 纯顶层 setq-lambda 参数（DEFCODE 第二区，
+                        # gvar 槽 = nsyms 表外）：SETQ_G 目标操作数 = gvar_slot
+                        # - 1（表外参数 = nsyms-1，uri → 30；与参数读取 PUSH_VALUE
+                        # 同规则，line 973）。setq-lambda 参数（str-vlx fg[9]）
+                        # 走 gvar_slot 命中分支结果相同（gvar-1）。
+                        _gs, _hit = gvar_slot(_sym)
+                        new_idx = _gs - 1 - (0 if _hit else offset)
                     else:
                         # 不在 GVARINIT 表（fg）的符号（如 quoted 数据里的特殊
                         # 形式 `setq`/`if`/`lambda` 等，@lisp_u safe-form-p 立即
@@ -2479,17 +2489,12 @@ def cmd_compile(
             for _be in _lam.body:
                 CadSymbolCollector()._collect_byteorder(_be, _lam_col, set())
             _fwd = [n for n, _ in _lam_col if n != "__kwote_end__" and n != "kwote"]
-            # 最后调用名 = forward 末尾的符号（如 strcat，pop 掉字符串/参数）。
-            # 兼容 setq-lambda（vlx 体 strcat 是 setq 值、pop 后得 strcat）。
-            _tc = None
-            while _fwd and (
-                not isinstance(_fwd[-1], str) or str(_fwd[-1]).startswith('"')
-                or _fwd[-1] in _lam.args
-            ):
-                _fwd.pop()
-            if _fwd and isinstance(_fwd[-1], str) and not str(_fwd[-1]).startswith('"'):
-                _tc = _fwd[-1]
-                _fwd = _fwd[:-1]
+            # 最后调用名 = 最后一个 body form 的值（setq 值/末表达式函数名）。
+            # setq-lambda vlx/fasext 尾 form 得 strcat；net/wget 尾 form
+            # `outfile`（Symbol）→ 无尾调用（null 是中间 if 条件，不剔除）。
+            _tc = CadSymbolCollector()._lam_tail_value(_lam.body[-1] if _lam.body else None)
+            if _tc is not None:
+                _fwd = [n for n in _fwd if n != _tc]
             # 真参数 = `/` 之前；`/` 后的局部变量照常注册为体符号。
             _lam_params = _lam.args
             if "/" in _lam_params:

@@ -659,6 +659,35 @@ class CadSymbolCollector:
 
         return self.names
 
+    def _lam_tail_value(self, node):
+        """提取顶层 setq-lambda 的尾调用名（最后一个 body form 的值函数）。
+
+        简单符号（net/wget 末 form `outfile`）返回 None（无尾调用）；函数调用
+        返回函数名（fasext 末 `(strcat ...)` → strcat）；`if`/`setq`/`progn`
+        递归取分支值（vlx 末 `(if ... (setq str-vlx (strcat ...)) str-vlx)`
+        → then 分支 setq 值 strcat）。
+        """
+        if isinstance(node, Symbol):
+            return None
+        if isinstance(node, Call):
+            return str(node.name)
+        if isinstance(node, IfNode):
+            for branch in (node.then, node.else_expr):
+                if branch is not None:
+                    v = self._lam_tail_value(branch)
+                    if v:
+                        return v
+            return None
+        if isinstance(node, Setq):
+            if node.pairs:
+                return self._lam_tail_value(node.pairs[-1][1])
+            return None
+        if isinstance(node, Progn):
+            if node.forms:
+                return self._lam_tail_value(node.forms[-1])
+            return None
+        return None
+
     def _collect_single(self, defuns, others, program):
         """单函数文件（≤1 defun）：模块注册与函数体符号按 CAD 序收集。
 
@@ -760,20 +789,18 @@ class CadSymbolCollector:
             for expr in _lam.body:
                 self._collect_byteorder(expr, refs, set())
             _fwd = [(n, f) for n, f in refs if n != "__kwote_end__" and n != "kwote"]
-            # 最后调用名 = forward 末尾的符号（如 strcat，pop 掉字符串/参数）。
-            # setq-lambda vlx 体以 `str-vlx` 符号结尾但 strcat 是其 setq 值，
-            # pop 掉参数后得 strcat；net/wget 体以 `outfile` 符号结尾、pop 后
-            # 得 null（if 条件函数）——用 pop 策略兼容 setq-lambda。
+            # 最后调用名 = **最后一个 body form 的值**（setq 值/末表达式函数名）。
+            # setq-lambda vlx/fasext 以 `(strcat ...)` / `(if ... (setq str-vlx
+            # (strcat ...)) str-vlx)` 结尾 → strcat（CAD 尾调用槽）；net/wget 以
+            # `outfile`（Symbol）结尾 → 无尾调用（null 是中间 `(if (null ...))`
+            # 的条件函数，不应剔除——旧 pop 策略把它误当尾调用，nsyms 少 1）。
             _tail_call = None
-            while _fwd and (
-                not isinstance(_fwd[-1][0], str)
-                or str(_fwd[-1][0]).startswith('"')
-                or _fwd[-1][0] in _lam.args
-            ):
-                _fwd.pop()
-            if _fwd and isinstance(_fwd[-1][0], str) and not str(_fwd[-1][0]).startswith('"'):
-                _tail_call = _fwd[-1][0]
-                _fwd = _fwd[:-1]
+            if _lam.body:
+                _tail_call = self._lam_tail_value(_lam.body[-1])
+                if _tail_call is not None:
+                    # 从 _fwd 剔除尾调用名（其余体符号逆序注册后、参数前单独
+                    # 注册；net/wget 无尾调用时 _fwd 完整保留）。
+                    _fwd = [(n, f) for n, f in _fwd if n != _tail_call]
             # 逆序注册体符号（去 strcat）。
             _lam_real_params = set(_lam.args)
             if "/" in _lam.args:

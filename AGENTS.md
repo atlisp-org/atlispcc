@@ -798,5 +798,21 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      符号的 `_res_slot_of - gvar` 差，cmd.lsp @::UPGRADE slot104-10=fg94→操作数
      93、command @::internetp slot191-41=fg150→149）；**表内符号（_fg_slot <
      nsyms）不含 offset**（操作数 = _fg_slot-1）。模块区函数名（fg 低位）偏移
-     小不可用。net/proxy 等已通过文件表外符号仍走 `nsyms-1-offset`。
+     小不可用。  net/proxy 等已通过文件表外符号仍走 `nsyms-1-offset`。
+- **2026-08-21 增补 12（net/wget byte-identical，26/67）**：纯顶层 setq-lambda
+  尾调用改 last-form 值判定 + SETQ_G 参数编址，net/wget **seg0+nsyms+seg1 完全
+  一致**（null 尾调用歧义解决，AGENTS "待判定" 解除）：
+  1. **`_lam_tail_value`（cad_symbols）**：纯顶层 `(set/setq 'sym (lambda ...))`
+     的尾调用 = **最后一个 body form 的值**（setq 值/末表达式函数名）。简单
+     符号（net/wget 末 form `outfile`）→ None（无尾调用）；`(strcat ...)` →
+     strcat（fasext）；`(if ... (setq str-vlx (strcat ...)) str-vlx)` → then
+     分支 setq 值 strcat（vlx）。旧 pop 策略把 net/wget 中间 `(if (null ...))`
+     的条件 `null` 误当尾调用剔除 → nsyms 少 1。cli.py `_top_lambda_body_syms`
+     收集（line 2482+）同步改用 `_lam_tail_value`。
+  2. **SETQ_G 目标参数编址**（`_patch_usubr_idx` multi=False 分支）：纯顶层
+     setq-lambda 参数（DEFCODE 第二区，gvar 槽 = nsyms 表外）SETQ_G 目标操作数
+     = gvar_slot - 1（net/wget uri → 30、outfile → 29、extra-headers → 28；
+     gvar_slot("URI")=(31,False) → 31-1-offset；与参数读取 PUSH_VALUE line 973
+     同规则）。旧 `_rs - module_reg_count - 1`（33-3-1=29）算出 28 错。setq-lambda
+     参数（str-vlx fg[9] 命中）结果相同（gvar-1），锁定测试不受影响。
 - MCP CAD 连接不稳定，建议手动测试
