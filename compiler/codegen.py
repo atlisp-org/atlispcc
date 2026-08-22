@@ -966,12 +966,20 @@ class CodeGenerator:
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         for i, form in enumerate(node.body):
-            self._emit_stmt(buf, form)
-            # 非尾 foreach（_in_tail_context=False）体最后语句若留值（print/cons
-            # 等调用）→ POP 丢弃（i18n-cad save-mt `(print opt% fp)` 后 `POP`）；
-            # setq/if 自身管理栈；尾 foreach 无 POP（update-locale-all 实测）。
-            if not self._in_tail_context and i == len(node.body) - 1 and not isinstance(form, (Setq, IfNode)):
-                buf.emit(encode_op_noarg(POP))
+            if self._in_tail_context and i == len(node.body) - 1:
+                # 尾 foreach 体最后语句 = foreach 的"值"（值上下文）：if 无 else
+                # 补 PUSH_NIL（cache.lsp 尾 foreach 体末 `(if (and ...) (vl-file-
+                # delete ...))` CAD 实测 `JMP32_IFNOT; then; JUMP; PUSH_NIL`）、
+                # 调用不 POP。`_emit_stmt` 会清 `_in_tail_context` 使 if 按语句
+                # 上下文（无 else 不补 nil、then POP），故最后语句走 `_emit_expr`。
+                self._emit_expr(buf, form)
+            else:
+                self._emit_stmt(buf, form)
+                # 非尾 foreach（_in_tail_context=False）体最后语句若留值（print/cons
+                # 等调用）→ POP 丢弃（i18n-cad save-mt `(print opt% fp)` 后 `POP`）；
+                # setq/if 自身管理栈；尾 foreach 无 POP（update-locale-all 实测）。
+                if not self._in_tail_context and i == len(node.body) - 1 and not isinstance(form, (Setq, IfNode)):
+                    buf.emit(encode_op_noarg(POP))
 
         jmp_back = buf.pos()
         buf.emit(encode_op_s32(JUMP, 0))

@@ -408,6 +408,16 @@ class CadSymbolCollector:
         #    由调用者引用组登记（递归名不重复槽）。
         seen_refs = set()
         kept_refs = []
+        # 唯一参数（只在一个函数出现的参数名，非共享）：foreach 循环变量若与
+        # 其同名不独立注册——CAD 复用参数拥有者的槽（cache.lsp `subdir` =
+        # cache-store 参数 + cache-clear-all foreach 变量，CAD 实测共享 fg[46]，
+        # foreach 处无独立槽）。@lisp_u `cmd`（foreach + **共享**参数）才独立
+        # 注册（共享参数槽不特定于某函数）。
+        _arg_count: dict = {}
+        for _f in defuns:
+            for _a in _f.args:
+                _arg_count[_a] = _arg_count.get(_a, 0) + 1
+        self._unique_params = {a for a, c in _arg_count.items() if c == 1}
         for f in defuns:
             refs = _SeenList()
             arg_names = set(f.args)
@@ -1355,8 +1365,16 @@ class CadSymbolCollector:
                 # 与共享参数同名（@lisp_u `cmd` 同时是 @::cmd2str 等函数参数）
                 # 也独立注册——共享参数排除仅适用于**参数符号引用**，不适用于
                 # foreach 循环变量（CAD 模块区 510 CMD + 函数体区共享参数槽并存）。
+                # 但 var 名与**唯一参数**（cache.lsp `subdir` = cache-store 参数
+                # + cache-clear-all foreach 变量）同名时不独立注册——CAD 复用
+                # 参数拥有者槽（fg[46]，参数组），foreach 处无独立槽。
                 _v = normalize_vla_name(node.var.name)
-                if _v not in arg_names and not self._seen(out, _v):
+                if (
+                    _v not in arg_names
+                    and _v not in getattr(self, "_unique_params", set())
+                    and _v not in self.shared
+                    and not self._seen(out, _v)
+                ):
                     out.append((_v, False))
             for expr in node.body:
                 self._collect_byteorder(expr, out, arg_names, in_quote)
@@ -1457,7 +1475,12 @@ class CadSymbolCollector:
                 else:
                     const = to_const(node.expr)
                     if const is not None:
-                        out.append(((CONST_MARK, const), False))
+                        # quoted 数据 const 去重（保留**正序第一次**出现）：CAD
+                        # cache.lsp 两处 `'("." "..")`（member subdir / member f）
+                        # 只注册一个槽、位置在第一次（member 后）。逆序处理会
+                        # 保留 refs 最后一个，需在此 _seen 去重。
+                        if not self._seen(out, (CONST_MARK, const)):
+                            out.append(((CONST_MARK, const), False))
                     else:
                         # 不可常量化的 quoted 表达式运行时拆开构建：其内部
                         # `(if ...)` 等特殊形式的 `if` 作为数据符号收集。
@@ -1465,7 +1488,8 @@ class CadSymbolCollector:
         elif isinstance(node, LambdaNode):
             const = to_const(node)
             if const is not None:
-                out.append(((CONST_MARK, const), False))
+                if not self._seen(out, (CONST_MARK, const)):
+                    out.append(((CONST_MARK, const), False))
             else:
                 out.append(("lambda", False))
                 lambda_args = set(node.args)

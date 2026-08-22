@@ -811,8 +811,29 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      收集（line 2482+）同步改用 `_lam_tail_value`。
   2. **SETQ_G 目标参数编址**（`_patch_usubr_idx` multi=False 分支）：纯顶层
      setq-lambda 参数（DEFCODE 第二区，gvar 槽 = nsyms 表外）SETQ_G 目标操作数
-     = gvar_slot - 1（net/wget uri → 30、outfile → 29、extra-headers → 28；
-     gvar_slot("URI")=(31,False) → 31-1-offset；与参数读取 PUSH_VALUE line 973
-     同规则）。旧 `_rs - module_reg_count - 1`（33-3-1=29）算出 28 错。setq-lambda
-     参数（str-vlx fg[9] 命中）结果相同（gvar-1），锁定测试不受影响。
+      = gvar_slot - 1（net/wget uri → 30、outfile → 29、extra-headers → 28；
+      gvar_slot("URI")=(31,False) → 31-1-offset；与参数读取 PUSH_VALUE line 973
+      同规则）。旧 `_rs - module_reg_count - 1`（33-3-1=29）算出 28 错。setq-lambda
+      参数（str-vlx fg[9] 命中）结果相同（gvar-1），锁定测试不受影响。
+- **2026-08-21 增补 13（sub-system/cache byte-identical，27/67）**：foreach
+  变量槽注册 + quoted 数据 const 去重 + 尾 foreach 体末语句上下文，cache
+  **seg0+nsyms+seg1 完全一致**（cmd.lsp 同步保持）：
+  1. **foreach 变量与参数同名**（`cad_symbols.py`）：CAD 复用参数拥有者槽、
+     foreach 处无独立槽。cache.lsp `subdir` = cache-store/cache-load/
+     cache-invalidate 的**共享参数** + cache-clear-all 的 foreach 变量 → CAD
+     共享 fg[46]（共享参数槽）。`_collect_byteorder` ForeachNode 分支加
+     `_v not in self.shared` 排除（函数体 foreach）；@lisp_u `cmd`（模块区
+     foreach + 共享参数）不同区仍独立注册。唯一参数（_unique_params 集合）
+     仅加在 foreach 分支；Symbol/Setq 分支**不加**（会误剔 C:@DEP 的
+     pkg-name → locals loop 不注册 → nsyms 少 1，cmd.lsp 回归）。
+  2. **quoted 数据 const 去重**（`_collect_byteorder`）：`'("." "..")` 两处
+     （member subdir / member f）只注册一个槽、位置在**正序第一次**出现
+     （member 后）。逆序处理会保留 refs 最后一个，const 收集加 `_seen` 去重。
+  3. **尾 foreach 体最后语句值上下文**（`codegen.py` `_emit_foreach_stub`）：
+     尾 foreach（PUSH_NIL 占位 + POP 协议）体最后语句 = foreach 的"值"，if
+     无 else 补 PUSH_NIL（cache.lsp 体末 `(if (and ...) (vl-file-delete ...))`
+     CAD 实测 `JMP32_IFNOT; then; JUMP; PUSH_NIL`）。`_emit_stmt` 清
+     `_in_tail_context` 使 if 按语句上下文（无 else 不补 nil、then POP），故
+     尾 foreach 体最后语句走 `_emit_expr`（值上下文）。i18n 尾 foreach 体末
+     调用（princ）值上下文效果相同。
 - MCP CAD 连接不稳定，建议手动测试
