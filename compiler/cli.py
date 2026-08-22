@@ -661,6 +661,24 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 _found = _i
         return _found
 
+    # 表外符号（DEFCODE module 参数等，如 cmd.lsp C:@U 的 `@::upgrade`）：
+    # 其在资源 symbol_slots 的索引含模块区偏移（cmd.lsp @::UPGRADE slot 104
+    # vs 实际 fg 槽 94，偏移 10 = 模块注册区符号数）。用 gvar_map 中 **fg 槽
+    # 最大**（函数体区末尾）符号的（_res_slot_of - fg 槽）差推出偏移，表外
+    # 符号 fg 槽 = _res_slot_of - 偏移。模块区函数名（fg 低位）偏移小
+    # （C:@M slot9-gvar2=7），不可用。
+    _res_offset: Optional[int] = None
+    _best = None
+    for _gs, _gv in gvar_map.items():
+        if _gs in ("T", "NIL"):
+            continue
+        if _best is None or _gv > _best[1]:
+            _best = (_gs, _gv)
+    if _best is not None:
+        _ri = _res_slot_of(_best[0])
+        if _ri is not None:
+            _res_offset = _ri - _best[1]
+
     def _strip_list_markers(v):
         """symtab 常量结构 → fg 表可比较形式（规范化大小写/INT/REAL/LIST）。
 
@@ -1103,8 +1121,25 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             elif sym and 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
                 # 符号槽末尾（超出 gvar 表，fg 仅 nsyms 项）的符号：CAD 按
                 # gvar 槽 = nsyms 编址（t22 实测 vlax-get-acad-object 操作数 11 =
-                # nsyms-1，符号槽末尾注册），USUBR 操作数 = nsyms - 1。
-                new_idx = nsyms - 1 - offset
+                # nsyms-1，符号槽末尾注册），USUBR 操作数 = nsyms - 1。但符号
+                # 若在资源 symbol_slots 有真实索引（< nsyms，如 cmd.lsp C:@U 的
+                # @::upgrade = symslot[94] 而 build_mvar_tables 把它当 DEFCODE
+                # 模块参数解析为 None、gvar_map 查不到）则用真实槽
+                # （操作数 = 94-1-offset = 93，CAD 实测）。
+                _rslot = _res_slot_of(sym)
+                if _rslot is not None:
+                    _fg_slot = _rslot - (_res_offset or 0)
+                    if 0 <= _fg_slot < nsyms:
+                        # 表内符号（资源 5b 块注册、gvar 槽 < nsyms，但被
+                        # DEFCODE 消费 → build_mvar_tables 解析为 None）：
+                        # 操作数 = gvar 槽 - 1，**不含** offset（cmd.lsp
+                        # @::upgrade fg 94→93、command @::internetp fg 150→149，
+                        # 后者 gvar 槽恰 = nsyms-1）。
+                        new_idx = _fg_slot - 1
+                    else:
+                        new_idx = nsyms - 1 - offset
+                else:
+                    new_idx = nsyms - 1 - offset
                 if 0 <= new_idx <= 0xFFFF:
                     out += _subr_bytes(0x35, argc, new_idx, flags, wide=wide)
                 else:
@@ -1123,7 +1158,18 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 out += _subr_bytes(0x51, argc, new_idx, flags, wide=wide)
             elif sym and 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] == "SYMBOL":
                 # 同 USUBR：符号槽末尾（超出 gvar 表）的 FUNC 目标 gvar 槽 = nsyms。
-                new_idx = nsyms - 1 - offset
+                # 符号在资源 symbol_slots 有真实索引（< nsyms）时用真实槽（同
+                # USUBR，cmd.lsp @::upgrade symslot[94] → 操作数 93）。
+                _rslot = _res_slot_of(sym)
+                if _rslot is not None:
+                    _fg_slot = _rslot - (_res_offset or 0)
+                    if 0 <= _fg_slot < nsyms:
+                        # 同 USUBR：表内符号不含 offset。
+                        new_idx = _fg_slot - 1
+                    else:
+                        new_idx = nsyms - 1 - offset
+                else:
+                    new_idx = nsyms - 1 - offset
                 if 0 <= new_idx <= 0xFFFF:
                     out += _subr_bytes(0x51, argc, new_idx, flags, wide=wide)
                 else:

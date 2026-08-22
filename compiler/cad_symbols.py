@@ -567,19 +567,29 @@ class CadSymbolCollector:
                 else:
                     _rev = _merged + _rev
             else:
-                for _kw, _body, _caller in reversed(_kwote_blocks):
+                # 多 kwote 不同调用者（cmd.lsp @::package-remove 的 kwote3
+                # vl-catch-all-apply / kwote4 config-sync-packages-push）：CAD
+                # 的 kwote 槽只在**源码序第一个** lambda kwote 块处注册（cmd.lsp
+                # CAD 实测 kwote 在 fg[21] = kwote3 块 marker 位置，kwote4 块
+                # body 无 marker；net/proxy 的 proxy 函数 kwote 块被跨函数
+                # seen_refs 去重、不在此）。故仅第一个块插 marker，其余块只插
+                # body（marker 去重）。
+                _first_block = _kwote_blocks[0] if _kwote_blocks else None
+                for _blk in reversed(_kwote_blocks):
+                    _kw, _body, _caller = _blk
+                    _pre = [_kw] if _blk is _first_block else []
                     if _caller is not None:
                         for _j, (_m, _) in enumerate(_rev):
                             if _m == _caller:
-                                _rev = _rev[: _j + 1] + [_kw] + _body + _rev[_j + 1 :]
+                                _rev = _rev[: _j + 1] + _pre + _body + _rev[_j + 1 :]
                                 break
                         else:
-                            _rev = [_kw] + _body + _rev
+                            _rev = _pre + _body + _rev
                     else:
                         # kwote 块无后续调用者（调用者已被跨函数去重，net/cache
                         # @::uri-safe 的 vl-catch-all-apply 被前一函数占用）：CAD
                         # 把 `kwote` 放在块体之前（实测 [kwote, @::uri]）。
-                        _rev = [_kw] + _body + _rev
+                        _rev = _pre + _body + _rev
             for name, force in _rev:
                 if str(name).lower() == "t":
                     # CAD T 槽：模块注册区（顶层 cond else 键）与函数体区
@@ -1351,13 +1361,16 @@ class CadSymbolCollector:
                 self._collect_byteorder(item, out, arg_names, in_quote)
         elif isinstance(node, QuotedExpr):
             if node.kwote:
-                # `(function (lambda ...))`：CAD kwote 机制（i18n-cad 实测）。
-                # 只注册 `kwote` 符号（0x56 独立块）；lambda 体照常收集符号
-                # （builtin 调用如 CONS/READ 会注册），但不注册字面 `lambda`
-                # 符号、不按 quote 语义收集 `if` 等数据符号、参数（局部槽）
-                # 由 arg_names 排除。
-                out.append(("kwote", False))
+                # `(function ...)`：CAD kwote 机制（i18n-cad 实测）。
+                # 仅 lambda 生成 `kwote` 符号（0x56 独立块）；`(function 符号)`
+                # （如 `(mapcar (function car) ...)`、`(function @::pkg-fas-file)`，
+                # cmd.lsp 实测）CAD **不**生成 kwote 标记——符号本身作为普通
+                # SUBR 槽注册（CAD fg 里 kwote 槽只在 lambda kwote 块处，其余
+                # 无 marker）。lambda 体照常收集符号（builtin 调用如 CONS/READ
+                # 会注册），但不注册字面 `lambda` 符号、不按 quote 语义收集
+                # `if` 等数据符号、参数（局部槽）由 arg_names 排除。
                 if isinstance(node.expr, LambdaNode):
+                    out.append(("kwote", False))
                     # `/ 局部变量` 不排除：局部变量照常从函数体收集注册
                     # （与 defun `/ locals` 同协议，_al-bind-alist 绑定符号槽），
                     # 否则 SETQ_G 引用未注册槽 → CAD 访问冲突。仅真参数排除。
@@ -1393,12 +1406,15 @@ class CadSymbolCollector:
                                 out.append(("_al-bind-alist", False))
                     for expr in node.expr.body:
                         self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
+                    # kwote 块结束标记：CAD 注册序把 kwote 块（kwote + lambda 体）
+                    # 保持收集序整体插到**调用者**（外层调用名）之后，不随其它
+                    # 函数体符号逆序沉底（base-function getf / i18n load-mt 实测）。
+                    out.append(("__kwote_end__", False))
                 else:
+                    # `(function 符号)`（cmd.lsp `(function car)` / `(function
+                    # @::pkg-fas-file)` 实测）：不生成 kwote 块标记，符号本身
+                    # 作为普通符号注册（CAD fg `@::*LOCAL-PKGS* CAR` 无 marker）。
                     self._collect_byteorder(node.expr, out, arg_names, in_quote)
-                # kwote 块结束标记：CAD 注册序把 kwote 块（kwote + lambda 体）
-                # 保持收集序整体插到**调用者**（外层调用名）之后，不随其它函数
-                # 体符号逆序沉底（base-function getf / i18n load-mt 实测）。
-                out.append(("__kwote_end__", False))
             elif node.expr is not None:
                 # CAD 引用单符号 `'a`：编译为 PUSH_G 普通符号槽，不注册
                 # CONST（setcmp/setqa 实测 `(set 'a 5)` 的 A、`(setq x 'a)`

@@ -775,4 +775,28 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   不跳过、参数 args 循环跳过；`param`（参数拥有者后处理）时函数体组/局部循环
   跳过、参数 args 循环注册。先处理者若抢先 add 会占用低位槽（`_name_set` 去重）。
   net/probe 保持 byte-identical，cmd.lsp seg0 diff 70→12（kwote 块序残余）。
+- **2026-08-21 增补 11（cmd.lsp byte-identical，25/67）**：`(function 符号)`
+  kwote + 多 kwote 不同调用者 marker 位置 + DEFCODE module 参数编址，cmd.lsp
+  **seg0+nsyms+seg1 完全一致**（command 同步恢复）：
+  1. **`(function 符号)` 不生成 kwote 标记**（`_collect_byteorder`）：`(function
+     car)`/`(function @::pkg-fas-file)`（cmd.lsp line 37/54 实测）CAD **不**生成
+     `kwote` 块——符号本身作为普通 SUBR 槽注册（CAD fg `@::*LOCAL-PKGS* CAR`
+     无 marker）；仅 `(function (lambda ...))` 生成 `kwote`/`__kwote_end__`。
+     原实现无条件生成 kwote 标记，功能符号 kwote 块多占 marker 槽位。
+  2. **多 kwote 不同调用者：只给源码序第一个 lambda kwote 插 marker**
+     （`_collect_multi` else 分支）：cmd.lsp @::package-remove 的 kwote3
+     （vl-catch-all-apply）/kwote4（config-sync-packages-push）不同调用者，
+     CAD 的 kwote 槽在**源码序第一个** lambda kwote 块（fg[21]=kwote3 marker
+     位置，kwote4 块 body 无 marker）。`_first_block = _kwote_blocks[0]`，仅该
+     块 `_pre=[_kw]`，其余块只插 body。net/proxy 的 proxy 函数 kwote 块被
+     跨函数 seen_refs 去重（kept 无 kwote）不在此。
+  3. **DEFCODE module 参数符号编址**（`_patch_usubr_idx` USUBR/FUNC elif）：
+     cmd.lsp C:@U 的 `@::upgrade`、command 的 `@::internetp` 等被 DEFCODE 消费
+     （`0x33`=PUSH_INT32 压 offset、`0x3A`=DEFCODE 消费 name/start/module），
+     build_mvar_tables 解析为 None、gvar_map 查不到。符号实际 gvar 槽 =
+     `_res_slot_of - _res_offset`（`_res_offset` = gvar_map 中 **fg 槽最大**
+     符号的 `_res_slot_of - gvar` 差，cmd.lsp @::UPGRADE slot104-10=fg94→操作数
+     93、command @::internetp slot191-41=fg150→149）；**表内符号（_fg_slot <
+     nsyms）不含 offset**（操作数 = _fg_slot-1）。模块区函数名（fg 低位）偏移
+     小不可用。net/proxy 等已通过文件表外符号仍走 `nsyms-1-offset`。
 - MCP CAD 连接不稳定，建议手动测试
