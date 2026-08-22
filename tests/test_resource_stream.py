@@ -300,13 +300,15 @@ def test_shared_byte_different_semantics():
 
 
 def test_bytecode_table_has_no_resource_only_codes():
-    """seg0 字节码中不出现纯资源码（5b/55/43/56）。
+    """seg0 字节码中 nsyms<=256 时无纯资源码（5b/55/43/56）。
 
-    用真实 CAD golden 反汇编验证：DEFCODE(3a)/INIT_DONE(1c) 被列入 OPCODES
-    表供资源流复用，但 seg0 函数字节码中它们不出现。
+    nsyms <= 256 的文件使用 3 字节 USUBR 编码，不会产生这些字节。
+    nsyms > 256 的文件（含 CAD 自己的编译产物 atlisp_u_cad.fas）
+    使用 5 字节 USUBR 编码，idx_lo 自然值可为 5b/55/43/56，
+    这是 FAS4 宽格式编码的固有特性，CAD 本身也如此。
     """
     import glob
-    from decompiler.fas4_decompiler import Fas4Parser, Disassembler, is_compact_stub
+    from decompiler.fas4_decompiler import Fas4Parser
 
     resource_codes = {0x5B, 0x55, 0x43, 0x56}
     for f in glob.glob("tests/*_cad.fas") + glob.glob("tests/cad/*_cad.fas"):
@@ -314,9 +316,13 @@ def test_bytecode_table_has_no_resource_only_codes():
             p = Fas4Parser().parse(f)
         except Exception:
             continue
-        # 原始字节中直接扫描纯资源码字节
-        for op in resource_codes:
-            assert op not in p.bytecode, f"{f}: resource byte 0x{op:02x} in seg0"
+        # nsyms <= 256 时期望 0 资源码（短格式 USUBR）
+        # nsyms > 256 时宽格式 USUBR 自然产生这些字节，允许存在
+        if p.nsyms <= 256:
+            for op in resource_codes:
+                assert op not in p.bytecode, (
+                    f"{f}: resource byte 0x{op:02x} in seg0 (nsyms={p.nsyms})"
+                )
 
 
 # ─── 真实产物资源流一致性 ───────────────────────────────────────────────────
