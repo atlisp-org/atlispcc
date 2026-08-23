@@ -802,13 +802,13 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 # → PUSH_G 落 nsyms-1。
                 _sn = str(v[1])
                 _lower = _sn.lower()
-                if _lower.startswith(("vla-", "vlax-")):
-                    return ("SYMBOL", _sn)
                 from compiler.resource_builder import _VLISP_CASE_PRESERVE as _vcp
 
                 for _canon in _vcp:
                     if _lower == _canon.lower():
                         return ("SYMBOL", _canon)
+                if _lower.startswith(("vla-", "vlax-")):
+                    return ("SYMBOL", _sn)
                 return ("SYMBOL", _sn.upper())
             if v[0] in ("INT", "INT8", "INT32"):
                 return int(v[1])
@@ -2742,13 +2742,19 @@ def cmd_compile(
             if _last_defun_pos >= 0
             else 0
         )
-        # START `_reg` 函数数 = 首个顶层语句之前定义的 defun 数（CAD platform
-        # 实测 set-locale/get-locale 在 globals 语句前注册）。Defpackage 是
-        # 顶层语句（进 globals 组），不计入 n_pre。
+        # START `_reg` 函数数 = globals 之后、首个 mid 顶层语句之前的连续 defun
+        # 数（CAD i18n 实测 @::codepage2lang 在 SETQ[0]（模块全局）后立即注册、
+        # 在 SETQ[2]（mid 语句）之前；log.lsp 前导 in-package/use-package 跳过
+        # 后 log-level/log-level-name 同样 START 注册）。globals（首个 defun
+        # 之前的顶层 setq 等）**跳过不 break**——CAD 把 globals 后的函数注册放
+        # 在 mid 语句之前。纯函数文件（command.lsp，无 mid 顶层语句）循环走完
+        # 所有 defun 后 `_saw_top_stmt=False` → n_pre 归 0（全部 TAIL 注册）。
         _n_pre = 0
+        _first_defun_seen = False
         _saw_top_stmt = False
         for _f in program.forms:
             if isinstance(_f, _Defun):
+                _first_defun_seen = True
                 _n_pre += 1
             elif isinstance(_f, (_Defpackage, _InPackage)) or (
                 isinstance(_f, _Call)
@@ -2756,9 +2762,12 @@ def cmd_compile(
             ):
                 continue
             else:
-                _saw_top_stmt = True
-                break
-        if not _saw_top_stmt:
+                if _first_defun_seen:
+                    _saw_top_stmt = True
+                    break
+                # globals（首个 defun 之前的顶层语句）：跳过，START 注册照常
+                continue
+        if not _first_defun_seen or not _saw_top_stmt:
             _n_pre = 0
         module_code = _build_cad_module_code(
             top_level_code,

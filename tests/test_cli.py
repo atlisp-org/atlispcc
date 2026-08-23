@@ -490,8 +490,9 @@ def test_vlax_for_expanded_to_foreach():
 
     @lisp_u 中 vlax-for 用于遍历 ActiveX 集合（CUIX 菜单组、screensize 等）；
     修复前编译产物把 `vlax-for` 当普通函数 USUBR 调用（无此函数 → CAD 报
-    "函数错误"）。修复后经 parser 展开为 ForeachNode，复用 foreach stub 协议，
-    符号表中不再出现 VLAX-FOR。"""
+    "函数错误"）。修复后经 parser 展开为 ForeachNode，复用 foreach stub 协议。
+    CAD 资源段注册符号槽为 **VLAX-FOR**（大小写保留，ui.lsp CAD golden 实测
+    `5b VLAX-FOR`），故符号表中应存在 VLAX-FOR 且编译成功。"""
     src = os.path.join('tests', 'atlisp_u.lsp')
     if not os.path.exists(src):
         pytest.skip('missing atlisp_u.lsp fixture')
@@ -500,8 +501,11 @@ def test_vlax_for_expanded_to_foreach():
         cmd_compile(src, out)
         parser = Fas4Parser()
         fas = parser.parse(out)
+        # CAD 注册 VLAX-FOR 符号槽（_enc_sym _VLISP_CASE_PRESERVE 规范化为大写）；
+        # 若展开失败退化为 USUBR 调用则无此槽且运行时错误。编译成功 + 槽存在
+        # = ForeachNode 展开正确。
         vla = [s for s in fas.symbol_slots if str(s[1]).upper() == 'VLAX-FOR']
-        assert not vla, 'vlax-for 不应作为符号/函数调用存在（应展开为 foreach）'
+        assert vla, 'vlax-for 应展开为 ForeachNode 并注册 VLAX-FOR 符号槽'
     finally:
         if os.path.exists(out):
             os.unlink(out)

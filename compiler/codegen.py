@@ -222,6 +222,10 @@ class CodeGenerator:
         self.wide_subr = stub_format and self.nsyms > 256
         self.local_slots: Dict[str, int] = {}
         self.next_slot = 0
+        # 直接体并发循环深度（foreach/repeat 局部槽分配）：同一深度顺序循环
+        # 复用同一槽（CAD reactor.lsp 实测两个顺序 foreach 都 SET_LOCAL 2），
+        # 嵌套循环递增深度用独立槽（与 DEFUN 头 b1=argc+并发深度对应）。
+        self._loop_depth = 0
         self.current_func_name: str = ""
         self.current_func_args: List[str] = []
         self._tail_entry_label: str = ""
@@ -937,7 +941,7 @@ class CodeGenerator:
         GET_LOCAL; CDR; SET_LOCAL; body(无 POP); JUMP loop; end: CLEAR_ARGS 1``
         """
         var_name = node.var.name if isinstance(node.var, Symbol) else "item"
-        slot = self._get_local_slot(f"__foreach_list__{buf.pos()}")
+        slot = self._get_local_slot(f"__foreach_list__{self._loop_depth}")
         v_idx = self.symtab.get_or_add(var_name)
 
         self._emit_expr(buf, node.list_expr or Symbol("nil"))
@@ -969,6 +973,7 @@ class CodeGenerator:
         buf.emit(encode_op_noarg(CDR))
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
+        self._loop_depth += 1
         for i, form in enumerate(node.body):
             if self._in_tail_context and i == len(node.body) - 1:
                 # 尾 foreach 体最后语句 = foreach 的"值"（值上下文）：if 无 else
@@ -984,6 +989,7 @@ class CodeGenerator:
                 # setq/if 自身管理栈；尾 foreach 无 POP（update-locale-all 实测）。
                 if not self._in_tail_context and i == len(node.body) - 1 and not isinstance(form, (Setq, IfNode)):
                     buf.emit(encode_op_noarg(POP))
+        self._loop_depth -= 1
 
         jmp_back = buf.pos()
         buf.emit(encode_op_s32(JUMP, 0))
@@ -1177,7 +1183,7 @@ class CodeGenerator:
         GET_LOCAL; DEC; SET_LOCAL; body(无 POP); JUMP loop; end``
         无预载（不像 foreach），循环结束栈平衡，无需 CLEAR_ARGS。
         """
-        slot = self._get_local_slot("__repeat__")
+        slot = self._get_local_slot(f"__repeat__{self._loop_depth}")
         self._emit_expr(buf, count_expr)
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
@@ -1195,8 +1201,10 @@ class CodeGenerator:
         buf.emit(encode_op_noarg(DEC))
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
+        self._loop_depth += 1
         for form in body:
             self._emit_stmt(buf, form)
+        self._loop_depth -= 1
 
         jmp_back = buf.pos()
         buf.emit(encode_op_s32(JUMP, 0))
@@ -1308,7 +1316,7 @@ class CodeGenerator:
                 self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
         elif isinstance(node, ForeachNode):
-            items = [Symbol("foreach"), node.var or Symbol("nil"), node.list_expr or Symbol("nil")] + node.body
+            items = [Symbol(node.name or "foreach"), node.var or Symbol("nil"), node.list_expr or Symbol("nil")] + node.body
             for item in reversed(items):
                 self._emit_quoted(buf, item, skip_reg)
             buf.emit(encode_op_u16(BUILD_LIST, len(items)))
@@ -1547,6 +1555,7 @@ class CodeGenerator:
         # 与 local_slots 不得跨函数累积。
         self.local_slots = {}
         self.next_slot = 0
+        self._loop_depth = 0
 
         self.current_func_name = func.name
         all_args = func.args + func.optional + ([func.rest] if func.rest else [])

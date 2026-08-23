@@ -144,7 +144,7 @@ class Parser:
                 var = self.parse_form(quoted)
                 list_expr = self.parse_form(quoted)
                 body = self._parse_forms_until_rparen(quoted)
-                return ForeachNode(var=var, list_expr=list_expr, body=body)
+                return ForeachNode(var=var, list_expr=list_expr, body=body, name='vlax-for')
             elif name == 'repeat':
                 count = self.parse_form(quoted)
                 body = self._parse_forms_until_rparen(quoted)

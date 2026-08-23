@@ -82,6 +82,7 @@ class ForeachNode(Node):
     var: Optional['Node'] = None
     list_expr: Optional['Node'] = None
     body: List['Node'] = field(default_factory=list)
+    name: str = 'foreach'
 
 
 @dataclass

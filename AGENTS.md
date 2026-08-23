@@ -334,6 +334,54 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   再 `-offset` 把 gvar 槽压到 149（CAD 用 150）。此改动只影响 offset=1 且走
   `_res_offset` 路径的表外符号；fg 表内符号（gvar_map/str_map 命中）不受影响。
   回归：34/67 无既有文件回退（net/proxy/scheduler 等 kwote 文件保持 byte-identical）。
+- **2026-08-23（CAD 对拍）help-system.lsp byte-identical（41/67）**：`_seen` +
+  `_in_name_set` 字符串大小写敏感（`cad_symbols.py`），help-system **seg0+seg1+
+  nsyms 完全一致**（`"cmdecho"`/`"CMDECHO"` 是两个独立槽）：`(setvar "CMDECHO" 0)`
+  与 `(setvar "cmdecho" 1)` 在同一函数（@::browser/@::browser-pkg）。旧 `_seen`/
+  `_in_name_set` 对字符串也走大小写不敏感路径（`"cmdecho"`.upper()=="CMDECHO"）→
+  两个字符串合并一个 → "CMDECHO" 槽缺失、后续槽错位（@::OPEN-URL 提前）。
+  修复：`_seen`/`_in_name_set` 对以 `"` 开头的字符串键用精确匹配（大小写敏感），
+  仅普通符号走大小写不敏感。回归：voice/log/i18n/cl-macros 保持 byte-identical
+  （符号合并不受影响）。
+- **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
+  跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
+  **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n
+  @::codepage2lang 在 SETQ[0]（模块全局，line 3）后立即注册、在 SETQ[2]（line 17
+  mid 语句）前）。旧 `_n_pre` 循环在首个 defun 之前的顶层 form（SETQ[0]）处
+  break → n_pre=0 → codepage2lang 落 TAIL 注册（mid 语句之后）。修复：循环跳过
+  globals（首个 defun 之前的顶层语句），仅对首个 defun 之后的连续 defun 计数；
+  无 mid 顶层语句（command.lsp 纯函数）仍 `_saw_top_stmt=False` → n_pre 归 0。
+  回归：log.lsp/platform.lsp/command.lsp 保持 byte-identical（前导 in-package/
+  use-package 仍跳过）。
+- **2026-08-23（CAD 对拍）ui.lsp byte-identical（39/67）**：ForeachNode 记录
+  `vlax-for` 名 + `_strip_list_markers` 大小写保留集优先，ui.lsp **seg0+seg1+nsyms
+  完全一致**（quoted lambda 内 `(vlax-for n meth2 ...)`）：
+  1. **ForeachNode.name 字段**（`ast_nodes.py` + `parser.py`）：`vlax-for` 展开为
+     ForeachNode 时记录 `name='vlax-for'`。`_collect_forward`/`_to_const`/
+     `_emit_quoted` 用 `node.name or 'foreach'`——quoted 数据 const 内嵌
+     `(vlax-for ...)` 注册 `vlax-for`（CAD ui.lsp golden 实测 const 字节
+     `5b VLAX-FOR`），`_collect_forward` 模块注册同理。测试
+     `test_vlax_for_expanded_to_foreach` 更新：断言 VLAX-FOR 槽存在（旧断言
+     "不应出现" 是展开前行为，CAD 实际注册）。
+  2. **`_strip_list_markers` 大小写保留集优先**（`cli.py`）：`_VLISP_CASE_PRESERVE`
+     检查移到 vla-/vlax- 分支**之前**——`vlax-for` 的 `_enc_sym` 规范化为
+     `VLAX-FOR`（保留集），但 `_strip_list_markers` 旧顺序先命中 vla-/vlax-
+     分支返回小写 `vlax-for` → const_map 失配 → PUSH_G 落 nsyms-1。重排后
+     `VLAX-FOR` 匹配 fg 表 const。
+- **2026-08-23（CAD 对拍）reactor.lsp byte-identical（38/67）**：两个通用修复 +
+  cond else 键 T 去重，reactor.lsp **seg0+seg1+nsyms 完全一致**：
+  1. **cond else 键 `t` 与值位置 `t` 去重**（`cad_symbols.py` `_collect_byteorder`
+     Cond 分支）：`(t ...)` else 键强制 append（绕过 `_seen`），与值位置
+     `(setq x t)`（reactor @::dbclicked 的 flag/flag2）共存 → _rev 两个 `t` 都过
+     `i == t_last` 分支 → T 槽双发（nsyms +1、T 提前到测试组前）。修复：Cond
+     分支 append 前查 `_seen`（值位置 t 已注册时跳过强制 t）+ `_t_added` 同函数
+     只注册一次。CAD T 槽位置由**最后一个** `t` 引用决定（reactor CAD 实测
+     `IS-BRICSCAD @::PLATFORM-IS-LINUX-P T`——T 在测试组后）。
+  2. **顺序 foreach 复用局部槽**（`codegen.py`）：`_emit_foreach_stub`/`_emit_repeat_stub`
+     局部槽 key 由 `buf.pos()`（每处唯一）改 `__foreach_list__{self._loop_depth}`/
+     `__repeat__{self._loop_depth}`——同一直接体深度顺序循环复用同一槽
+     （reactor 两个 foreach 都 SET_LOCAL 2），嵌套循环递增深度用独立槽
+     （与 DEFUN 头 b1=argc+并发深度对应）。`self._loop_depth` 逐函数归零。
 - **2026-08-23（CAD 对拍）lifecycle.lsp byte-identical（37/67）**：`_collect_multi`
   跨函数 `seen_refs` 去重改**大小写不敏感**（`cad_symbols.py` `_ci_ref_key`：
   普通符号 `.upper()`，vla-/vlax-/字符串/`__` 键保留原样）。原因：lifecycle 的

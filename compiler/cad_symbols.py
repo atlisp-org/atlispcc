@@ -262,7 +262,7 @@ def to_const(node):
         lst = to_const(node.list_expr)
         if v is None or lst is None:
             return None
-        return ('LIST', (('SYMBOL', 'foreach'), v, lst) + body)
+        return ('LIST', (('SYMBOL', node.name or 'foreach'), v, lst) + body)
     if isinstance(node, RepeatNode):
         body = tuple(to_const(f) for f in node.body)
         if any(b is None for b in body):
@@ -365,11 +365,20 @@ class CadSymbolCollector:
     def _in_name_set(self, name) -> bool:
         """_name_set 大小写不敏感检查（非 vla-/vlax- 符号）。CAD 符号槽全大写、
         大小写不敏感：quoted 'Count 与 local count / 跨函数 'Status 合并一个槽。
-        vla-/vlax- 保留大小写（ActiveX 方法大小写敏感，voice.lsp 'GetVoices 等）。"""
-        if isinstance(name, str) and not name.lower().startswith(("vla-", "vlax-")):
+        vla-/vlax- 保留大小写（ActiveX 方法大小写敏感，voice.lsp 'GetVoices 等）。
+        **字符串**（`"..."` 键）大小写敏感（help-system `"cmdecho"`/`"CMDECHO"`
+        是两个独立槽——`_seen` 同样大小写敏感，此处不一致会反向合并）。"""
+        if (
+            isinstance(name, str)
+            and not name.startswith('"')
+            and not name.lower().startswith(("vla-", "vlax-"))
+        ):
             nk = name.upper()
             return any(
-                isinstance(s, str) and not s.lower().startswith(("vla-", "vlax-")) and s.upper() == nk
+                isinstance(s, str)
+                and not s.startswith('"')
+                and not s.lower().startswith(("vla-", "vlax-"))
+                and s.upper() == nk
                 for s in self._name_set
             )
         return name in self._name_set
@@ -385,8 +394,13 @@ class CadSymbolCollector:
             # 符号大小写不敏感（CAD 符号槽全大写）：quoted 'Status 与 local
             # status 收集层合并一个（位置 = 首次出现），否则逆序注册时 status
             # 排在 vlax-get-property 前、CAD 在后者（voice.lsp 实测）。vla-/
-            # vlax- 保留大小写（ActiveX 方法大小写敏感）。
-            if isinstance(name, str) and not name.lower().startswith(("vla-", "vlax-")):
+            # vlax- 保留大小写（ActiveX 方法大小写敏感），**字符串**（`"..."` 键）
+            # 也大小写敏感（help-system `"cmdecho"`/`"CMDECHO"` 是两个槽）。
+            if (
+                isinstance(name, str)
+                and not name.startswith('"')
+                and not name.lower().startswith(("vla-", "vlax-"))
+            ):
                 nk = name.upper()
                 return any(isinstance(n, str) and n.upper() == nk for n in out.names)
             return name in out.names
@@ -1434,7 +1448,14 @@ class CadSymbolCollector:
                     # SYMBOL T 槽（t05_cond golden 实测），需 force 强制注册。
                     # CAD weak_keywords 里 t 大小写不敏感，统一作 SYMBOL T。
                     if isinstance(cond, Symbol) and cond.name.lower() in ('t',):
-                        out.append((cond.name, True))
+                        # cond else 键 `(t ...)` 强制注册 SYMBOL T，但若函数体内
+                        # 已有值位置 `t`（`(setq x t)`，reactor.lsp 实测）则跳过——
+                        # 值位置 t 已注册 T 槽（_seen 命中），再 append 强制 t 会
+                        # 产生两个 T（nsyms +1、T 槽提前到测试组前、后续槽错位）。
+                        # CAD T 槽位置由**最后一个** `t` 引用决定（reactor CAD 实测
+                        # IS-BRICSCAD @::PLATFORM-IS-LINUX-P T——T 在测试组后）。
+                        if not self._seen(out, cond.name):
+                            out.append((cond.name, True))
                     else:
                         self._collect_byteorder(cond, out, arg_names, in_quote)
             for clause in reversed(clauses):
@@ -1509,7 +1530,7 @@ class CadSymbolCollector:
                     # 'vla-postcommand vla-sendcommand)` CAD 实测 `'vla-postcommand`
                     # → `vla-PostCommand` 符号槽）。
                     _n = normalize_vla_name(node.expr.name)
-                    if _n not in arg_names and _n not in self.shared and not self._seen(out, _n):
+                    if _n not in arg_names and not self._seen(out, _n):
                         out.append((_n, False))
                 else:
                     const = to_const(node.expr)
@@ -1597,7 +1618,7 @@ class CadSymbolCollector:
             for form in node.forms:
                 self._collect_forward(form, out, locals_)
         elif isinstance(node, ForeachNode):
-            out.append(("foreach", False))
+            out.append((node.name or "foreach", False))
             for expr in node.body:
                 self._collect_forward(expr, out, locals_)
             if node.list_expr:
