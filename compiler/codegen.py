@@ -984,10 +984,18 @@ class CodeGenerator:
                 self._emit_expr(buf, form)
             else:
                 self._emit_stmt(buf, form)
-                # 非尾 foreach（_in_tail_context=False）体最后语句若留值（print/cons
-                # 等调用）→ POP 丢弃（i18n-cad save-mt `(print opt% fp)` 后 `POP`）；
-                # setq/if 自身管理栈；尾 foreach 无 POP（update-locale-all 实测）。
-                if not self._in_tail_context and i == len(node.body) - 1 and not isinstance(form, (Setq, IfNode)):
+                # 非尾 foreach（_in_tail_context=False）体语句值被丢弃（princ
+                # 等调用留值）→ 每句 POP（@::list-config 多语句体 CAD 实测
+                # `USUBR; POP` 间隔）；最后语句同样 POP。setq/if/循环自平衡
+                # 无 POP。尾 foreach（t16 update-locale-all）无 POP——体值
+                # 累积为 foreach 结果（`体各式无 POP`）。
+                if (
+                    not self._in_tail_context
+                    and not isinstance(
+                        form,
+                        (Setq, IfNode, WhileNode, ForeachNode, RepeatNode, Cond, Progn),
+                    )
+                ):
                     buf.emit(encode_op_noarg(POP))
         self._loop_depth -= 1
 

@@ -419,6 +419,13 @@ class CadSymbolCollector:
             for a in f.args:
                 arg_usage[a] = arg_usage.get(a, 0) + 1
         self.shared = {a for a, c in arg_usage.items() if c > 1}
+        # 全部函数参数名（含唯一参数）：函数体收集时排除——参数由各函数 args
+        # 循环注册（唯一参数在所属函数、共享参数在 _shared_last 处）。否则某函数
+        # 的参数名被**其它函数**作内建/全局引用（config/store `type` =
+        # define-config-typed 参数 + config-validate `(type value)` 调用）时，
+        # 会在引用函数的函数体组抢先注册，错位到参数拥有者组（CAD 实测 TYPE
+        # 在 define-config-typed 组 fg[78]，非 config-validate 组 fg[59]）。
+        self._all_params = set(arg_usage.keys())
 
         if len(defuns) <= 1:
             return self._collect_single(defuns, others, program)
@@ -1392,18 +1399,19 @@ class CadSymbolCollector:
         elif cur_locals is not None:
             self._cur_locals = cur_locals
         if isinstance(node, Symbol):
+            _is_local = bool(cur_locals and node.name in cur_locals)
             if (
                 node.name not in arg_names
                 and not self._seen(out, node.name)
-                and (
-                    node.name not in self.shared
-                    # shared 参数名同时是**当前函数局部**（net/module `response-str`
-                    # = cache-module-response/eval-module 参数 + fetch-module 局部）：
-                    # 局部拥有者函数体须收集（注册在 body 位置），否则被 shared
-                    # 过滤 → 仅 locals 循环尾部注册错位。共享参数跨函数引用
-                    # （persist pkg-name 在 save-pkg-in-use foreach）仍过滤。
-                    or (cur_locals and node.name in cur_locals)
+                and not (
+                    # 其它函数的参数名（config/store `type`）与共享参数名
+                    # （persist pkg-name）作普通符号引用时过滤——由参数拥有者
+                    # 注册。当前函数局部（net/module `response-str` 局部拥有者
+                    # 函数体须收集）放行。
+                    node.name in getattr(self, "_all_params", set())
+                    and not _is_local
                 )
+                and not (node.name in self.shared and not _is_local)
             ):
                 out.append((node.name, False))
         elif isinstance(node, InPackage):
@@ -1439,20 +1447,26 @@ class CadSymbolCollector:
                 # ("ads-cmd")`，收集阶段同步改名避免槽位错位。
                 if not self._seen(out, "ads-cmd"):
                     out.append(("ads-cmd", False))
-            elif node.name not in arg_names and not self._seen(out, node.name):
+            elif (
+                node.name not in arg_names
+                and node.name not in getattr(self, "_all_params", set())
+                and not self._seen(out, node.name)
+            ):
                 out.append((node.name, False))
         elif isinstance(node, Setq):
             for target, value in node.pairs:
                 if value:
                     self._collect_byteorder(value, out, arg_names, in_quote)
                 if isinstance(target, Symbol):
+                    _is_local = bool(cur_locals and target.name in cur_locals)
                     if (
                         target.name not in arg_names
                         and not self._seen(out, target.name)
-                        and (
-                            target.name not in self.shared
-                            or (cur_locals and target.name in cur_locals)
+                        and not (
+                            target.name in getattr(self, "_all_params", set())
+                            and not _is_local
                         )
+                        and not (target.name in self.shared and not _is_local)
                     ):
                         out.append((target.name, False))
                 else:

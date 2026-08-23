@@ -394,6 +394,21 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      kwote lambda 体非末语句的 if/cond 不追加 POP（if 语句上下文自平衡，
      与 generate_function line 1616 同规则；net/module cache-module-response
      的 kwote lambda `(if fp ...)` 后多 `0a` → seg0 +1）。
+- **2026-08-23（CAD 对拍）config/store.lsp byte-identical（44/67）**：两个通用
+  修复（`_all_params` 排除 + 非尾 foreach 体每句 POP），config/store
+  **seg0+seg1+nsyms 完全一致**（base-function seg0 同步转正、TYPE fg[78] 对齐）：
+  1. **`_all_params` 函数体收集排除**（`cad_symbols.py`）：全部函数参数名（含
+     唯一参数）在 `_collect_byteorder` 的 Symbol/Call name/Setq target 三处
+     排除——某函数参数名被**其它函数**作内建/全局引用（config/store `type` =
+     define-config-typed 参数 + config-validate `(type value)` 调用）时，CAD
+     注册在**参数拥有者**组（TYPE fg[78]），非引用函数组（fg[59]，旧实现
+     config-validate 抢先注册）。当前函数局部（cur_locals，net/module
+     `response-str` 局部拥有者）放行。
+  2. **非尾 foreach 体每句 POP**（`codegen.py` `_emit_foreach_stub`）：非尾
+     foreach（`_in_tail_context=False`）体多语句的值被丢弃（@::list-config
+     `(princ ...)` 每句 CAD 实测 `USUBR; POP`），旧实现仅最后语句 POP、中间
+     语句留值（seg0 -9）。setq/if/循环自平衡无 POP；尾 foreach 仍无 POP
+     （t16 "体各式无 POP"——体值累积为 foreach 结果）。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n
