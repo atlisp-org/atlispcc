@@ -1593,8 +1593,23 @@ class CadSymbolCollector:
                         if set(_lam_locals) == set(cur_locals or []):
                             if not self._seen(out, "_al-bind-alist"):
                                 out.append(("_al-bind-alist", False))
+                    # 多参数 kwote lambda（persist `(lambda (e1 e2) ...)` 实测
+                    # CAD fg[109]=E2、fg[110]=E1）：参数在 kwote 块**末尾**逆序
+                    # 注册（= forward 块开头、_rev 块末尾），不随 body 内联；
+                    # 单参数（scheduler `task-item`、i18n `opt%`）仍内联
+                    # （CAD 实测 `kwote = CAR TASK-ITEM`）。
+                    _multi = len(lambda_args) > 1
+                    _body_args = arg_names | lambda_args if _multi else arg_names
+                    if _multi:
+                        for _p in _lambda_args:
+                            if (
+                                _p not in arg_names
+                                and _p not in self.shared
+                                and not self._seen(out, _p)
+                            ):
+                                out.append((_p, False))
                     for expr in node.expr.body:
-                        self._collect_byteorder(expr, out, arg_names, in_quote)
+                        self._collect_byteorder(expr, out, _body_args, in_quote)
                     # kwote 块结束标记：CAD 注册序把 kwote 块（kwote + lambda 体）
                     # 保持收集序整体插到**调用者**（外层调用名）之后，不随其它
                     # 函数体符号逆序沉底（base-function getf / i18n load-mt 实测）。

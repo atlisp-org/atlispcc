@@ -764,11 +764,16 @@ class CodeGenerator:
             jmp_pos = buf.pos()
             buf.emit(encode_op_s32(JMP32_IFNOT, 0))
             buf.add_patch(jmp_pos + 1, label_else, 4)
-            # then 分支尾上下文：尾 if / 模块代码顶层 if 需 DUP 保留值
-            # （模块代码顶层 if-then-setq，p04/i18n-cad 实测 `0b 06`）。仅
-            # 独立顶层 if / 尾 if 时 DUP；cond 子句体等语句上下文的 if 的
-            # then 分支 setq 不 DUP（test-cond CAD 实测 `PUSH_G; SETQ_G`）。
-            _then_tail = self._in_tail_context or self._module_mode
+            # then 分支尾上下文：尾 if / 模块代码顶层 if / 值上下文（setq RHS、
+            # 外层 if 分支值）需 DUP 保留值（模块代码顶层 if-then-setq，
+            # p04/i18n-cad 实测 `0b 06`）。仅独立顶层 if / 尾 if 时 DUP；
+            # cond 子句体等语句上下文的 if 的 then 分支 setq 不 DUP
+            # （test-cond CAD 实测 `PUSH_G; SETQ_G`）。值上下文（`_in_stmt_ctx`
+            # False）的 if 分支值是外层消费者（setq RHS/外层 if）的输入——
+            # `_then_tail=True` 使分支末 progn 的 `nil` 值不被 _last_nil_stmt
+            # 省略（persist @::get-local-pkg-info `(progn (vl-file-delete ...)
+            # nil)` 为 if then 值，CAD 发射 PUSH_NIL）。
+            _then_tail = self._in_tail_context or self._module_mode or not self._in_stmt_ctx
             # 语句上下文（`_in_stmt_ctx=True`）且 then 为常量 `nil`/`T`（如
             # init/steps `(if (vl-catch-all-error-p ...) nil)` 语句）：分支值被
             # POP 丢弃，push+pop 是纯 no-op——CAD 省略整个 then 代码（实测

@@ -427,6 +427,22 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   参数（cl-functions `str` = 4 函数参数）quoted 引用照常收集（CAD 双槽
   fg[64] body + fg[105] param）。修复后 platform-api fg 全对齐，仅 seg0 +2
   （尾 if `nil` else 的 `PUSH_NIL; POP` no-op，CAD 省略，待 codegen 修）。
+- **2026-08-23（CAD 对拍）persist.lsp byte-identical（46/67）**：两个通用修复
+  （多参数 kwote lambda 参数块尾逆序 + `_then_tail` 值上下文），persist
+  **seg0+seg1+nsyms 完全一致**（`/ 局部变量` + 双 kwote lambda `(lambda (e1 e2))`）：
+  1. **多参数 kwote lambda 参数块尾逆序**（`cad_symbols.py` kwote 分支）：参数
+     数 >1 时在 kwote 块**末尾**逆序注册（persist `(lambda (e1 e2) ...)` CAD
+     fg[109]=E2、fg[110]=E1 = forward 块开头、_rev 块末尾），body 收集排除
+     （`arg_names | lambda_args`）；单参数（scheduler `task-item`、i18n `opt%`）
+     仍内联（CAD `kwote = CAR TASK-ITEM`）。
+  2. **`_then_tail` 值上下文**（`codegen.py` `_emit_if`）：`_then_tail =
+     self._in_tail_context or self._module_mode or not self._in_stmt_ctx`——值
+     上下文（setq RHS、外层 if 分支值）的 if 分支值被使用，`_then_tail=True`
+     使分支末 progn 的 `nil` 值不被 `_last_nil_stmt`（`not saved_tail`）省略
+     （persist @::get-local-pkg-info `(progn (vl-file-delete ...) nil)` 为 if
+     then 值，CAD 发射 PUSH_NIL；旧实现省略 → seg0 -1）。回归：i18n/
+     cl-functions/net/module/base-function/scheduler/voice/config-store/lifecycle
+     保持 byte-identical，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n
