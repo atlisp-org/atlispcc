@@ -317,14 +317,36 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   `_al-bind-alist` 槽（资源注册序，**不随 `-lambda-` 偏移**）。旧公式
   `new_idx = _al_slot - offset` 在 kwote 文件（offset=1，lock.lsp）会错成
   `_al_slot-1`（100，CAD 用 101）。t11/net-proxy offset=0 不受影响。
-- **2026-08-23 更新**：**byte-identity 36/67**。新增 init/steps、config/migrate、
+- **2026-08-23 更新**：**byte-identity 42/67**。新增 init/steps、config/migrate、
   config-sync-config、scheduler、ui/hotkey、package/lock、net/ax-request、
-  net/probe、**command、log、voice** 十一个 byte-identical。其中 net/ax-request/
+  net/probe、**command、log、voice、lifecycle、reactor、ui、i18n、
+  help-system、cl-functions** 十九个 byte-identical。其中 net/ax-request/
   net/probe 是**旧 golden stale**（重新在 CAD 24.1s 编译后 nsyms 与 ours 一致），
-  已用 `vlisp-compile` 重新生成 golden。剩余 31 DIFF：多数为符号槽序（ORDER，
+  已用 `vlisp-compile` 重新生成 golden。剩余 25 DIFF：多数为符号槽序（ORDER，
   `_res_offset` 逐区不一致——base-function 各区偏移 68/70/72/85/92 不等）+
   `list` 内建符号收集位置（lifecycle LIST fg[12] vs CAD[38]）+ `(let ...)` EVAL
   模式 + 顶层/模块代码分组（ui.lsp 的 vlax-for、i18n seg1）。
+- **2026-08-23（CAD 对拍）cl-functions.lsp byte-identical（42/67）**：两个通用
+  修复，cl-functions **seg0+seg1+nsyms 完全一致**（`#-sbcl + progn` 展开模式，
+  mid 别名 set 与注册交错 + gvar_map 重复符号首槽）：
+  1. **mid 别名 set 与注册交错**（`cli.py` `_build_cad_module_code`）：mid 语句
+     均为 `(set 'cl::xxx cl::xxx)`（Progn[1]set，或 Progn[N] 首 form 为 set，
+     cl-functions 的 `#-sbcl + progn` 展开）时，CAD 把每条 mid 语句与对应函数
+     注册**交错** `[reg i, mid[i]]`（START/TAIL 同样）。函数无 mid（@::eval/
+     @::require，mids=-）跳过不消耗 mid_forms。`mid_counts`（cli.py 调用方计算，
+     每个 defun 之后的非 defun/defpackage/in-package form 数，仅统计最后一个
+     defun 之前）逐函数分配；普通 mid（i18n/platform setq/if）仍全部 mid 先、
+     注册后。cl-functions 前导 `(in-package :@)`/`(use-package :autolisp)` 使
+     n_globals=2、cl::stringp 为首个 defun 之后连续（n_pre=1 START 注册）。
+  2. **gvar_map 重复符号取 symtab-consistent 槽**（`cli.py` gvar_map 构建）：
+     模块代码二次生成时 gvar_map 对重复符号（`=` rg 三槽 @[50,51,52]）取
+     **首槽** 50，`_offset_slots` 会把 pass1（symtab_idx+1=52，与 CAD 逐字节
+     一致）的 PUSH_VALUE 重映射成 PV50 → 破坏。修复：先按 symtab 序自然映射
+     （rg[symtab_idx+1+n_cmds] 持有该符号时 gvar_map[sym]=自然槽），再扫描 rg
+     表补充顺序不一致（atlisp_u 函数名逆序）的符号。cl-functions `=` symtab
+     idx 51 → 自然槽 52 ✓；`:use`/`:export` 不在 rg（CAD 不注册，module 代码
+     SETQ_G 用 symtab_idx+1 fallback=51/50）不受影响。回归：@lisp-env/i18n/
+     platform/cl-macros 保持 byte-identical，372 tests pass。
 - **2026-08-23（CAD 对拍）command.lsp byte-identical（34/67）**：`_res_offset`
   编址的表外符号（不在 fg 表）**不再减 `-offset`**（`cli.py` `_patch_usubr_idx`
   SYMBOL 分支 `_fg_ext = _rs - _res_offset; new_idx = _fg_ext - 1`）。原因：

@@ -1350,6 +1350,7 @@ def _build_cad_module_code(
     n_pre: int = 0,
     skip_funcs: Optional[set] = None,
     n_cmds: int = 0,
+    mid_counts: tuple = (),
 ) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
@@ -1757,31 +1758,67 @@ def _build_cad_module_code(
             return c
 
         _skip = skip_funcs or set()
+        # 首个 defun 与最后一个 defun 之间的顶层语句（含 setq-lambda 绑定）。
+        # mid 语句为**别名 set**（`(set 'cl::xxx cl::xxx)`，cl-functions 的
+        # #-sbcl + progn 展开模式）时，CAD 把每条 mid 语句与对应函数的注册
+        # **交错**（[reg i, mid[i], reg i+1, mid[i+1], ...]）；普通 mid 语句
+        # （i18n/platform 的 setq/if）仍全部 mid 先、注册后。
+        def _mid_lead_alias(_m):
+            _first = _m.forms[0] if isinstance(_m, Progn) else _m
+            return (
+                isinstance(_first, Call)
+                and str(_first.name).lower() == "set"
+                and len(_first.args) == 2
+                and isinstance(_first.args[0], QuotedExpr)
+                and isinstance(_first.args[0].expr, Symbol)
+                and isinstance(_first.args[1], Symbol)
+            )
+
+        _interleave_mid = (
+            len(mid_forms) > 0
+            and len(mid_forms) <= n_funcs
+            and all(_mid_lead_alias(_m) for _m in mid_forms)
+        )
         # START 函数注册：前 n_pre 个函数（定义在首个顶层语句之前，CAD
         # platform 实测 set-locale/get-locale 在 globals 语句前注册）。
         # 每组 `JUMP; PUSH_G b; SETQ_G c; PUSH_G c; POP`；命令组为 CAD
         # 24 字节模式 `JUMP; PUSH_G b; SETQ_G c; PUSH_G c; USUBR(1,<vl槽>);
         # POP; PUSH_G c; POP`（vl-ACAD-defun 注册命令）。
         _vl_slot = (_first_cmd_slot + 1) if _first_cmd_slot is not None else None
+        _mi = 0
+        _mid_counts = mid_counts or ()
+
+        def _emit_mid_for(i):
+            # 交错模式下按 mid_counts 把函数 i 的 mid 语句分配给它（无 mid 的
+            # 函数跳过）。mid_forms 顺序与源码 mid 顺序一致（cl-functions
+            # @::eval/@::require 无 mid，不消耗 mid_forms）。
+            nonlocal _mi
+            if not _interleave_mid:
+                return
+            _cnt = _mid_counts[i] if i < len(_mid_counts) else 0
+            if _cnt > 0 and _mi < len(mid_forms):
+                _emit_stmts(mid_forms[_mi : _mi + _cnt], last_no_pop=False)
+                _mi += _cnt
+
         for i in range(min(n_pre, n_funcs)):
             out += b"\x57\x00\x00\x00\x00"
             c = _reg(i)
             if _skip_reg_pc:
                 # START 注册也省略 `PUSH_G c; POP` no-op（cl-functions 首个
                 # defun cl::stringp 的 START 注册 CAD 实测无 no-op）。
+                _emit_mid_for(i)
                 continue
             out += bytes([0x09]) + struct.pack("<H", c)
             if _is_cmd(i) and _vl_slot is not None:
                 out += bytes([0x35, 0x01]) + struct.pack("<H", _vl_slot) + bytes([0x01, 0x0a])
                 out += bytes([0x09]) + struct.pack("<H", c)
             out += b"\x0a"
-        # 首个 defun 与最后一个 defun 之间的顶层语句（含 setq-lambda 绑定）。
-        _emit_stmts(mid_forms, last_no_pop=False)
-        # 其余函数注册（最后一个 defun 之前、post 语句之前）。setq-lambda
-        # 函数（skip_funcs）已由 mid_forms 的 setq 绑定，不在此 `_reg`。
-        for i in range(n_pre, n_funcs):
-            if func_names and i < len(func_names) and func_names[i] in _skip:
-                continue
+            _emit_mid_for(i)
+
+        def _reg_emit(i):
+            # 其余函数注册（最后一个 defun 之前、post 语句之前）。setq-lambda
+            # 函数（skip_funcs）已由 mid_forms 的 setq 绑定，不在此 `_reg`。
+            nonlocal out, _last_reg_cmd
             out += b"\x57\x00\x00\x00\x00"
             c = _reg(i)
             _last_reg_cmd = _is_cmd(i)
@@ -1800,6 +1837,22 @@ def _build_cad_module_code(
                 # （非末尾、post 语句、或非 Progn 末全局的纯尾部）时发射。
                 out += bytes([0x09]) + struct.pack("<H", c)
                 out += b"\x0a"
+
+        if _interleave_mid:
+            # mid 别名 set 与注册交错：每个注册（START/TAIL）后紧跟其对应
+            # 函数的 mid set（cl-functions `(set 'cl::xxx cl::xxx)`，按
+            # mid_counts 分配，无 mid 函数跳过）。
+            for i in range(n_pre, n_funcs):
+                if func_names and i < len(func_names) and func_names[i] in _skip:
+                    continue
+                _reg_emit(i)
+                _emit_mid_for(i)
+        else:
+            _emit_stmts(mid_forms, last_no_pop=False)
+            for i in range(n_pre, n_funcs):
+                if func_names and i < len(func_names) and func_names[i] in _skip:
+                    continue
+                _reg_emit(i)
     else:
         _emit_stmts(mid_forms, last_no_pop=(not post_forms))
     if post_forms:
@@ -2785,6 +2838,19 @@ def cmd_compile(
                 continue
         if not _first_defun_seen or not _saw_top_stmt:
             _n_pre = 0
+        # 每个 defun 之后的 mid 顶层 form 数（仅统计最后一个 defun 之前）。
+        # 交错（cl-functions 别名 set）时按此把 mid_forms 分配给对应函数。
+        _mid_counts = []
+        _cur_fn = None
+        for _i, _f in enumerate(program.forms):
+            if isinstance(_f, _Defun):
+                _mid_counts.append(0)
+                _cur_fn = len(_mid_counts) - 1
+            elif _cur_fn is not None and not isinstance(_f, (_Defpackage, _InPackage)) and not (
+                isinstance(_f, _Call) and str(_f.name).lower() in ("use-package", "defpackage")
+            ):
+                if _i < _last_defun_pos:
+                    _mid_counts[_cur_fn] += 1
         module_code = _build_cad_module_code(
             top_level_code,
             symtab,
@@ -2799,6 +2865,7 @@ def cmd_compile(
             n_pre=_n_pre,
             skip_funcs=_top_lambda_names,
             n_cmds=n_cmds,
+            mid_counts=tuple(_mid_counts),
         )
     elif n_cmds:
         # 纯命令文件（全部函数都是命令，无顶层表达式，t14_command）走
@@ -2887,6 +2954,25 @@ def cmd_compile(
 
             _rg, _fg = _bmt(seg1, fas_nsyms)
             gvar_map = {}
+            # 先按 symtab 序建立自然映射：模块符号的 gvar 槽 =
+            # symtab_idx + 1 + n_cmds（模块注册顺序 = symtab 顺序时）。仅当
+            # rg 槽确实持有该符号时采用——重复符号（cl-functions `=` 三槽
+            # @[50,51,52]，模块代码引用 52 = symtab idx 51 + 1）若取首槽 50，
+            # `_offset_slots` 会把正确的 PV52 重映射成 PV50（pass1 模块代码
+            # 与 CAD 逐字节一致，gvar_map 首槽破坏之）。
+            for _i in range(len(symtab.entries)):
+                _t, _v = symtab.entries[_i]
+                if _t not in ("SYMBOL", "STRING"):
+                    continue
+                _rk = str(_v).upper() if _t == "SYMBOL" else str(_v)
+                _natural = _i + 1 + n_cmds
+                if 0 <= _natural < len(_rg):
+                    _rv = _rg[_natural]
+                    if isinstance(_rv, tuple) and len(_rv) == 2 and _rv[0] in ("SYMBOL", "STRING"):
+                        _rv_key = str(_rv[1]).upper() if _rv[0] == "SYMBOL" else str(_rv[1])
+                        if _rv_key == _rk:
+                            gvar_map[_rk] = _natural
+            # 补充：模块注册顺序不一致（atlisp_u 函数名逆序）时按 rg 表修正。
             for _idx, _v in enumerate(_rg):
                 if isinstance(_v, tuple) and len(_v) == 2 and _v[0] in ("SYMBOL", "STRING"):
                     _key = str(_v[1]).upper() if _v[0] == "SYMBOL" else str(_v[1])
@@ -2930,6 +3016,7 @@ def cmd_compile(
                 n_pre=_n_pre,
                 skip_funcs=_top_lambda_names,
                 n_cmds=n_cmds,
+                mid_counts=tuple(_mid_counts),
             )
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args,
                             codegen_nsyms=codegen_nsyms,
