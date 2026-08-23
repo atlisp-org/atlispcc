@@ -34,6 +34,7 @@ from compiler.resource_builder import (
     ResourceBuilder,
     build_module_code,
     build_command_module_code,
+    build_mixed_command_module_code,
     count_resource_records,
     count_resource_items,
     resolve_encoding,
@@ -419,6 +420,81 @@ def _lower_immediate_lambda(forms):
     return [rewrite(f) for f in forms]
 
 
+def _lower_let(forms):
+    """把 `(let ((v1 e1) (v2 e2) ...) body...)` 改写为
+    `((lambda (v1 v2 ...) body...) e1 e2 ...)` 立即应用。
+
+    CAD 编译器对 `let` 用「EVAL 引用 lambda + 实参」编译（fg 有 LET 符号槽，
+    event-bus `(let ((entry ...)) ...)` 实测 `... USUBR; EVAL 0, const`）；我们
+    降级为 lambda-apply，由 `_lower_immediate_lambda` 再改写为
+    `(apply '(lambda ...) (list ...))`（成熟引用常量路径，功能正确）。
+    仅处理代码位置的 `let`；引用数据（QuotedExpr）内的 `let` 是数据不降级。
+    """
+    from compiler.ast_nodes import ListExpr as _LE, LambdaNode as _LN, Symbol as _Sym
+
+    def rewrite(node):
+        if isinstance(node, _LE):
+            node.items = [rewrite(i) for i in node.items]
+            if node.dotted is not None:
+                node.dotted = rewrite(node.dotted)
+            return node
+        if isinstance(node, Call) and node.name == "let" and node.args:
+            bindings = node.args[0]
+            body = node.args[1:]
+            vars_: List[str] = []
+            inits: List[Node] = []
+            if isinstance(bindings, _LE):
+                for b in bindings.items:
+                    if isinstance(b, _LE) and b.items:
+                        v = b.items[0]
+                        vars_.append(v.name if isinstance(v, Symbol) else str(v))
+                        inits.append(rewrite(b.items[1]) if len(b.items) > 1 else _Sym("nil"))
+                    else:
+                        vars_.append(b.name if isinstance(b, Symbol) else str(b))
+                        inits.append(_Sym("nil"))
+            lam = _LN(
+                args=vars_,
+                body=[rewrite(x) for x in body],
+            )
+            return _LE(items=[lam] + [rewrite(i) for i in inits])
+        if isinstance(node, Call):
+            node.args = [rewrite(a) for a in node.args]
+            return node
+        if isinstance(node, Setq):
+            node.pairs = [(rewrite(t), None if v is None else rewrite(v)) for t, v in node.pairs]
+            return node
+        if isinstance(node, IfNode):
+            node.cond = rewrite(node.cond)
+            node.then = rewrite(node.then)
+            if node.else_expr is not None:
+                node.else_expr = rewrite(node.else_expr)
+            return node
+        if isinstance(node, Progn):
+            node.forms = [rewrite(f) for f in node.forms]
+            return node
+        if isinstance(node, Cond):
+            node.clauses = [tuple(rewrite(x) for x in c) for c in node.clauses]
+            return node
+        if isinstance(node, Defun):
+            node.body = [rewrite(b) for b in node.body]
+            return node
+        if isinstance(node, (WhileNode, ForeachNode, RepeatNode)):
+            node.body = [rewrite(b) for b in node.body]
+            if isinstance(node, WhileNode) and node.cond is not None:
+                node.cond = rewrite(node.cond)
+            elif isinstance(node, RepeatNode) and node.count is not None:
+                node.count = rewrite(node.count)
+            elif isinstance(node, ForeachNode) and node.list_expr is not None:
+                node.list_expr = rewrite(node.list_expr)
+            return node
+        if isinstance(node, LambdaNode):
+            node.body = [rewrite(b) for b in node.body]
+            return node
+        return node
+
+    return [rewrite(f) for f in forms]
+
+
 def _collect_builtins_for_stub(symtab, node):
     """stub 模式下将调用到的内建函数注册为符号槽（CAD stub 用符号槽编址调用）。"""
     from compiler.ast_nodes import (
@@ -654,11 +730,23 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         体区，nsyms=25）必须取函数体区槽（57 ≥ nsyms → CAD 用 nsyms-1）；
         取模块区槽（3）会算出 3-1=2 的错误操作数。仅出现在模块区（函数名
         等）的符号在函数体区无槽位，取末次=模块区槽，语义不变。
+
+        大小写：先精确匹配（字符串大小写敏感，`"date"`/`"DATE"` 异槽），
+        未命中再做不区分大小写匹配（`0x56` 保留大小写块 `_al-bind-alist`/
+        `kwote`/`ads-cmd` 以源码大小写入 symbol_slots，而查询方 `_best[0]`/
+        `str(name).upper()` 传大写——log.lsp 实测 `_res_slot_of("_AL-BIND-ALIST")`
+        精确匹配 None → `_res_offset` 变 None → 表外符号回退 nsyms-1 错槽；
+        符号查大小写不敏感，字符串精确命中不受影响）。
         """
         _found: Optional[int] = None
         for _i, _v in enumerate(_res_symbol_slots):
             if str(_v) == value:
                 _found = _i
+        if _found is None:
+            _vu = value.upper()
+            for _i, _v in enumerate(_res_symbol_slots):
+                if str(_v).upper() == _vu:
+                    _found = _i
         return _found
 
     # 表外符号（DEFCODE module 参数等，如 cmd.lsp C:@U 的 `@::upgrade`）：
@@ -764,6 +852,23 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             return _v, True
         return nsyms, False
 
+    def gvar_slot_res(name: str):
+        """gvar_slot + 表外符号按 `_res_offset` 编址（scheduler `name`
+        symbol_slots[93] - 23 = fg 70 → 操作数 69，CAD 实测；旧 gvar_slot
+        未命中回 nsyms-1=72 错槽）。命中 gvar 表或经 `_res_offset` 定位的
+        槽位都视为"命中"（返回 True），调用方不再减 offset（`_res_offset`
+        定位的 fg 槽已含全部符号，06_higher_order `lst` 13-1=12 实测）。"""
+        _gs, _hit = gvar_slot(name)
+        if _hit:
+            return _gs, True
+        if _res_offset is not None:
+            _rs = _res_slot_of(str(name).upper())
+            if _rs is not None:
+                _af = _rs - _res_offset
+                if 0 <= _af < nsyms:
+                    return _af, True
+        return _gs, False
+
     def sym_of(idx: int):
         if 0 <= idx < len(symtab.entries) and symtab.entries[idx][0] in ("SYMBOL", "STRING"):
             v = symtab.entries[idx][1]
@@ -828,7 +933,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
         if (multi or top_lambda_args) and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
             arg = cur_args[arg_i]
-            _gs, _hit = gvar_slot(arg)
+            _gs, _hit = gvar_slot_res(arg)
             new_idx = _gs - 1 - (0 if _hit else offset)
             if 0 <= new_idx <= 0xFFFF:
                 out += bytes([0x09, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
@@ -846,7 +951,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 i = [a.upper() for a in cur_args].index(_sym)
                 if 0 <= i < len(cur_args):
                     arg = cur_args[i]
-                    _gs, _hit = gvar_slot(arg)
+                    _gs, _hit = gvar_slot_res(arg)
                     new_idx = _gs - 1 - (0 if _hit else offset)
                     if 0 <= new_idx <= 0xFFFF:
                         out += bytes([0x03, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
@@ -863,7 +968,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 i = [a.upper() for a in cur_args].index(_sym)
                 if 0 <= i < len(cur_args):
                     arg = cur_args[i]
-                    _gs, _hit = gvar_slot(arg)
+                    _gs, _hit = gvar_slot_res(arg)
                     new_idx = _gs - 1 - (0 if _hit else offset)
                     if 0 <= new_idx <= 0xFFFF:
                         out += bytes([0x06, new_idx & 0xFF, (new_idx >> 8) & 0xFF])
@@ -1000,6 +1105,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     else:
                         fgstruct = _strip_list_markers(const_structure)
                         gslot = const_map.get(fgstruct)
+
                         if gslot is not None:
                             new_idx = gslot - 1
                         else:
@@ -1026,7 +1132,11 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                             ):
                                 _al_slot = gvar_map.get("_AL-BIND-ALIST")
                                 if _al_slot is not None:
-                                    new_idx = _al_slot - offset
+                                    # 常量 gvar 槽 = `_al-bind-alist` 槽（资源注册序，
+                                    # 不随 `-lambda-` 偏移；t11 _al_slot=6 → PUSH_G 6、
+                                    # net/proxy _al_slot=32 → 32）。锁 lock.lsp kwote
+                                    # offset=1 时 `- offset` 会错成 100（CAD 用 101）。
+                                    new_idx = _al_slot
                                     if 0 <= new_idx <= 0xFFFF:
                                         out += bytes(
                                             [0x09, new_idx & 0xFF, (new_idx >> 8) & 0xFF]
@@ -1057,6 +1167,15 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                         _rslot = _res_slot_of(strval)
                         if _rslot is not None and _rslot < nsyms:
                             new_idx = _rslot - 1 - offset
+                        elif _res_offset is not None and _rslot is not None:
+                            # 表外字符串（init/steps `"flag-nomnl"` symbol_slots[113]
+                            # 偏移 6 → fg 107 → 操作数 106，CAD 实测）：同表外符号
+                            # 规则 `_rslot - _res_offset`。旧 fallback nsyms-1 偏移 5。
+                            _fg_str = _rslot - _res_offset
+                            if 0 <= _fg_str < nsyms:
+                                new_idx = _fg_str - 1 - offset
+                            else:
+                                new_idx = nsyms - 1 - offset
                         else:
                             new_idx = nsyms - 1 - offset
                 else:
@@ -1091,21 +1210,45 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                         _rs = _res_slot_of(str(_sym)) if _sym else None
                         if _rs is not None and _rs < nsyms:
                             new_idx = _rs - 1 - offset
-                        elif _rs is not None and module_reg_count is not None:
+                        elif (
+                            _rs is not None
+                            and has_top_forms
+                            and module_reg_count is not None
+                            and _sym is not None
+                            and _res_symbol_slots.count(str(_sym)) > 1
+                        ):
                             # 顶层变量在函数体引用（net/probe `@::*network-failure-count*`）：
                             # 符号同时注册于模块区（低位）与函数体区（高位 ≥ nsyms），
                             # 函数体引用用**函数体区槽** = 资源槽 - 模块注册数 - 1
                             # （fg[0] 为代码引用占位：res[108] - 11 - 1 = fg[96]，
                             # operand 95）；旧 fallback `nsyms-1` 偏移 2
                             # （build_mvar_tables 未把该符号放入 fg 表）。仅当
-                            # 符号在函数体区注册（末次出现 ≥ nsyms）时适用。
+                            # 符号**双注册**（模块区 + 函数体区，count>1）时适用；
+                            # 纯函数体符号（scheduler kwote lambda 捕获外层参数
+                            # `name` 单注册 symbol_slots[93]）走下方 `_res_offset`
+                            # 编址（93 - 23 = fg 70 → 操作数 69，CAD 实测）。
                             _body_slot = _rs - module_reg_count - 1
                             if 0 <= _body_slot < nsyms:
                                 new_idx = _body_slot - 1 - offset
                             else:
                                 new_idx = nsyms - 1 - offset
                         else:
-                            new_idx = nsyms - 1 - offset
+                            # 纯函数文件（无顶层表达式）表外符号：资源 symbol_slots
+                            # 索引与 gvar 槽差固定偏移 `_res_offset`（= 末 fg 符号
+                            # 的 _res_slot_of - fg 槽，init/steps FINDFILE
+                            # symbol_slots[112] - fg[106] = 6；config/migrate
+                            # STRCAT 偏移 12）。init/steps `"flag-nomnl"`
+                            # symbol_slots[113] - 6 = fg 107 → 操作数 106、
+                            # config/migrate `@::*prefix-config*` 118-12 = 106 →
+                            # 105（CAD 实测）。旧 fallback `nsyms-1` 偏移 5/2。
+                            if _res_offset is not None and _rs is not None:
+                                _fg_ext = _rs - _res_offset
+                                if 0 <= _fg_ext < nsyms:
+                                    new_idx = _fg_ext - 1
+                                else:
+                                    new_idx = nsyms - 1 - offset
+                            else:
+                                new_idx = nsyms - 1 - offset
                 if etype == "REAL":
                     # 实数常量按值匹配资源段 REAL 槽（codegen symtab 槽可能
                     # 偏离 GVARINIT，base-function 实测 0.001 槽 174→fg[130]）。
@@ -1526,13 +1669,22 @@ def _build_cad_module_code(
                              n_cmds=n_cmds)
 
     def _emit_stmts(forms, last_no_pop: bool):
-        """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。"""
+        """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。
+
+        自平衡语句（progn/while/foreach/repeat 自身管理栈，`_stmt_bytes` 返回
+        已平衡代码）不再追加 POP——cl-macros 顶层 `(progn (setq ...) ...)` 的
+        progn 是唯一顶层语句，CAD 模块代码实测 `USUBR; SETQ_G` 后直接 JUMP 注册、
+        无 `0a`；@lisp-env 的 mid progn（setq 无 `0b`/`0a`）同规则。直接
+        setq（DUP 保留值）/调用/符号仍留值 → 需 POP（event-bus 实测
+        `setq ... DUP SETQ_G; POP`）。
+        """
         nonlocal out
+        _self_balancing = (Progn, WhileNode, ForeachNode, RepeatNode)
         for i, form in enumerate(forms):
             tail = last_no_pop and i == len(forms) - 1
             stmt = _stmt_bytes(form, tail=tail)
             out += stmt
-            if i < len(forms) - 1 or not last_no_pop:
+            if (i < len(forms) - 1 or not last_no_pop) and not isinstance(form, _self_balancing):
                 out += b"\x0a"  # POP
 
     # ── 顶层语句分组（CAD 实测）─────────────────────────────────────
@@ -1547,6 +1699,13 @@ def _build_cad_module_code(
     mid_forms = pre_forms[n_globals:]
     # 首个函数注册后是否还有后续内容（需 `PUSH_G c; POP` 清理）。
     has_follow = bool(n_funcs > 1 or mid_forms or post_forms)
+    # 末全局是 Progn（顶层 `(progn ...)` 展开后 defun 提升、剩余表达式包回
+    # Progn，cl-macros/cl-functions/init/compat 实测）：CAD 的纯尾部注册
+    # （无 post、无 START 函数）省略 `PUSH_G c; POP` no-op，每组仅
+    # `JUMP; PUSH_G b; SETQ_G c`（cl-macros golden 实测）；直接 setq/call
+    # 末全局（net/proxy/ax-request）仍保留 no-op。
+    _last_global_progn = bool(globals_forms) and isinstance(globals_forms[-1], Progn)
+    _skip_reg_pc = _last_global_progn and not post_forms and n_pre == 0
 
     _emit_stmts(globals_forms, last_no_pop=(n_funcs == 0 and not post_forms))
 
@@ -1610,17 +1769,21 @@ def _build_cad_module_code(
             out += b"\x57\x00\x00\x00\x00"
             c = _reg(i)
             _last_reg_cmd = _is_cmd(i)
-            if i < n_funcs - 1 or post_forms or _is_cmd(i):
+            if _is_cmd(i) and _vl_slot is not None:
                 out += bytes([0x09]) + struct.pack("<H", c)
-                if _is_cmd(i) and _vl_slot is not None:
-                    out += bytes([0x35, 0x01]) + struct.pack("<H", _vl_slot) + bytes([0x01, 0x0a])
-                    out += bytes([0x09]) + struct.pack("<H", c)
+                out += bytes([0x35, 0x01]) + struct.pack("<H", _vl_slot) + bytes([0x01, 0x0a])
+                out += bytes([0x09]) + struct.pack("<H", c)
                 # 命令注册 `PUSH_G c; USUBR; POP; PUSH_G c` 对**末尾**命令也发射
                 # （CAD command 实测末函数 C:@DIAG 有 vl-ACAD-defun USUBR），但
                 # 末尾命令（无后续注册/post_forms）不再跟 `0a` POP（END_DEFUN 前
                 # CAD 实测 `... 09 01 00 35 01 12 00 01 0a 09 01 00 16`）。
                 if i < n_funcs - 1 or post_forms:
                     out += b"\x0a"
+            elif (i < n_funcs - 1 and not _skip_reg_pc) or post_forms:
+                # 非命令注册 `PUSH_G c; POP` no-op：仅当注册后有后续内容
+                # （非末尾、post 语句、或非 Progn 末全局的纯尾部）时发射。
+                out += bytes([0x09]) + struct.pack("<H", c)
+                out += b"\x0a"
     else:
         _emit_stmts(mid_forms, last_no_pop=(not post_forms))
     if post_forms:
@@ -2161,6 +2324,8 @@ def cmd_compile(
     # 后备保留（单 kwote 文件不受影响，多 kwote 走原生）。
     # program.forms = _lower_multi_kwote(program.forms)
     # `((lambda ...) args)` 立即调用改写为显式 `(apply '(lambda ...) (list ...))`
+    # `(let ...)` 先降级为 lambda-apply（CAD 用 EVAL，我们走 apply 引用常量路径）
+    program.forms = _lower_let(program.forms)
     program.forms = _lower_immediate_lambda(program.forms)
 
     package_table = parser_obj.packages
@@ -2542,6 +2707,7 @@ def cmd_compile(
         from compiler.ast_nodes import Defun as _Defun
         from compiler.ast_nodes import Defpackage as _Defpackage
         from compiler.ast_nodes import InPackage as _InPackage
+        from compiler.ast_nodes import Call as _Call
 
         _last_overall = program.forms[-1] if program.forms else None
         _top_after_defun = _last_overall is not None and not isinstance(
@@ -2580,11 +2746,20 @@ def cmd_compile(
         # 实测 set-locale/get-locale 在 globals 语句前注册）。Defpackage 是
         # 顶层语句（进 globals 组），不计入 n_pre。
         _n_pre = 0
+        _saw_top_stmt = False
         for _f in program.forms:
-            if isinstance(_f, Defun):
+            if isinstance(_f, _Defun):
                 _n_pre += 1
+            elif isinstance(_f, (_Defpackage, _InPackage)) or (
+                isinstance(_f, _Call)
+                and str(_f.name).lower() in ("use-package", "defpackage")
+            ):
+                continue
             else:
+                _saw_top_stmt = True
                 break
+        if not _saw_top_stmt:
+            _n_pre = 0
         module_code = _build_cad_module_code(
             top_level_code,
             symtab,
@@ -2601,7 +2776,26 @@ def cmd_compile(
             n_cmds=n_cmds,
         )
     elif n_cmds:
-        module_code = build_command_module_code(len(defun_forms))
+        # 纯命令文件（全部函数都是命令，无顶层表达式，t14_command）走
+        # build_command_module_code（全命令 vl-ACAD-defun 注册）；混合命令文件
+        # （config/migrate `C:@PROFILE` + 普通函数）仅命令函数用 vl-ACAD-defun
+        # 注册，普通函数用 plain 模式。
+        _fn_names = [f.name for f in defun_forms]
+        if all(str(n).lower().startswith("c:") for n in _fn_names):
+            module_code = build_command_module_code(len(defun_forms))
+        else:
+            _first_cmd_slot = None
+            for _fn in _fn_names:
+                if str(_fn).lower().startswith("c:"):
+                    _first_cmd_slot = symtab.name_to_idx.get(_fn)
+                    break
+            # vl-ACAD-defun 的 rg 槽 = 源码首个命令 symtab 槽 + 1（vl 符号占用
+            # 其后一槽；config/migrate C:@PROFILE symtab 3 → USUBR 操作数 4）。
+            _vl_slot = (_first_cmd_slot + 1) if _first_cmd_slot is not None else 1
+            module_code = build_mixed_command_module_code(
+                len(defun_forms), vl_idx=_vl_slot, func_names=_fn_names,
+                symtab=symtab, first_cmd_slot=_first_cmd_slot,
+            )
     else:
         module_code = build_module_code(len(defun_forms), nsyms=_pre_nsyms)
 

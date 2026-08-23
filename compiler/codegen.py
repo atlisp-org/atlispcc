@@ -396,17 +396,7 @@ class CodeGenerator:
                 else:
                     buf.emit(encode_op_noarg(PUSH_T))
             elif self.stub_format:
-                if self.current_func_name == "-lambda-" and name in self.local_slots:
-                    # 内嵌 `-lambda-` DEFUN：参数/局部变量用 GET_LOCAL 局部槽
-                    # （CAD kwote 实测，非符号槽）。t20_kwote 真机：lambda 参数
-                    # 读取若用 PUSH_VALUE 符号槽会命中 `-lambda-`/错误槽 → 类型错。
-                    slot = self.local_slots[name]
-                    if slot < 256:
-                        buf.emit(struct.pack("<BB", GET_LOCAL_8, slot))
-                    else:
-                        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
-                    return
-                elif name in self.current_func_args and name in self.local_slots:
+                if name in self.current_func_args and name in self.local_slots:
                     if len(self._defined_funcs) <= 1:
                         # 单函数参数读取逆序（CAD simple3/t13 实测：`+ Z Y X`、
                         # `> C B A`——源码第 i 个参数 → 槽 nsyms-1-i）。
@@ -520,18 +510,23 @@ class CodeGenerator:
                 # 中间 setq（SETQ_G 已消费栈顶）、中间 if（_emit_if 内部处理）、
                 # while/foreach/repeat（自带栈平衡）后均无 POP；仅普通表达式
                 # 追加 POP（规则同 generate_function 中间语句）。
-                if not isinstance(form, (IfNode, Setq, WhileNode, ForeachNode, RepeatNode)):
+                if not isinstance(form, (IfNode, Setq, WhileNode, ForeachNode, RepeatNode, Cond)):
                     buf.emit(encode_op_noarg(POP))
             if node.forms:
                 self._in_tail_context = saved_tail
                 self._emit_expr(buf, node.forms[-1], _tail=saved_tail)
                 # 中间上下文（非尾）且最后语句是留值表达式（调用/符号/常量）时，
-                # 追加 POP 丢弃 progn 值。setq/if/while/foreach/repeat/progn 自身
+                # 追加 POP 丢弃 progn 值。setq/while/foreach/repeat/progn/cond 自身
                 # 管理栈（i18n-cad load-locale 内层 if-then=progn(..., close) 后
-                # `POP`；外层 if-then=progn(..., 内层 if) 后无 POP）。
-                if not saved_tail and not isinstance(
-                    node.forms[-1], (Setq, IfNode, WhileNode, ForeachNode, RepeatNode, Progn)
-                ):
+                # `POP`；外层 if-then=progn(..., 内层 if) 后无 POP）。if 在语句
+                # 上下文自平衡（内部 POP/无假路径 PUSH_NIL）；值上下文（模块代码
+                # `_in_stmt_ctx=False`，@lisp-env `(progn (setq ...) (if ...))` 实测）
+                # 留 then/假路径值 → 需 POP（CAD `JUMP 1; PUSH_NIL; POP`）。
+                _last = node.forms[-1]
+                _selfbal = isinstance(_last, (Setq, WhileNode, ForeachNode, RepeatNode, Progn, Cond))
+                if isinstance(_last, IfNode) and self._in_stmt_ctx:
+                    _selfbal = True
+                if not saved_tail and not _selfbal:
                     buf.emit(encode_op_noarg(POP))
             self._in_tail_context = saved_tail
 
@@ -770,21 +765,27 @@ class CodeGenerator:
             # 独立顶层 if / 尾 if 时 DUP；cond 子句体等语句上下文的 if 的
             # then 分支 setq 不 DUP（test-cond CAD 实测 `PUSH_G; SETQ_G`）。
             _then_tail = self._in_tail_context or self._module_mode
-            self._emit_expr(buf, node.then or Symbol("nil"), _tail=_then_tail)
-            if self._in_stmt_ctx and not isinstance(
-                node.then, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode)
-            ):
-                # 语句上下文（中间 if，值被丢弃）：then 分支值被 POP。值上下文
-                # （setq RHS、函数/算术实参）不 POP——值需流到外层消费者。
-                # then 为 setq 时 SETQ_G 已消费栈顶，无需 POP；普通表达式则
-                # POP 丢弃（i18n-cad update-locale 内层 if-then @::load-module
-                # 后 `POP`）。then 为 progn/if 时由其自身管理栈（i18n-cad
-                # load-locale 外层 if-then=progn 后无额外 POP）。
-                # while/foreach/repeat 自带栈平衡（循环 JUMP 回跳 + CLEAR_ARGS/
-                # 尾协议），then 后无额外 POP（platform-api @::platform-path
-                # 双 while 分支实测 CAD `57 JUMP` 直接退出，无 0a POP）。
-                # POP 位于 then 末尾、JUMP 之前（ref 实测顺序 `03 0a 57`）。
-                buf.emit(encode_op_noarg(POP))
+            # 语句上下文（`_in_stmt_ctx=True`）且 then 为常量 `nil`/`T`（如
+            # init/steps `(if (vl-catch-all-error-p ...) nil)` 语句）：分支值被
+            # POP 丢弃，push+pop 是纯 no-op——CAD 省略整个 then 代码（实测
+            # `JMP32_IFNOT; JUMP 0` 无 `01 0a`）。值上下文（分支值被使用）不省略。
+            _then_const = isinstance(node.then, Symbol) and node.then.name.lower() in ("nil", "t")
+            if not (self._in_stmt_ctx and _then_const):
+                self._emit_expr(buf, node.then or Symbol("nil"), _tail=_then_tail)
+                if self._in_stmt_ctx and not isinstance(
+                    node.then, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond)
+                ):
+                    # 语句上下文（中间 if，值被丢弃）：then 分支值被 POP。值上下文
+                    # （setq RHS、函数/算术实参）不 POP——值需流到外层消费者。
+                    # then 为 setq 时 SETQ_G 已消费栈顶，无需 POP；普通表达式则
+                    # POP 丢弃（i18n-cad update-locale 内层 if-then @::load-module
+                    # 后 `POP`）。then 为 progn/if 时由其自身管理栈（i18n-cad
+                    # load-locale 外层 if-then=progn 后无额外 POP）。
+                    # while/foreach/repeat 自带栈平衡（循环 JUMP 回跳 + CLEAR_ARGS/
+                    # 尾协议），then 后无额外 POP（platform-api @::platform-path
+                    # 双 while 分支实测 CAD `57 JUMP` 直接退出，无 0a POP）。
+                    # POP 位于 then 末尾、JUMP 之前（ref 实测顺序 `03 0a 57`）。
+                    buf.emit(encode_op_noarg(POP))
             jmp2_pos = buf.pos()
             buf.emit(encode_op_s32(JUMP, 0))
             buf.add_patch(jmp2_pos + 1, label_end, 4)
@@ -792,7 +793,7 @@ class CodeGenerator:
             if node.else_expr:
                 self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
                 if self._in_stmt_ctx and not isinstance(
-                    node.else_expr, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode)
+                    node.else_expr, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond)
                 ):
                     # 语句上下文（中间 if，值被丢弃）：else 分支末尾同样 POP 丢弃
                     # 分支值（large_synthetic lgf-000..119 实测 CAD else 分支
@@ -871,7 +872,7 @@ class CodeGenerator:
             # 实测体末无 POP）；中间 while 体非 setq 语句（如 `(princ n)`）
             # 返回值被 POP 丢弃（t04_while 实测）。
             if self.stub_format:
-                if isinstance(form, (Setq, WhileNode, IfNode)):
+                if isinstance(form, (Setq, WhileNode, IfNode, Cond)):
                     continue
                 if self._in_tail_context and last_in_body:
                     continue
@@ -1083,7 +1084,17 @@ class CodeGenerator:
             buf.emit(encode_op_s32(COND_OR, 0))
             buf.add_patch(condor_pos + 1, f"{base}_body_{i}", 4)
         # 全假默认值 + 跳转链：PUSH_NIL 后跳过首个发出体（=末子句体）。
-        buf.emit(encode_op_noarg(PUSH_NIL))
+        # CAD 对**末子句为 `(t ...)` else** 且 cond 在**语句上下文**（值被丢弃，
+        # cl-macros @::macro-subst `(while form ... (cond ... (t ...)))` 实测
+        # `COND_OR; JUMP` 无 `01`）时省略死代码 PUSH_NIL 默认值（t 恒真，
+        # fall-through 不可达）；模块代码（platform 顶层 cond `(t ...)`）仍保留。
+        # 语句上下文**无 else** 的 cond（voice C:@VOICE `(cond ((= choice "1")
+        # ...) ((= choice "2") ...) ((= choice "3") ...))` CAD 实测同样无 `01`）
+        # 也省略——cond 自平衡，值被丢弃，fall-through 的 PUSH_NIL 为纯 no-op。
+        _last_test = clauses[-1][0]
+        _omit_default = self._in_stmt_ctx
+        if not _omit_default:
+            buf.emit(encode_op_noarg(PUSH_NIL))
         jmp_pos = buf.pos()
         buf.emit(encode_op_s32(JUMP, 0))
         buf.add_patch(jmp_pos + 1, f"{base}_body_{n - 1}_end", 4)
@@ -1108,13 +1119,26 @@ class CodeGenerator:
                 # 协议，platform-api @::platform-http-head `(while ...)` 后
                 # 接 if 实测 CAD 无额外 0a POP）；progn 自身管理。再加 body
                 # 层 POP 会双 POP。其余（调用/print 等）发 POP 丢弃。
-                if not isinstance(a, (IfNode, Setq, Progn, ForeachNode, WhileNode, RepeatNode)):
+                if not isinstance(a, (IfNode, Setq, Progn, ForeachNode, WhileNode, RepeatNode, Cond)):
                     buf.emit(encode_op_noarg(POP))
             if actions:
-                # 末动作是子句的"值"（cond 结果）：尾上下文发射使 setq 补 DUP
-                # 保留返回值（platform cond 子句体 `(setq is-gcad T)` 实测
-                # `PUSH_G T; DUP; SETQ_G`）。
-                self._emit_expr(buf, actions[-1], _tail=True)
+                if self._in_stmt_ctx:
+                    # 语句上下文（值被丢弃）：末动作按语句发射（setq 由 SETQ_G
+                    # 消费栈顶、调用/print 等追加 POP 丢弃）——cond 自平衡，
+                    # 外层不再 POP（cl-macros @::macro-subst while 体 cond 的
+                    # t 子句 `(setq result ...)` 实测 `USUBR; SETQ_G` 无 `0a`）。
+                    self._emit_stmt(buf, actions[-1])
+                    if not isinstance(
+                        actions[-1],
+                        (IfNode, Setq, Progn, ForeachNode, WhileNode, RepeatNode, Cond),
+                    ):
+                        buf.emit(encode_op_noarg(POP))
+                else:
+                    # 值上下文（尾/模块代码/值位置 setq RHS）：末动作是子句的
+                    # "值"（cond 结果），表达式发射使 setq 补 DUP 保留返回值
+                    # （platform 顶层 cond `(setq is-gcad T)` 实测
+                    # `PUSH_G T; DUP; SETQ_G`；`(setq x (cond ...))` 同理）。
+                    self._emit_expr(buf, actions[-1], _tail=True)
             buf.label(f"{base}_body_{i}_end")
             if k < n - 1:
                 jp = buf.pos()
@@ -1375,9 +1399,9 @@ class CodeGenerator:
         saved_name = self.current_func_name
         saved_slots = self.local_slots
         self.current_func_name = "-lambda-"
-        # 不把 current_func_args 设为 lambda args——否则 Symbol 读取会走"函数
-        # 参数"符号槽分支（PUSH_VALUE），而非 GET_LOCAL 局部槽。CAD 内嵌
-        # `-lambda-` 参数读取用 GET_LOCAL（t20_kwote 真机实测）。
+        # lambda 参数注册为符号槽，读取用 PUSH_VALUE（CAD 实测：i18n 的
+        # `opt%`、06_higher_order 的 `n` 均注册 fg 槽 + PUSH_VALUE 引用，
+        # 由 `_patch_usubr_idx` 按 gvar_slot(arg)-1 重映射）。
         self.local_slots = {a: i for i, a in enumerate(args)}
         self._emit_init_args(buf, args)
         if locals_:
@@ -1578,7 +1602,7 @@ class CodeGenerator:
             # 普通表达式时保留值，追加 POP 丢弃（i18n-cad update-locale 实测
             # 内层 if-then @::load-module 调用后 `POP`）。POP 由 _emit_if 在
             # then 分支末尾（JUMP 前）内部处理，此处对 if 一律跳过，避免二次 POP。
-            if not self.stub_format or isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode)):
+            if not self.stub_format or isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, Cond)):
                 pass
             elif isinstance(expr, IfNode):
                 pass

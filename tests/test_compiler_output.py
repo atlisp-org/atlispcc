@@ -507,6 +507,55 @@ def test_compile_src_byte_identity(name, golden):
         )
 
 
+#: compile_src fixture → CAD golden 逐字节一致回归（2026-08-22 重新在 CAD
+#: `vlisp-compile` 生成，见 tests/cad/compile_src_golden/）。当前 7 份全部对齐：
+#: 01_math/02_strings/03_recursion/04_control/05_lists/06_higher_order/08_loops。
+#: 05_lists 锁 `(setq lst '(a b c))` 表外 SETQ_G 目标须 nsyms-1（不适用
+#: module_reg_count 减法）；06_higher_order 锁 kwote lambda 参数 `n` 注册
+#: fg 槽 + `-lambda-` 体 PUSH_VALUE 读取（2026-08-23 修复）。
+def _discover_compile_src_goldens():
+    import glob
+
+    _base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cad', 'compile_src_golden')
+    pairs = []
+    for _g in sorted(glob.glob(os.path.join(_base, '*_cad.fas'))):
+        _name = os.path.basename(_g)[: -len('_cad.fas')]
+        _src = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'compile_src', f'{_name}.lsp')
+        if os.path.exists(_src):
+            pairs.append((_name, os.path.join('cad', 'compile_src_golden', f'{_name}_cad.fas')))
+    return pairs
+
+
+@pytest.mark.parametrize('name,golden', _discover_compile_src_goldens(),
+                         ids=[n for n, _ in _discover_compile_src_goldens()])
+def test_compile_src_golden_byte_identity(name, golden):
+    """compile_src fixture 与 `tests/cad/compile_src_golden/` CAD golden 逐字节一致。"""
+    from compiler.cli import cmd_compile
+    from decompiler.fas4_decompiler import Fas4Parser
+
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'compile_src', f'{name}.lsp')
+    golden_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), golden)
+    if not (os.path.exists(src) and os.path.exists(golden_path)):
+        pytest.skip(f'missing compile_src golden fixture: {name} / {golden}')
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'out.fas')
+        cmd_compile(src, out)
+        ours = Fas4Parser().parse(out)
+        ref = Fas4Parser().parse(golden_path)
+        assert ours.nsyms == ref.nsyms, (
+            f'{name}: nsyms {ours.nsyms} != {ref.nsyms}'
+        )
+        assert ours.bytecode == ref.bytecode, (
+            f'{name}: seg0 bytecode differs from CAD golden\n'
+            f'  ours: {ours.bytecode.hex()}\n'
+            f'  CAD : {ref.bytecode.hex()}'
+        )
+        assert ours.resource_items == ref.resource_items, (
+            f'{name}: seg1 resource items differ from CAD golden'
+        )
+
+
 @pytest.mark.parametrize('name', CAD_T_SERIES_IDENTICAL)
 def test_t_series_byte_identity(name):
     """t-series outputs confirmed byte-identical to CAD `vlisp-compile` goldens.
@@ -690,8 +739,12 @@ def test_i18n_original_byte_identity():
     t20 的 `n` 需 GET_LOCAL）。两者无法同时逐字节一致。i18n 编译产物**功能
     等价**（CAD 真机 `@::codepage2lang` 返回正确），仅字节不同。待统一 kwote
     lambda 参数编址后恢复。
+    2026-08-23：kwote lambda 参数已统一为 PUSH_VALUE 符号槽编址（06_higher_order
+    全新 golden 确认），seg0 + nsyms 已与 i18n-cad.fas 逐字节一致；seg1 模块
+    代码仍有 48 项 pre-existing diff（CAD 多一条顶层 setq 语句，与 kwote 无关），
+    保持 skip。
     """
-    pytest.skip('kwote lambda 参数编址 trade-off（t20 真机修复 vs i18n golden），2026-08-12')
+    pytest.skip('i18n seg1 模块代码 48 项 diff（CAD 多一条顶层语句），2026-08-23')
     from compiler.cli import cmd_compile
     from decompiler.fas4_decompiler import Fas4Parser
 

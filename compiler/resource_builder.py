@@ -123,6 +123,42 @@ def build_command_module_code(n_funcs: int, vl_idx: int = 2) -> bytes:
     return bytes(out)
 
 
+def build_mixed_command_module_code(n_funcs, vl_idx, func_names, symtab, first_cmd_slot):
+    """生成**混合命令文件**（命令 + 普通函数并存，无顶层表达式，如 config/migrate
+    的 `C:@PROFILE` + 8 个普通函数）的模块代码。
+
+    CAD golden 实测结构：
+    ``DEFUN | PUSH_G <n_funcs+n_cmds+1> POP``（占位）
+    ``JUMP0 | PUSH_G b SETQ_G c PUSH_G c [命令: USUBR(1,vl) NIL PUSH_NIL POP
+    PUSH_G c] POP``（每函数一组，仅命令函数含 vl-ACAD-defun USUBR）
+    ``... JUMP0 | PUSH_G b SETQ_G c PUSH_G 1 END``（末尾）
+
+    c = 函数实际符号槽 + 1（vl-ACAD-defun 符号占用源码首个命令后一槽，
+    后续函数槽 +1，config/migrate C:@PROFILE slot4→c=5、@::export-config
+    slot2→c=3）。b = 2*n_funcs + 1 + n_cmds - i。
+    """
+    out = bytearray(b"\x14\x01\x00\x00\x00")
+    out += b"\x09" + res_u16(n_funcs + 2) + b"\x0a"
+    for i in range(n_funcs):
+        out += b"\x57\x00\x00\x00\x00"
+        b = 2 * n_funcs + 2 - i
+        fn_slot = symtab.name_to_idx.get(func_names[i]) if i < len(func_names) else None
+        c = (fn_slot + 1) if fn_slot is not None else (n_funcs - i)
+        if fn_slot is not None and first_cmd_slot is not None and fn_slot >= first_cmd_slot:
+            c += 1
+        is_cmd = i < len(func_names) and str(func_names[i]).lower().startswith("c:")
+        out += b"\x09" + res_u16(b) + b"\x06" + res_u16(c)
+        out += b"\x09" + res_u16(c)
+        if is_cmd:
+            out += b"\x35\x01" + res_u16(vl_idx) + b"\x01\x0a"
+            out += b"\x09" + res_u16(c)
+        if i == n_funcs - 1:
+            out += b"\x16"
+        else:
+            out += b"\x0a"
+    return bytes(out)
+
+
 def count_resource_items(res_stream: bytes) -> int:
     """CAD seg1 头 ``<len> <items> $`` 的 items 值。
 
@@ -556,7 +592,13 @@ class ResourceBuilder:
             # 因此这里直接按 entries 自然序输出即可，勿再单独逆序函数名。
             _vl_first_cmd = None
             if commands and func_names_all:
-                if top_level_count == 0:
+                # 纯命令文件判定：无顶层表达式**且全部函数都是命令**（t14_command
+                # 全命令独立 5b 块）。config/migrate `C:@PROFILE` + 8 个普通函数
+                # 是**混合命令**（无顶层表达式），CAD 用共享 5b 块 + vl 插在
+                # 源码首个命令之前（`5b [VAL @::IMPORT-CONFIG @::EXPORT-CONFIG]
+                # 00 56 vl-ACAD-defun 00 00 5b [C:@PROFILE ...]`），非纯命令路径。
+                _all_cmds = all(str(f).lower().startswith("c:") for f in func_names_all)
+                if top_level_count == 0 and _all_cmds:
                     # 纯命令文件（无顶层表达式）：每个命令函数独立 5b 块，首命令
                     # （源码序第一个命令）后插入 `56 vl-ACAD-defun 00 00`
                     # （t14_command 实测）。该符号保留原始大小写

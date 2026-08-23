@@ -312,6 +312,96 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 对 `../kernel/src/` 下全部 67 个 `.lsp` 逐个编译并与 CAD 真机
 （`(vlisp-compile 'st ...)`，AutoCAD 24.1s）产物逐字节比对：
 
+- **`_al-bind-alist` 常量 PUSH_G 不再减 offset**（2026-08-23，package/lock
+  byte-identical，33/67）：`(quote (loc1 ...))` locals 常量的 gvar 槽 =
+  `_al-bind-alist` 槽（资源注册序，**不随 `-lambda-` 偏移**）。旧公式
+  `new_idx = _al_slot - offset` 在 kwote 文件（offset=1，lock.lsp）会错成
+  `_al_slot-1`（100，CAD 用 101）。t11/net-proxy offset=0 不受影响。
+- **2026-08-23 更新**：**byte-identity 36/67**。新增 init/steps、config/migrate、
+  config-sync-config、scheduler、ui/hotkey、package/lock、net/ax-request、
+  net/probe、**command、log、voice** 十一个 byte-identical。其中 net/ax-request/
+  net/probe 是**旧 golden stale**（重新在 CAD 24.1s 编译后 nsyms 与 ours 一致），
+  已用 `vlisp-compile` 重新生成 golden。剩余 31 DIFF：多数为符号槽序（ORDER，
+  `_res_offset` 逐区不一致——base-function 各区偏移 68/70/72/85/92 不等）+
+  `list` 内建符号收集位置（lifecycle LIST fg[12] vs CAD[38]）+ `(let ...)` EVAL
+  模式 + 顶层/模块代码分组（ui.lsp 的 vlax-for、i18n seg1）。
+- **2026-08-23（CAD 对拍）command.lsp byte-identical（34/67）**：`_res_offset`
+  编址的表外符号（不在 fg 表）**不再减 `-offset`**（`cli.py` `_patch_usubr_idx`
+  SYMBOL 分支 `_fg_ext = _rs - _res_offset; new_idx = _fg_ext - 1`）。原因：
+  command.lsp 的 `(boundp '@::internetp)`（line 46）把表外函数符号 `@::internetp`
+  （res[191]）作值推送，offset=1（单 kwote `-lambda-` 偏移）被双重扣除——
+  `_res_offset`（= 末 fg 符号 @::BROWSER res[190]-fg[149]=41）已含资源→fg 关系，
+  再 `-offset` 把 gvar 槽压到 149（CAD 用 150）。此改动只影响 offset=1 且走
+  `_res_offset` 路径的表外符号；fg 表内符号（gvar_map/str_map 命中）不受影响。
+  回归：34/67 无既有文件回退（net/proxy/scheduler 等 kwote 文件保持 byte-identical）。
+- **2026-08-23（CAD 对拍）lifecycle.lsp byte-identical（37/67）**：`_collect_multi`
+  跨函数 `seen_refs` 去重改**大小写不敏感**（`cad_symbols.py` `_ci_ref_key`：
+  普通符号 `.upper()`，vla-/vlax-/字符串/`__` 键保留原样）。原因：lifecycle 的
+  `(eq 'LIST (type-of deps))`（quoted 'LIST，get-pkg-deps）与 `(list ...)`（内建
+  调用，pkg-on-load 等）同键——旧 case-sensitive set 使两者并存（`list`/`LIST`
+  各自 kept），逆序注册时 get-pkg-deps（i=1）先于 pkg-on-load（i=6）→ LIST 占
+  fg[12] 提前 26 槽；CAD 大小写不敏感去重到**源码序首次**（pkg-on-load 的
+  `(list ...)`）→ LIST fg[38]。回归：37/67 无回退（cl-macros 等共享参数/
+  重复槽不受影响）。
+- **2026-08-23（CAD 对拍）voice.lsp byte-identical（36/67）**：三个通用修复 +
+  `get_or_add` 大小写合并，voice.lsp **seg0+seg1+nsyms 完全一致**（ui.lsp 的
+  seg0 同步转正、lifecycle/cl-functions 的 nsyms 差异消除）：
+  1. **cond 语句上下文 PUSH_NIL 默认值省略**（`codegen.py` `_emit_cond_stub`）：
+     `_omit_default = self._in_stmt_ctx`（不再要求末子句为 `(t ...)`）——语句
+     上下文（值被丢弃）的 cond，无 else（voice C:@VOICE `(cond ((= choice "1")
+     ...) ((= choice "2") ...) ((= choice "3") ...))`）CAD 实测同样省略
+     fall-through 的 `01` PUSH_NIL（cond 自平衡，值为纯 no-op）；模块代码
+     （platform 顶层 cond）值上下文仍保留。旧逻辑仅对 `(t ...)` else 省略
+     （cl-macros），voice 无 else 分支错发 `01` → 每处 +1 字节、后续
+     COND_OR/JUMP 偏移全偏。
+  2. **`symtab.get_or_add` 大小写合并**（`symbol_table.py`）：cad_symbols
+     收集器 `_in_name_set` 大小写不敏感（'Status'/'status' 去重），但
+     name_to_idx 大小写敏感——codegen `get_or_add('status')` 找不到 derive 的
+     'Status' → 各占一槽 nsyms +2、后续槽错位（voice.lsp 的 `status`/`count`
+     局部）。修复：get_or_add 精确未命中时做大小写不敏感回退（仅非
+     vla-/vlax-/保留大小写符号，`_k.upper() == name.upper()` 且非 `__` 前缀
+     key），命中返回既有槽不新增。**不能**全局 `_normalize_name` 转大写
+      （cli.py `add_force` 检查用原始 `sym in name_to_idx`，转大写后重复函数
+      名不再命中 → 递归/跨函数重复槽丢失 → 35→9/67 大回归）。
+- **2026-08-23（CAD 对拍）log.lsp byte-identical（35/67）**：两个通用修复 + 一个
+  模块代码分组修复，log.lsp **seg0+seg1+nsyms 完全一致**（command.lsp 同步恢复）：
+  1. **`_res_slot_of` 大小写回退**（`cli.py`）：先精确匹配（字符串大小写敏感），
+     未命中再做不区分大小写匹配。`0x56` 保留大小写块 `_al-bind-alist`/`kwote`/
+     `ads-cmd` 以源码大小写入 symbol_slots，而查询方 `_best[0]`/`str(name).upper()`
+     传大写——log.lsp `_res_slot_of("_AL-BIND-ALIST")` 精确匹配 None →
+     `_res_offset` 变 None → 表外符号回退 nsyms-1 错槽（`level` 参数 134 vs CAD 132）。
+  2. **kwote 块锚点含字符串**（`cad_symbols.py` 多函数路径）：kwote lambda 是调用
+     的**首参**时（log-cleanup `(vl-remove-if (function (lambda (f) ...))
+     (vl-directory-files log-dir "*.log*" 1))`），调用表达式的符号序 =
+     `[kwote 块, "*.log*", VL-DIRECTORY-FILES, VL-REMOVE-IF]`，CAD 把 kwote 块
+     插到**字符串** `"*.log*"` 之后（fg[76]=*.log*、fg[77]=kwote），旧锚点检测
+     `startswith('"')` 跳过字符串找到 VL-DIRECTORY-FILES → 块插到 *.log* 之前
+     （fg[76]=kwote、fg[80]=*.log*）。修复：锚点不再跳过字符串（`"` 从
+     `startswith(('"',"'","("))` 移除），仅跳过 quoted 数据/const/nil/T。回归：
+     net/proxy/cache/reload/i18n 无回退。
+  3. **n_pre 跳过包设置 + 无顶层语句时归零**（`cli.py`）：`_n_pre` 循环遇
+     InPackage/Defpackage/use-package Call 应 `continue`（log.lsp 前导
+     `(in-package :@)` + `(use-package :autolisp)` 使旧代码 n_pre=0 → 前 2 个
+     函数（@::log-level/@::log-level-name，定义在首个顶层 if 之前）的 START
+     注册缺失 → 模块代码顶层语句全在注册前）；**但**纯函数文件（command.lsp 无
+     顶层语句）循环走完所有 defun 后 `_saw_top_stmt=False` → n_pre 归 0（全部
+     TAIL 注册，与 CAD 一致）。log.lsp 顶层 ifs（line 39/41/43/45）由 globals/
+     mid/post 分组正确分布到 START 注册前后。
+- **2026-08-23（CAD 对拍）base-function 根因定位（符号槽序，非 build_mvar 解析 bug）**：
+   逐字节扫描 base-function 的 seg0（`09/03/06` 操作数）与 CAD golden 对拍后确认，
+  差异是**符号注册顺序**（`cad_symbols.py` 收集器），不是 build_mvar_tables 的
+  GVARINIT 栈解析——两套解析（parse_resource_stream 与 build_mvar 复制）对
+  SYMBOL/STRING/REAL 注册计数**完全一致**（284 = 250 SYM + 30 STR + 4 REAL），
+  且 GVARINIT（pos 3500，var_pos=0，st_init=165，栈长 163）的右移填充本身正确。
+  **getf 函数（base-function.lsp:166）的 kwote lambda 块序差异**：
+  `(function (lambda (x) (= (vl-prin1-to-string x) (vl-prin1-to-string property))))`
+  中 OUR fg 把 `kwote`@49、VL-PRIN1-TO-STRING@50、X@51、RESULT@52、PROPERTY@53、
+  PLIST@54、CONS@55、PAIR@56、CDR@57、ATOM@58 连排；CAD 实测 X@50、RESULT@51、
+  PROPERTY@52、…、ATOM@57、**VL-PRIN1-TO-STRING@58**——即 CAD 把 lambda 参数 X
+  与捕获参数 PROPERTY 放 kwote 块前段（50/52），把体内 SUBR **VL-PRIN1-TO-STRING
+  挪到函数体符号组末尾**（58，比 we 早 8 槽），且该区无 kwote 槽（-1 漂移）。
+  这与既有「kwote lambda 参数统一注册符号槽」规则冲突——base-function 的 kwote
+  体内 SUBR 应进**函数体符号组**而非 kwote 块，是新的 ORDER 语义（待逐文件判定）。
 - **2026-08-18 更新**：修复表外字符串/常量 PUSH_G 越界、模块区 T 槽位置、
   顶层 progn 语句语义、纯顶层 REAL 槽引用、未使用 / 局部变量槽五类后，
   **67/67 全部通过编译产物验证**，**byte-identity 13/67**（新增 @lisp-env /
@@ -627,22 +717,102 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   `atlisp-mcp` eval。用 `python -m tools.cad_dialog_killer <pid> --watch` 自动关闭
   （C# 实现，`tools/src/cad_dialog_killer.cs`，实测关闭 alert 解除阻塞）。
 - **多 kwote + 捕获外层参数的 `-lambda-` 参数槽缺失**（sub-system/scheduler，
-  2026-08-16 登记）：`unschedule-task` 的 `(function (lambda (task-item)
-  (= (car task-item) name)))` 捕获外层函数参数 `name` 时，CAD 会把 kwote
-  lambda 参数 `task-item` 注册为符号槽（scheduler golden slot 77 `TASK-ITEM`，
-  kwote 块 `kwote = CAR TASK-ITEM`），而 `_collect_byteorder` 的 kwote 分支
-  用 `arg_names | lambda_args` 排除 lambda 参数 → OURS nsyms 少 1（72 vs 73）、
-  后续槽偏移、`-lambda-` 运行时绑定报 `要绑定的对象不正确: #<SUBR -lambda->`。
-  i18n/06_higher_order 单 kwote（lambda 不捕获外层参数，`(lambda (n) (* n 2))`）
-  用 GET_LOCAL 读取参数、不注册参数槽，byte-identity 正常。区别待确认（可能
-  是"kwote lambda 是否引用外层函数符号"触发 CAD 符号槽注册）。当前编译产物
-  **加载正常**（`(load ...)` OK），仅运行时功能受影响；scheduler 已记录于
-  kernel-fas-load 3 FAIL 修复清单（init/sequence、net/checksum、scheduler
-  重新编译后加载全部 OK）。待修复：kwote lambda 捕获外层参数时参数槽注册 +
-  codegen `-lambda-` 参数读取方式。
+  2026-08-16 登记，**2026-08-23 已修复**）：`unschedule-task` 的 `(function
+  (lambda (task-item) (= (car task-item) name)))` 捕获外层函数参数 `name` 时，
+  CAD 会把 kwote lambda 参数 `task-item` 注册为符号槽（scheduler golden slot
+  77 `TASK-ITEM`，kwote 块 `kwote = CAR TASK-ITEM`），而 `_collect_byteorder`
+  的 kwote 分支此前用 `arg_names | lambda_args` 排除 lambda 参数 → OURS nsyms
+  少 1（72 vs 73）、后续槽偏移、`-lambda-` 运行时绑定报 `要绑定的对象不正确:
+  #<SUBR -lambda->`。
+  **修复**（2026-08-23，06_higher_order 全新 CAD golden 对拍确认）：
+  kwote lambda **参数统一注册符号槽 + `-lambda-` 体 PUSH_VALUE 读取**（非
+  GET_LOCAL）。CAD 实测 i18n 的 `opt%`、06_higher_order 的 `n` 均注册 fg 槽
+  并经 `_patch_usubr_idx` 按 `gvar_slot(arg)-1` 编址。改动：`cad_symbols.py`
+  `_collect_byteorder` kwote 分支体收集改 `arg_names`（lambda 参数照常收集，
+  外层函数参数仍由 `arg_names` 排除）；`codegen.py` `_emit_nested_lambda`
+  参数读取去掉 GET_LOCAL 分支、走 `get_or_add` + PUSH_VALUE。旧 t20_kwote
+  真机"GET_LOCAL 才能运行"结论被新 golden 否定。i18n seg0+nsyms 现与
+  `tests/cad/i18n-cad.fas` 逐字节一致（seg1 模块代码仍有 48 项 pre-existing
+  diff，见下）。
+- **`(setq lst '(a b c))` 表外 SETQ_G 目标错槽**（2026-08-23，05_lists 全新
+  CAD golden 对拍）：纯函数文件（无顶层表达式）函数体符号不在 fg 表时
+  （`lst` symslot[16] ≥ nsyms 11），`_patch_usubr_idx` 误走 `module_reg_count`
+  减法分支（`_body_slot = 16 - 7 - 1 = 8` → 操作数 7，CAD 用 nsyms-1 = 10）。
+  `module_reg_count` 减法仅适用于**混合文件**（defun+顶层）里同时注册于模块区
+  与函数体区的顶层变量（net/probe）。修复：该分支加 `has_top_forms` 守卫。
+ - **i18n 混合模式 seg1 模块代码残余 diff**（2026-08-23 登记）：`tests/cad/
+   i18n-cad.fas` 对拍中 seg0+nsyms 已逐字节一致，seg1 模块代码仍有 48 个
+   contiguous resource_items diff（item 236 起，CAD 多一条 `JUMP32 0; PUSH_G
+   37; SETQ_G 22; PUSH_G 22; POP` 顶层语句），与 kwote lambda 编址无关（i18n
+   的 kwote 在 defun 内）。`test_i18n_original_byte_identity` 保持 skip。
+- **`(let ...)` 降级为 lambda-apply**（2026-08-23，`_lower_let`）：CAD 对
+  `(let ((v e)...) body)` 用「EVAL 引用 lambda + 实参」编译（fg 有 LET 符号槽，
+  event-bus `(let ((entry ...)) ...)` 实测 `... USUBR; EVAL 0, const`）；我们此前
+  把它当普通 Call 编译（`(let bindings body)` → USUBR let，运行时
+  "no function: LET"，解译产物 `(let (list ...) ...)` 可见绑定被破坏）。
+  `_lower_let` 在 `_lower_immediate_lambda` 之前把 let 改写为
+  `((lambda (v...) body...) e...)`，再由后者转为 `(apply '(lambda ...)
+  (list args))`（成熟引用常量路径）。功能正确；byte-identity 需实现 CAD EVAL
+  模式（4 个 let 文件：event-bus/error-handler/error-safe-eval/condition-nlp）。
+- **`(if cond nil)` 语句上下文省略 then 代码**（2026-08-23，init/steps 恢复）：
+  `_emit_if` 语句上下文（`_in_stmt_ctx=True`）且 then/else 为常量 `nil`/`T` 时
+  （init/steps `(if (vl-catch-all-error-p ...) nil)` 语句）：分支值被 POP 丢弃，
+  push+pop 是纯 no-op——CAD 省略整个分支代码（实测 `JMP32_IFNOT; JUMP 0` 无
+  `01 0a`）。init/steps seg0 由 1262→1260 与 CAD 长度对齐（余 1 字节符号槽序
+  diff）。值上下文（分支值被使用）不省略。
+- **表外符号/字符串 `_res_offset` 编址**（2026-08-23，init/steps/config-migrate/
+  config-sync-config byte-identical，29/67）：`_patch_usubr_idx` 对**纯函数文件**
+  （无顶层表达式）不在 fg GVARINIT 表的符号/字符串（资源 symbol_slots 索引
+  ≥ nsyms），旧 fallback `nsyms-1` 错槽（init/steps `"flag-nomnl"`
+  symbol_slots[113] fallback 111，CAD 操作数 106）。修复：按
+  `fg_slot = _rslot - _res_offset` 编址（`_res_offset` = 末 fg 符号的
+  `_res_slot_of - fg 槽`，init/steps FINDFILE 112-106=6、config/migrate
+  STRCAT 偏移 12），操作数 = fg_slot - 1。STRENGTH：net/probe 的
+  `module_reg_count` 减法仍限混合文件。
+- **参数绑定/读取表外符号编址**（2026-08-23，scheduler/ui-hotkey byte-identical，
+  30/67）：`gvar_slot_res` 把 `gvar_slot` 未命中的参数按 `_res_offset` 编址
+  （scheduler `name` symbol_slots[93] - 23 = fg 70 → 操作数 69，CAD 实测；旧
+  fallback nsyms-1=72 错槽）。`_res_offset` 定位的槽视为命中（返回 True），
+  调用方不再减 offset（06_higher_order `lst` 13-1=12 实测）。同时 `module_reg_count`
+  减法（顶层变量 net/probe 专用）加 `count(str)>1` 守卫：仅符号**双注册**
+  （模块区 + 函数体区）时适用，纯函数体符号（scheduler kwote lambda 捕获外层
+  参数 `name` 单注册）走 `_res_offset`。**已知 tradeoff**：count 守卫使
+  command.lsp 的 `@::BROWSER`（函数符号作值推送，单注册）落到 `_res_offset`
+  分支错 1 槽（seg0 1 字节 diff，30/67 从 29 中 -1 但仍净 +1）。
+- **混合命令文件模块代码**（2026-08-23，config/migrate byte-identical）：
+  `C:@PROFILE` 与普通函数并存（无顶层表达式）时，CAD 模块注册共享 5b 块 +
+  `56 vl-ACAD-defun` 插在源码首个命令之前（非纯命令的每函数独立 5b 块）；
+  模块代码仅命令函数用 `PUSH_G c; USUBR(1,<vl槽>); NIL; PUSH_NIL; POP;
+  PUSH_G c`，普通函数用 plain `PUSH_G c; POP`（新 `build_mixed_command_module_code`；
+  vl 槽 = 首个命令 symtab 槽 + 1）。纯命令文件（全函数 c:）仍走
+  `build_command_module_code`（t14_command 不变）。
+- **cond 语句上下文自平衡 + t-else 死代码 PUSH_NIL 省略**（2026-08-23，
+  cl-macros byte-identical，26/67）：`_emit_cond_stub` 的末动作在**语句上下文**
+  （`_in_stmt_ctx=True`，while 体内 cond，cl-macros `@::macro-subst` 实测 t 子句
+  `USUBR; SETQ_G` 无 `0b`/`0a`）按语句发射（setq 由 SETQ_G 消费、调用补 POP）——
+  cond 自平衡、外层不再 POP；值上下文（尾/模块代码/`(setq x (cond ...))` RHS，
+  platform 顶层 cond `(setq is-gcad T)` 实测 `PUSH_G T; DUP; SETQ_G`）仍表达式
+  发射（DUP 保留值）。同时：**末子句为 `(t ...)` else** 且语句上下文时省略死
+  代码 `PUSH_NIL` 默认值（t 恒真 fall-through 不可达，CAD 实测 `COND_OR; JUMP`
+  无 `01`）；模块代码顶层 cond 仍保留。`Cond` 加入 while/if/progn/generate_function
+  的"自平衡"跳过列表（cond 不再留值）。
+- **非尾 progn 末 form if 的值上下文 POP**（2026-08-23，@lisp-env 恢复）：
+  `_emit_progn` 非尾时末 form 为 if（模块代码 `_in_stmt_ctx=False`，@lisp-env
+  `(progn (setq ...) (if ...))` CAD 实测 `JUMP 1; PUSH_NIL; POP`）留 then/假路径
+  值 → 追加 POP；if 在语句上下文自平衡（内部 POP/无假路径 PUSH_NIL）不 POP。
+  这使非尾 progn 真正自平衡，`_emit_stmts` 对 progn/while/foreach/repeat 跳过
+  POP 才安全（cl-macros 顶层 progn 语句、@lisp-env mid progn 均无外层 `0a`）。
+- **模块注册尾 `PUSH_G c; POP` 的 gating**（2026-08-23，cl-macros/net/proxy
+  byte-identical）：`_build_cad_module_code` 的非命令 TAIL 注册 `PUSH_G c; POP`
+  no-op 仅当 `post_forms or (i < n_funcs-1 and (post_forms or n_pre>0 or
+  not _last_global_progn))` 时发射。**末全局是 Progn**（顶层 `(progn ...)` 展开
+  后 defun 提升、剩余表达式包回 Progn，cl-macros/cl-functions/init/compat 实测）
+  且无 post、n_pre=0 时纯尾部注册省略 no-op，每组仅 `JUMP; PUSH_G b; SETQ_G c`
+  （cl-macros golden 实测）；直接 setq/call 末全局（net/proxy/ax-request）
+  和 post/n_pre>0（platform/event-bus）仍保留 15 字节模式。
 - **cond 空体子句不发入口 POP**（init/sequence，2026-08-16）：`(cond (x) ...)`
-  空体子句（无动作）CAD 不发 `POP` 弹测试值（测试值留栈顶作 cond 结果，
-  init/sequence 的 `(@::*bootstrap-state*)` 实测无 `0a`）。`_emit_cond_stub`
+   空体子句（无动作）CAD 不发 `POP` 弹测试值（测试值留栈顶作 cond 结果，
+   init/sequence 的 `(@::*bootstrap-state*)` 实测无 `0a`）。`_emit_cond_stub`
   对空体分支跳过 `POP`。语句上下文多对 setq 不 DUP（cond 子句体 if-then 中间
   多对 setq CAD `SETQ_G` 无 `0b`，见 codegen `_emit_setq`）。init/sequence.fas
   重新编译后 CAD 加载 + 函数可解析 OK。

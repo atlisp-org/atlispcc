@@ -430,6 +430,18 @@ class CadSymbolCollector:
         #    由调用者引用组登记（递归名不重复槽）。
         seen_refs = set()
         kept_refs = []
+
+        def _ci_ref_key(n):
+            """跨函数 seen_refs 去重的规范化键：普通符号大小写不敏感
+            （CAD 大小写不敏感，lifecycle `'LIST`(quoted) 与 `list`(内建调用)
+            应去重到**源码序首次**出现——lifecycle CAD 实测 LIST fg[38] 在
+            @::pkg-on-load（首个 `(list ...)` 调用）区而非 @::get-pkg-deps
+            （`(eq 'LIST ...)` quoted），旧 case-sensitive set 使两者并存 →
+            OURS LIST fg[12] 提前 26 槽）；vla-/vlax- 与字符串/常量结构保留
+            原键（大小写敏感/精确）。"""
+            if isinstance(n, str) and not n.lower().startswith(("vla-", "vlax-")) and not n.startswith(('"', "'", "__")):
+                return n.upper()
+            return n
         # 唯一参数（只在一个函数出现的参数名，非共享）：foreach 循环变量若与
         # 其同名不独立注册——CAD 复用参数拥有者的槽（cache.lsp `subdir` =
         # cache-store 参数 + cache-clear-all foreach 变量，CAD 实测共享 fg[46]，
@@ -455,8 +467,8 @@ class CadSymbolCollector:
                 intra_dedup.append((name, fr))
                 if fr:
                     seen_forced.add(name)
-            kept = [(n, fr) for n, fr in intra_dedup if n not in seen_refs]
-            seen_refs.update(n for n, _ in intra_dedup)
+            kept = [(n, fr) for n, fr in intra_dedup if _ci_ref_key(n) not in seen_refs]
+            seen_refs.update(_ci_ref_key(n) for n, _ in intra_dedup)
             kept_refs.append(kept)
 
         nfuncs = len(defuns)
@@ -563,7 +575,7 @@ class CadSymbolCollector:
                                 _cj += 1
                             _cj += 1
                             continue
-                        if not str(_c[0]).startswith(('"', "'", "(")) and str(_c[0]) not in (
+                        if not str(_c[0]).startswith(("'", "(")) and str(_c[0]) not in (
                             "nil",
                             "T",
                         ):
@@ -622,15 +634,20 @@ class CadSymbolCollector:
                         # @::uri-safe 的 vl-catch-all-apply 被前一函数占用）：CAD
                         # 把 `kwote` 放在块体之前（实测 [kwote, @::uri]）。
                         _rev = _pre + _body + _rev
+            _t_added = False
             for name, force in _rev:
                 if str(name).lower() == "t":
                     # CAD T 槽：模块注册区（顶层 cond else 键）与函数体区
                     # （函数 cond else 键）各自独立注册（platform.lsp CAD 实测
                     # 两处 `T`：模块 [27] + 函数体 [43]，后者喂 fg 表 gvar 槽）。
                     # T 已在模块区注册过（_name_set 含 T）时直接追加重复槽，
-                    # 否则走 add() 常规注册。
-                    if i != t_last:
+                    # 否则走 add() 常规注册。同函数内多个 `t`（值位置 `(setq x t)`
+                    # 与 cond else 键 `(t ...)`，reactor.lsp 实测）只注册一次——
+                    # 旧代码 _rev 两个 `t` 都过 `i != t_last` 分支 → T 槽双发
+                    # （nsyms +1、后续槽错位）。
+                    if i != t_last or _t_added:
                         continue
+                    _t_added = True
                     if "T" in self._name_set:
                         self.names.append("T")
                     else:
@@ -1375,7 +1392,7 @@ class CadSymbolCollector:
             for form in node.forms:
                 self._collect_byteorder(form, out, arg_names, in_quote)
         elif isinstance(node, ForeachNode):
-            # CAD foreach 字节码：列表求值存局部槽 → loop 头 GET_LOCAL/JMP →
+            # CAD foreach/vlax-for 字节码：列表求值存局部槽 → loop 头 GET_LOCAL/JMP →
             # 体 SETQ_G <var>（循环变量先于体求值）→ 体各式。故符号引用序 =
             # list_expr → var → body（i18n-cad 实测 update-locale-all 组
             # [PKG, @::*PKG-IN-USE*, ...]：list 在 var 之前）。
@@ -1472,7 +1489,7 @@ class CadSymbolCollector:
                             if not self._seen(out, "_al-bind-alist"):
                                 out.append(("_al-bind-alist", False))
                     for expr in node.expr.body:
-                        self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
+                        self._collect_byteorder(expr, out, arg_names, in_quote)
                     # kwote 块结束标记：CAD 注册序把 kwote 块（kwote + lambda 体）
                     # 保持收集序整体插到**调用者**（外层调用名）之后，不随其它
                     # 函数体符号逆序沉底（base-function getf / i18n load-mt 实测）。

@@ -65,12 +65,34 @@ class SymbolTable:
             return "T"
         return str(name)
 
+    @staticmethod
+    def _is_case_sensitive(name: str) -> bool:
+        """符号大小写敏感判定：vla-/vlax-（ActiveX 方法大小写敏感）与保留
+        大小写符号（`_al-bind-alist`/`kwote`/`ads-cmd` 的 0x56 块、`-lambda-`）
+        不参与大小写合并。"""
+        ln = str(name).lower()
+        return ln.startswith(("vla-", "vlax-")) or ln in (
+            "_al-bind-alist",
+            "kwote",
+            "ads-cmd",
+            "-lambda-",
+        )
+
     def get_or_add(self, name: str) -> int:
         name = self._normalize_name(name)
-        if name not in self.name_to_idx:
-            idx = len(self.entries)
-            self.name_to_idx[name] = idx
-            self.entries.append(('SYMBOL', name))
+        if name in self.name_to_idx:
+            return self.name_to_idx[name]
+        if not self._is_case_sensitive(name):
+            # 大小写不敏感回退：cad_symbols 收集器 `_in_name_set` 大小写
+            # 不敏感（voice.lsp 'Status'/'status' 去重），但 name_to_idx 大小写
+            # 敏感——codegen get_or_add('status') 找不到 derive 的 'Status'
+            # → 各占一槽 nsyms +2、后续槽错位。命中返回既有槽（不新增）。
+            for _k, _v in self.name_to_idx.items():
+                if not _k.startswith("__") and not self._is_case_sensitive(_k) and _k.upper() == name.upper():
+                    return _v
+        idx = len(self.entries)
+        self.name_to_idx[name] = idx
+        self.entries.append(('SYMBOL', name))
         return self.name_to_idx[name]
 
     def add_force(self, name: str) -> int:
