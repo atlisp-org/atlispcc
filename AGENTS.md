@@ -466,6 +466,14 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      set + 1 setq）仍与注册交错；mid_counts 逐函数分配（部分函数 2 mids）。
      回归：i18n/platform/base-function/cl-functions/net/module/persist 保持
      byte-identical，372 tests pass。
+- **2026-08-23（CAD 对拍）platform-api.lsp byte-identical（48/67）**：一个通用
+  修复（语句上下文 if 的 `nil` else no-op 省略），platform-api **seg0+seg1+
+  nsyms 完全一致**（fg 已对齐 + seg0 +2 no-op 消除）：`_emit_if` 对语句上下文
+  （`_in_stmt_ctx=True`）且 else 为常量 `nil`/`T` 的 if，省略 else 的
+  `PUSH_NIL; POP` no-op（platform-api @::platform-http-download `(if (boundp
+  '@::wget) ... nil)` 语句，CAD 实测 `JUMP 0; PUSH_VALUE result` 无 `01 0a`）——
+  与 then 常量 `nil`/`T` 的省略对称（init/steps）。值上下文不省略。回归：
+  既有 47 个 byte-identical 全部保持，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

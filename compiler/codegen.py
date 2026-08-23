@@ -810,15 +810,25 @@ class CodeGenerator:
             buf.add_patch(jmp2_pos + 1, label_end, 4)
             buf.patch_label(label_else, buf.pos())
             if node.else_expr:
-                self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
-                if self._in_stmt_ctx and not isinstance(
-                    node.else_expr, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond)
-                ):
-                    # 语句上下文（中间 if，值被丢弃）：else 分支末尾同样 POP 丢弃
-                    # 分支值（large_synthetic lgf-000..119 实测 CAD else 分支
-                    # `USUBR; POP`）。与 then 分支对称；else 为 setq 时 SETQ_G
-                    # 已消费栈顶无需 POP，progn/if/循环由其自身管理栈。
-                    buf.emit(encode_op_noarg(POP))
+                # 语句上下文（`_in_stmt_ctx=True`）且 else 为常量 `nil`/`T`
+                # （platform-api `(if (boundp '@::wget) ... nil)` 语句）：
+                # else 分支值被 POP 丢弃，push+pop 是纯 no-op——CAD 省略
+                # （实测 `JUMP 0; PUSH_VALUE <return>` 无 `01 0a`）。值上下文
+                # （分支值被使用）不省略。
+                _else_const = (
+                    isinstance(node.else_expr, Symbol)
+                    and node.else_expr.name.lower() in ("nil", "t")
+                )
+                if not (self._in_stmt_ctx and _else_const):
+                    self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
+                    if self._in_stmt_ctx and not isinstance(
+                        node.else_expr, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond)
+                    ):
+                        # 语句上下文（中间 if，值被丢弃）：else 分支末尾同样 POP 丢弃
+                        # 分支值（large_synthetic lgf-000..119 实测 CAD else 分支
+                        # `USUBR; POP`）。与 then 分支对称；else 为 setq 时 SETQ_G
+                        # 已消费栈顶无需 POP，progn/if/循环由其自身管理栈。
+                        buf.emit(encode_op_noarg(POP))
             elif self._in_tail_context or not self._in_stmt_ctx:
                 # CAD stub：尾上下文 / 值位置无 else 分支时在 else 标签处补隐式
                 # PUSH_NIL（cond 为假时返回 nil），then 分支的 JUMP 跳过它
