@@ -419,6 +419,14 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   `[reg @::acadver, mid0, reg @::handle-keywords, mid1, ...]`）。i18n/platform
   的 setq/if 占多数（1/5 set）不交错。回归：i18n/platform/cl-functions/
   net/module/config/store 保持 byte-identical，372 tests pass。
+- **2026-08-23（CAD 对拍）platform-api fg 对齐（未全转正）**：唯一参数名被
+  **其它函数 quoted 引用**时排除（`cad_symbols.py` quoted 单符号分支）——
+  platform-api `'str`（@::platform-http `(eq 'str (type url))`）= @::platform-path
+  **唯一**参数，CAD 单槽 fg[120]（参数拥有者）；OURS 旧实现 quoted 分支收集 →
+  提前到 fg[43]（http 组），使 NAME/KEY/VALUE 等参数槽整体 +1 错位。**共享**
+  参数（cl-functions `str` = 4 函数参数）quoted 引用照常收集（CAD 双槽
+  fg[64] body + fg[105] param）。修复后 platform-api fg 全对齐，仅 seg0 +2
+  （尾 if `nil` else 的 `PUSH_NIL; POP` no-op，CAD 省略，待 codegen 修）。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

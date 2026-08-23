@@ -1614,7 +1614,19 @@ class CadSymbolCollector:
                     # 'vla-postcommand vla-sendcommand)` CAD 实测 `'vla-postcommand`
                     # → `vla-PostCommand` 符号槽）。
                     _n = normalize_vla_name(node.expr.name)
-                    if _n not in arg_names and not self._seen(out, _n):
+                    if (
+                        _n not in arg_names
+                        # 唯一参数名（非共享）被其它函数 quoted 引用时排除——由
+                        # 参数拥有者注册（platform-api `'str` = @::platform-path
+                        # 唯一参数，CAD 单槽 fg[120]）。共享参数（cl-functions
+                        # `str` = 4 函数参数）quoted 引用照常收集（CAD 双槽
+                        # fg[64] body + fg[105] param）。
+                        and not (
+                            _n in getattr(self, "_all_params", set())
+                            and _n not in self.shared
+                        )
+                        and not self._seen(out, _n)
+                    ):
                         out.append((_n, False))
                 else:
                     const = to_const(node.expr)
