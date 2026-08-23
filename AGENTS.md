@@ -485,6 +485,19 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
     共用）。
   - `cad_symbols.py` `_collect_byteorder` LambdaNode 分支：裸 lambda 参数注册
     符号槽 + 体符号收集。
+- **2026-08-23（CAD 对拍）update.lsp byte-identical（49/67）**：两个通用修复
+  （裸 lambda 参数收集 + cond 测试 setq DUP），update **seg0+seg1+nsyms 完全一致**
+  （`/ 局部变量` + `*error*` 裸 lambda + cond setq 测试）：
+  1. **裸 lambda 参数收集**（`cli.py` `_collect_kwote_lambda_args`）：加
+     LambdaNode 分支——`(setq *error* (lambda (msg) ...))` 的 `-lambda-` 参数
+     列表照常收集，`_patch_usubr_idx` 才能识别 `-lambda-` DEFUN 的参数绑定
+     （update `(lambda (msg)` PUSH_G 用 gvar_slot_res(msg)-1=73）。
+  2. **cond 测试 setq DUP**（`codegen.py` `_emit_cond_stub`）：测试值为 cond 的
+     "值"（COND_OR 消费），`_tail=True` 使测试内值位置 setq 补 DUP 保留返回值
+     （update `(cond ((setq str-Response (@::http-request ...)) ...) ...)` 实测
+     `USUBR; DUP; SETQ_G; COND_OR`），与 if 条件同规则。
+  回归：i18n/platform/base-function/cl-macros/voice/persist/config-store/browse/
+  platform-api/net-module 保持 byte-identical，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

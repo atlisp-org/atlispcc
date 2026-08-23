@@ -2162,6 +2162,13 @@ def _collect_kwote_lambda_args(node):
         yield _lambda_real_args(node.expr)
         for e in node.expr.body:
             yield from _collect_kwote_lambda_args(e)
+    elif isinstance(node, LambdaNode):
+        # 裸 lambda 值（`(setq *error* (lambda (msg) ...))`，CAD `-lambda-`
+        # DEFUN）：参数列表照常收集，供 `_patch_usubr_idx` 修正 `-lambda-`
+        # 参数绑定/读取槽（update/file-utils/menu 的 `*error*` 处理器）。
+        yield _lambda_real_args(node)
+        for e in node.body:
+            yield from _collect_kwote_lambda_args(e)
     elif isinstance(node, Defun):
         for e in node.body:
             yield from _collect_kwote_lambda_args(e)

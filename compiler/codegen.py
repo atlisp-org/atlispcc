@@ -1128,7 +1128,11 @@ class CodeGenerator:
                 idx = self.symtab.get_or_add(cond.name)
                 self._emit_push_value(buf, idx)
             else:
-                self._emit_expr(buf, cond)
+                # 测试值为 cond 的"值"（COND_OR 消费）：`_tail=True` 使测试内
+                # 值位置 setq 补 DUP 保留返回值（update `(cond ((setq str-Response
+                # (@::http-request ...)) ...) ...)` 实测 `USUBR; DUP; SETQ_G;
+                # COND_OR`）。与 if 条件同规则（_emit_if line 755）。
+                self._emit_expr(buf, cond, _tail=True)
             condor_pos = buf.pos()
             buf.emit(encode_op_s32(COND_OR, 0))
             buf.add_patch(condor_pos + 1, f"{base}_body_{i}", 4)
