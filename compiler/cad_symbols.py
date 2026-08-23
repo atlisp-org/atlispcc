@@ -1593,12 +1593,15 @@ class CadSymbolCollector:
                         if set(_lam_locals) == set(cur_locals or []):
                             if not self._seen(out, "_al-bind-alist"):
                                 out.append(("_al-bind-alist", False))
-                    # 多参数 kwote lambda（persist `(lambda (e1 e2) ...)` 实测
-                    # CAD fg[109]=E2、fg[110]=E1）：参数在 kwote 块**末尾**逆序
-                    # 注册（= forward 块开头、_rev 块末尾），不随 body 内联；
-                    # 单参数（scheduler `task-item`、i18n `opt%`）仍内联
+                    # kwote lambda 参数（persist `(lambda (e1 e2) ...)` CAD
+                    # fg[109]=E2、fg[110]=E1；browse `(lambda (x) (princ ...)
+                    # (princ "\n"))` X fg[107]）：参数在 kwote 块**末尾**逆序
+                    # 注册（= forward 块开头、_rev 块末尾），不随 body 内联——
+                    # 当参数数 >1 **或 lambda 体多语句**时（CAD 实测 multi-stmt
+                    # body 参数沉底）。单参数 + 单语句（scheduler `task-item`、
+                    # i18n `opt%`、base-function getf `x`）仍内联
                     # （CAD 实测 `kwote = CAR TASK-ITEM`）。
-                    _multi = len(lambda_args) > 1
+                    _multi = len(lambda_args) > 1 or len(node.expr.body) > 1
                     _body_args = arg_names | lambda_args if _multi else arg_names
                     if _multi:
                         for _p in _lambda_args:
