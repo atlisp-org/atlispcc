@@ -1766,6 +1766,10 @@ def _build_cad_module_code(
         for i in range(min(n_pre, n_funcs)):
             out += b"\x57\x00\x00\x00\x00"
             c = _reg(i)
+            if _skip_reg_pc:
+                # START 注册也省略 `PUSH_G c; POP` no-op（cl-functions 首个
+                # defun cl::stringp 的 START 注册 CAD 实测无 no-op）。
+                continue
             out += bytes([0x09]) + struct.pack("<H", c)
             if _is_cmd(i) and _vl_slot is not None:
                 out += bytes([0x35, 0x01]) + struct.pack("<H", _vl_slot) + bytes([0x01, 0x0a])
