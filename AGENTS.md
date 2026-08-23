@@ -409,6 +409,16 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      `(princ ...)` 每句 CAD 实测 `USUBR; POP`），旧实现仅最后语句 POP、中间
      语句留值（seg0 -9）。setq/if/循环自平衡无 POP；尾 foreach 仍无 POP
      （t16 "体各式无 POP"——体值累积为 foreach 结果）。
+- **2026-08-23（CAD 对拍）base-function.lsp byte-identical（45/67）**：一个通用
+  修复（`_interleave_mid` 多数 set 判定），base-function **seg0+seg1+nsyms
+  完全一致**（handle-keywords/leap-yearp/confirm/sleep 别名 set 与注册交错）：
+  `_interleave_mid` 由 `all(_mid_lead_alias)` 放宽为 `sum(_mid_is_set)*2 >
+  len(mid_forms)`（mid 语句**多数**为 `(set ...)` 调用时交错）。base-function
+  的 mid[0] `(set '$platform (read (getvar "platform")))`（值非符号）与 mid[5]
+  `(setq @::*mktime-epoch* 2208988800)` 非干净别名 set 但也交错（CAD 实测
+  `[reg @::acadver, mid0, reg @::handle-keywords, mid1, ...]`）。i18n/platform
+  的 setq/if 占多数（1/5 set）不交错。回归：i18n/platform/cl-functions/
+  net/module/config/store 保持 byte-identical，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

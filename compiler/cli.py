@@ -1827,10 +1827,21 @@ def _build_cad_module_code(
                 and isinstance(_first.args[1], Symbol)
             )
 
+        def _mid_is_set(_m):
+            _first = _m.forms[0] if isinstance(_m, Progn) else _m
+            return isinstance(_first, Call) and str(_first.name).lower() == "set"
+
+        # mid 语句**多数为 `set` 别名绑定**（`(set 'X @::X)`，cl-functions 的
+        # #-sbcl + progn 展开、base-function 的 handle-keywords/leap-yearp 等
+        # 全部）时，CAD 把每条 mid 语句与对应函数的注册**交错**
+        # （[reg i, mid[i], reg i+1, mid[i+1], ...]）；普通 mid 语句
+        # （i18n/platform 的 setq/if 占多数）仍全部 mid 先、注册后。
+        # base-function 的 mid[0] `(set '$platform (read ...))`（值非符号）
+        # 与 mid[5] `(setq @::*mktime-epoch* ...)` 非干净别名 set，但同样交错。
         _interleave_mid = (
             len(mid_forms) > 0
             and len(mid_forms) <= n_funcs
-            and all(_mid_lead_alias(_m) for _m in mid_forms)
+            and sum(_mid_is_set(_m) for _m in mid_forms) * 2 > len(mid_forms)
         )
         # START 函数注册：前 n_pre 个函数（定义在首个顶层语句之前，CAD
         # platform 实测 set-locale/get-locale 在 globals 语句前注册）。
