@@ -557,6 +557,22 @@ class CadSymbolCollector:
                 default=-1,
             )
             _local_is_param_order[_loc] = "local" if _local_last >= _param_last else "param"
+        # 共享参数注册位置：逆序处理**最后遇到**的引用者（参数声明或 body/
+        # foreach 引用，如 persist `pkg-name` = package-path/get-local-pkg-info
+        # 参数 + save-pkg-in-use foreach 变量 → CAD fg[81] 在 save-pkg-in-use
+        # 组；cache `subdir` = cache-store 等参数 + cache-clear-all foreach 变量
+        # → CAD fg[46] 在 cache-store 组，因 cache-clear-all 逆序 i=0 先处理、
+        # 参数 i 更高）。故共享参数/foreach 变量仅在 ``_shared_last[名] == i``
+        # 的函数处注册（先处理者跳过，避免抢先占低位槽）。
+        _shared_last: dict = {}
+        for _i, _f in enumerate(reversed(defuns)):
+            for _arg in _f.args:
+                if _arg in self.shared:
+                    _shared_last[_arg] = max(_shared_last.get(_arg, -1), _i)
+        for _i, _k in enumerate(reversed(kept_refs)):
+            for _n, _ in _k:
+                if _n in self.shared:
+                    _shared_last[_n] = max(_shared_last.get(_n, -1), _i)
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             # 函数体符号逆序注册；CAD 对 kwote 块（kwote + lambda 体，由
             # `__kwote_end__` 标记）保持收集序整体插到**调用者**（块后第一个
@@ -671,6 +687,15 @@ class CadSymbolCollector:
                     # 局部同时是其它函数参数、且参数拥有者后处理（net/probe
                     # `cached`）：由参数函数 args 循环注册，函数体组不收集。
                     continue
+                if (
+                    isinstance(name, str)
+                    and name in self.shared
+                    and _shared_last.get(name) != i
+                ):
+                    # 共享参数名在 body/foreach 引用（persist pkg-name foreach 变量、
+                    # cache subdir foreach 变量）：仅在逆序最后引用者（_shared_last）
+                    # 处注册，先处理者跳过（否则抢先占低位槽）。
+                    continue
                 self.add(
                     name,
                     force=force
@@ -709,8 +734,10 @@ class CadSymbolCollector:
                     self.add(loc)
             for arg in reversed(f.args):
                 if arg in self.shared:
-                    # 逆序迭代索引 i 对应源码索引 nfuncs-1-i。
-                    if shared_first_user.get(arg) == nfuncs - 1 - i:
+                    # 共享参数注册在逆序最后引用者（_shared_last）处：
+                    # persist pkg-name 在 save-pkg-in-use（foreach）注册；
+                    # cache subdir 在 cache-store（参数，i 更高）注册。
+                    if _shared_last.get(arg) == i:
                         self.add(arg)
                 elif arg in _local_is_param and _local_is_param_order.get(arg) == "local":
                     # 局部拥有者后处理（cmd.lsp `pkg-name`：C:@DEP reversed idx 1
@@ -1425,7 +1452,6 @@ class CadSymbolCollector:
                 if (
                     _v not in arg_names
                     and _v not in getattr(self, "_unique_params", set())
-                    and _v not in self.shared
                     and not self._seen(out, _v)
                 ):
                     out.append((_v, False))
