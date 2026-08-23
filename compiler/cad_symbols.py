@@ -426,6 +426,33 @@ class CadSymbolCollector:
         # 会在引用函数的函数体组抢先注册，错位到参数拥有者组（CAD 实测 TYPE
         # 在 define-config-typed 组 fg[78]，非 config-validate 组 fg[59]）。
         self._all_params = set(arg_usage.keys())
+        # 每个参数名 → 最早声明它的函数源码序（= 逆序处理**最后**的拥有者）。
+        # 符号同时是 kwote lambda 参数 + 其它函数参数时（base-function `x` =
+        # pair 参数 + getf lambda 参数；string-utils `x` = strbytelen 参数 +
+        # string-split lambda 参数），CAD 注册在**逆序最后处理**的拥有者处——
+        # 参数拥有者处理更晚（owner 源码序 < 引用函数源码序，base-function
+        # pair src12 < getf src13）时参数拥有者注册；lambda 宿主处理更晚
+        # （string-split src1 < strbytelen src9）时 lambda 收集注册。
+        self._param_first_source = {}
+        for _j, _f in enumerate(defuns):
+            for _a in _f.args:
+                self._param_first_source.setdefault(_a, _j)
+        # 每个参数名 → 含 kwote lambda 且参数为其 lambda 参数的宿主函数
+        # （逆序 idx 最大 = 处理最晚）。参数同时是 kwote lambda 参数时，
+        # CAD 注册在逆序最后处理的拥有者处（string-utils `x` = strbytelen
+        # 参数 + string-split lambda 参数，string-split 处理更晚 → x 在
+        # string-split kwote 块内 fg[44]，strbytelen args 循环跳过）。
+        self._param_lam_hosts = {}
+        for _j, _f in enumerate(defuns):
+            _ri = len(defuns) - 1 - _j
+            for _b in _f.body:
+                for _lam in self._iter_kwote_lambdas(_b):
+                    for _p in _lam.args:
+                        if _p == "/":
+                            break
+                        self._param_lam_hosts[_p] = max(
+                            self._param_lam_hosts.get(_p, -1), _ri
+                        )
 
         if len(defuns) <= 1:
             return self._collect_single(defuns, others, program)
@@ -473,7 +500,8 @@ class CadSymbolCollector:
             for _a in _f.args:
                 _arg_count[_a] = _arg_count.get(_a, 0) + 1
         self._unique_params = {a for a, c in _arg_count.items() if c == 1}
-        for f in defuns:
+        for _jf, f in enumerate(defuns):
+            self._cur_source_idx = _jf
             refs = _SeenList()
             arg_names = set(f.args)
             for expr in strip_docstring(f.body):
@@ -785,13 +813,19 @@ class CadSymbolCollector:
                     if _shared_last.get(arg) == i:
                         self.add(arg)
                 elif arg not in self._name_set:
+                    # 参数同时是**逆序更晚处理**的 kwote lambda 参数（string-utils
+                    # `x` = strbytelen 参数 + string-split lambda 参数，宿主
+                    # reversed idx 6 > strbytelen 0）：由 kwote lambda 宿主收集
+                    # 注册（CAD x 在 string-split kwote 块 fg[44]），args 循环
+                    # 跳过（否则 strbytelen 抢先占 fg[7]，后续槽错位）。
+                    if getattr(self, "_param_lam_hosts", {}).get(arg, -1) > i:
+                        continue
                     self.add(arg)
 
         return self.names
 
     def _lam_tail_value(self, node):
         """提取顶层 setq-lambda 的尾调用名（最后一个 body form 的值函数）。
-
         简单符号（net/wget 末 form `outfile`）返回 None（无尾调用）；函数调用
         返回函数名（fasext 末 `(strcat ...)` → strcat）；`if`/`setq`/`progn`
         递归取分支值（vlx 末 `(if ... (setq str-vlx (strcat ...)) str-vlx)`
@@ -817,6 +851,53 @@ class CadSymbolCollector:
                 return self._lam_tail_value(node.forms[-1])
             return None
         return None
+
+    def _iter_kwote_lambdas(self, node):
+        """递归收集 AST 中的 kwote lambda（`(function (lambda ...))`）。"""
+        from compiler.ast_nodes import (
+            QuotedExpr as _Q,
+            LambdaNode as _LN,
+            Call as _C,
+            IfNode as _I,
+            Progn as _P,
+            WhileNode as _W,
+            ForeachNode as _F,
+            RepeatNode as _R,
+            Cond as _Cnd,
+            Setq as _S,
+        )
+
+        if isinstance(node, _Q) and getattr(node, "kwote", False) and isinstance(node.expr, _LN):
+            yield node.expr
+            for _b in node.expr.body:
+                yield from self._iter_kwote_lambdas(_b)
+        elif isinstance(node, _LN):
+            for _b in node.body:
+                yield from self._iter_kwote_lambdas(_b)
+        elif isinstance(node, _C):
+            for _a in node.args:
+                yield from self._iter_kwote_lambdas(_a)
+        elif isinstance(node, _I):
+            for _x in (node.cond, node.then, node.else_expr):
+                if _x:
+                    yield from self._iter_kwote_lambdas(_x)
+        elif isinstance(node, _P):
+            for _f_ in node.forms:
+                yield from self._iter_kwote_lambdas(_f_)
+        elif isinstance(node, (_W, _R)):
+            for _b in node.body:
+                yield from self._iter_kwote_lambdas(_b)
+        elif isinstance(node, _F):
+            for _b in node.body:
+                yield from self._iter_kwote_lambdas(_b)
+        elif isinstance(node, _Cnd):
+            for _cl in node.clauses:
+                for _it in _cl[1:]:
+                    yield from self._iter_kwote_lambdas(_it)
+        elif isinstance(node, _S):
+            for _t, _v in node.pairs:
+                if _v:
+                    yield from self._iter_kwote_lambdas(_v)
 
     def _collect_single(self, defuns, others, program):
         """单函数文件（≤1 defun）：模块注册与函数体符号按 CAD 序收集。
@@ -1406,10 +1487,16 @@ class CadSymbolCollector:
                 and not (
                     # 其它函数的参数名（config/store `type`）与共享参数名
                     # （persist pkg-name）作普通符号引用时过滤——由参数拥有者
-                    # 注册。当前函数局部（net/module `response-str` 局部拥有者
-                    # 函数体须收集）放行。
+                    # 注册。仅当参数拥有者在逆序处理中**更晚**（源码序更前，
+                    # `_param_first_source < 当前源码序`，base-function `x` =
+                    # pair src12 拥有者 vs getf src13 引用）时过滤；kwote lambda
+                    # 宿主处理更晚（string-split src1 vs strbytelen src9）时
+                    # lambda 收集注册（CAD 在 string-split kwote 块内 fg[44]）。
+                    # 当前函数局部（net/module `response-str`）放行。
                     node.name in getattr(self, "_all_params", set())
                     and not _is_local
+                    and getattr(self, "_param_first_source", {}).get(node.name, 10**9)
+                    < getattr(self, "_cur_source_idx", 10**9)
                 )
                 and not (node.name in self.shared and not _is_local)
             ):
@@ -1449,7 +1536,11 @@ class CadSymbolCollector:
                     out.append(("ads-cmd", False))
             elif (
                 node.name not in arg_names
-                and node.name not in getattr(self, "_all_params", set())
+                and (
+                    node.name not in getattr(self, "_all_params", set())
+                    or getattr(self, "_param_first_source", {}).get(node.name, 10**9)
+                    >= getattr(self, "_cur_source_idx", 10**9)
+                )
                 and not self._seen(out, node.name)
             ):
                 out.append((node.name, False))
@@ -1465,6 +1556,8 @@ class CadSymbolCollector:
                         and not (
                             target.name in getattr(self, "_all_params", set())
                             and not _is_local
+                            and getattr(self, "_param_first_source", {}).get(target.name, 10**9)
+                            < getattr(self, "_cur_source_idx", 10**9)
                         )
                         and not (target.name in self.shared and not _is_local)
                     ):
@@ -1593,23 +1686,33 @@ class CadSymbolCollector:
                         if set(_lam_locals) == set(cur_locals or []):
                             if not self._seen(out, "_al-bind-alist"):
                                 out.append(("_al-bind-alist", False))
-                    # kwote lambda 参数（persist `(lambda (e1 e2) ...)` CAD
-                    # fg[109]=E2、fg[110]=E1；browse `(lambda (x) (princ ...)
-                    # (princ "\n"))` X fg[107]）：参数在 kwote 块**末尾**逆序
-                    # 注册（= forward 块开头、_rev 块末尾），不随 body 内联——
-                    # 当参数数 >1 **或 lambda 体多语句**时（CAD 实测 multi-stmt
-                    # body 参数沉底）。单参数 + 单语句（scheduler `task-item`、
-                    # i18n `opt%`、base-function getf `x`）仍内联
-                    # （CAD 实测 `kwote = CAR TASK-ITEM`）。
-                    _multi = len(lambda_args) > 1 or len(node.expr.body) > 1
+                    # kwote lambda 参数：非 `_all_params` 排除（参数拥有者逆序
+                    # 更晚处理，base-function `x` = pair 参数 src12 < getf src13
+                    # 时由参数拥有者注册，lambda 不收集）的**可收集**参数在
+                    # kwote 块**末尾**逆序注册（= forward 块开头、_rev 块末尾，
+                    # persist e1/e2、browse X/LIBFILE、string-utils X 实测）。
+                    # 逆序更晚的 kwote lambda 宿主（string-utils string-split
+                    # src3 vs strbytelen src9）也收集（`_all_params` 条件排除
+                    # + args 循环 `_param_lam_hosts` 延迟）。
+                    def _lam_param_excluded(_p):
+                        return (
+                            _p in getattr(self, "_all_params", set())
+                            and getattr(self, "_param_first_source", {}).get(_p, 10**9)
+                            < getattr(self, "_cur_source_idx", 10**9)
+                        )
+
+                    _collectible = [
+                        _p
+                        for _p in _lambda_args
+                        if _p not in arg_names
+                        and _p not in self.shared
+                        and not _lam_param_excluded(_p)
+                    ]
+                    _multi = bool(_collectible)
                     _body_args = arg_names | lambda_args if _multi else arg_names
                     if _multi:
-                        for _p in _lambda_args:
-                            if (
-                                _p not in arg_names
-                                and _p not in self.shared
-                                and not self._seen(out, _p)
-                            ):
+                        for _p in _collectible:
+                            if not self._seen(out, _p):
                                 out.append((_p, False))
                     for expr in node.expr.body:
                         self._collect_byteorder(expr, out, _body_args, in_quote)

@@ -733,7 +733,17 @@ class CodeGenerator:
                     # SETQ_G` 无 `0b` 实测）。
                     if n > 1 and i == n - 1 and not self._in_stmt_ctx:
                         buf.emit(encode_op_noarg(DUP))
-                    elif self._in_tail_context and i == n - 1:
+                    elif i == n - 1 and (
+                        self._in_tail_context
+                        or (not self._in_stmt_ctx and not self._module_mode)
+                    ):
+                        # 单对 setq：真尾上下文 DUP；**值上下文**（嵌套表达式，
+                        # 函数体 `_in_stmt_ctx=False` 且非模块代码，browse
+                        # `(mapcar ... (setq allfunlst (fun::get-list)))` 的
+                        # setq 值是 mapcar 列表，CAD 实测 `DUP; SETQ_G`）DUP
+                        # 保留返回值。模块代码语句（`_module_mode=True`，
+                        # test-cond if-then 单对 `PUSH_G; SETQ_G` 无 `0b`）与
+                        # 语句上下文不 DUP。
                         buf.emit(encode_op_noarg(DUP))
                     idx = self.symtab.get_or_add(normalize_vla_name(target.name))
                     buf.emit(encode_op_u16(SETQ_G, idx))

@@ -1840,7 +1840,6 @@ def _build_cad_module_code(
         # 与 mid[5] `(setq @::*mktime-epoch* ...)` 非干净别名 set，但同样交错。
         _interleave_mid = (
             len(mid_forms) > 0
-            and len(mid_forms) <= n_funcs
             and sum(_mid_is_set(_m) for _m in mid_forms) * 2 > len(mid_forms)
         )
         # START 函数注册：前 n_pre 个函数（定义在首个顶层语句之前，CAD

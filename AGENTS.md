@@ -440,9 +440,32 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      上下文（setq RHS、外层 if 分支值）的 if 分支值被使用，`_then_tail=True`
      使分支末 progn 的 `nil` 值不被 `_last_nil_stmt`（`not saved_tail`）省略
      （persist @::get-local-pkg-info `(progn (vl-file-delete ...) nil)` 为 if
-     then 值，CAD 发射 PUSH_NIL；旧实现省略 → seg0 -1）。回归：i18n/
+     then 值，CAD 发射 PUSH_NIL；旧实现省略 → seg0 -1）。  回归：i18n/
      cl-functions/net/module/base-function/scheduler/voice/config-store/lifecycle
      保持 byte-identical，372 tests pass。
+- **2026-08-23（CAD 对拍）browse.lsp byte-identical（47/67）**：五个通用修复
+  （kwote lambda 参数可收集判定 + `_param_lam_hosts` args 延迟 + 单对 setq
+  值上下文 DUP + `_interleave_mid` 移除 n_funcs 限制 + `_all_params` 条件排除），
+  browse **seg0+seg1+nsyms 完全一致**（LIBFILE/X 参数沉底 + 16 mids 与注册交错）：
+  1. **kwote lambda 参数可收集判定**（`cad_symbols.py` kwote 分支）：`_multi`
+     改为「存在非 `_all_params` 排除的可收集参数」——可收集参数（非函数参数
+     或 kwote lambda 宿主逆序更晚处理）统一在 forward 块开头（块尾逆序注册，
+     browse LIBFILE fg[28]、X fg[107]、string-utils X）。`_all_params` 排除仅
+     当参数拥有者逆序**更晚**处理（`_param_first_source < _cur_source_idx`，
+     base-function `x` = pair src12 vs getf src13 → pair 注册）。
+  2. **`_param_lam_hosts` args 延迟**：参数同时是逆序更晚的 kwote lambda 宿主
+     的参数（string-utils `x` = strbytelen 参数 + string-split lambda 参数，
+     宿主 reversed 6 > 0）时，args 循环跳过，由 lambda 收集（CAD x 在
+     string-split kwote 块 fg[44]）。
+  3. **单对 setq 值上下文 DUP**（`codegen.py` `_emit_setq`）：嵌套表达式里值
+     被使用的单对 setq（browse `(mapcar ... (setq allfunlst (fun::get-list)))`
+     CAD 实测 `DUP; SETQ_G`）补 DUP；模块代码语句（`_module_mode`，
+     test-cond if-then 单对无 `0b`）与语句上下文不 DUP。
+  4. **`_interleave_mid` 移除 `len(mid) <= n_funcs` 限制**（`cli.py`）：browse
+     16 mids / 10 funcs（`set 'require`/`set 'require-release` 等 15 个别名
+     set + 1 setq）仍与注册交错；mid_counts 逐函数分配（部分函数 2 mids）。
+     回归：i18n/platform/base-function/cl-functions/net/module/persist 保持
+     byte-identical，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n
