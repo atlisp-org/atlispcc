@@ -1705,7 +1705,19 @@ def _build_cad_module_code(
     # `JUMP; PUSH_G b; SETQ_G c`（cl-macros golden 实测）；直接 setq/call
     # 末全局（net/proxy/ax-request）仍保留 no-op。
     _last_global_progn = bool(globals_forms) and isinstance(globals_forms[-1], Progn)
-    _skip_reg_pc = _last_global_progn and not post_forms and n_pre == 0
+    # post 语句为自平衡块（progn/while/foreach/repeat/cond）时，注册尾
+    # `PUSH_G c; POP` no-op 同样省略（cl-functions 末 post PROGN 实测
+    # `(setq :@ ':@)` 后直接 END_DEFUN，无 `09 c 00 0a`）。
+    _post_selfbal = bool(post_forms) and all(
+        isinstance(_p, (Progn, WhileNode, ForeachNode, RepeatNode, Cond))
+        for _p in post_forms
+    )
+    # 末全局是 Progn 且无 post/START（cl-macros）或 post 为自平衡块（cl-functions
+    # 末 post PROGN）时，TAIL 注册省略 `PUSH_G c; POP` no-op（START 注册仍保留）。
+    _skip_reg_pc = (
+        (_last_global_progn and not post_forms and n_pre == 0)
+        or _post_selfbal
+    )
 
     _emit_stmts(globals_forms, last_no_pop=(n_funcs == 0 and not post_forms))
 
@@ -1779,7 +1791,7 @@ def _build_cad_module_code(
                 # CAD 实测 `... 09 01 00 35 01 12 00 01 0a 09 01 00 16`）。
                 if i < n_funcs - 1 or post_forms:
                     out += b"\x0a"
-            elif (i < n_funcs - 1 and not _skip_reg_pc) or post_forms:
+            elif (i < n_funcs - 1 and not _skip_reg_pc) or (post_forms and not _post_selfbal):
                 # 非命令注册 `PUSH_G c; POP` no-op：仅当注册后有后续内容
                 # （非末尾、post 语句、或非 Progn 末全局的纯尾部）时发射。
                 out += bytes([0x09]) + struct.pack("<H", c)

@@ -518,19 +518,19 @@ class CodeGenerator:
                     buf.emit(encode_op_noarg(POP))
             if node.forms:
                 self._in_tail_context = saved_tail
-                self._emit_expr(buf, node.forms[-1], _tail=saved_tail)
-                # 中间上下文（非尾）且最后语句是留值表达式（调用/符号/常量）时，
-                # 追加 POP 丢弃 progn 值。setq/while/foreach/repeat/progn/cond 自身
-                # 管理栈（i18n-cad load-locale 内层 if-then=progn(..., close) 后
-                # `POP`；外层 if-then=progn(..., 内层 if) 后无 POP）。if 在语句
-                # 上下文自平衡（内部 POP/无假路径 PUSH_NIL）；值上下文（模块代码
-                # `_in_stmt_ctx=False`，@lisp-env `(progn (setq ...) (if ...))` 实测）
-                # 留 then/假路径值 → 需 POP（CAD `JUMP 1; PUSH_NIL; POP`）。
                 _last = node.forms[-1]
+                # 语句上下文（值被丢弃）progn 末 `nil`：PUSH_NIL+POP 为纯 no-op，
+                # CAD 省略（cl-functions `(progn (@::alert ...) (princ ...) nil)`
+                # 模块代码实测无 `01 0a`）。尾/值上下文（值被使用）仍发射。
+                _last_nil_stmt = (
+                    isinstance(_last, Symbol) and _last.name.lower() == "nil" and not saved_tail
+                )
+                if not _last_nil_stmt:
+                    self._emit_expr(buf, _last, _tail=saved_tail)
                 _selfbal = isinstance(_last, (Setq, WhileNode, ForeachNode, RepeatNode, Progn, Cond))
                 if isinstance(_last, IfNode) and self._in_stmt_ctx:
                     _selfbal = True
-                if not saved_tail and not _selfbal:
+                if not saved_tail and not _selfbal and not _last_nil_stmt:
                     buf.emit(encode_op_noarg(POP))
             self._in_tail_context = saved_tail
 
