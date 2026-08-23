@@ -762,10 +762,53 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             continue
         if _best is None or _gv > _best[1]:
             _best = (_gs, _gv)
+    _best_res = None
     if _best is not None:
         _ri = _res_slot_of(_best[0])
         if _ri is not None:
             _res_offset = _ri - _best[1]
+            _best_res = _ri
+
+    def _const_leaves(v):
+        """fg 表 const 结构 → 叶子符号名列表（SYMBOL/STRING）。"""
+        if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
+            return [str(v[1])]
+        if isinstance(v, tuple):
+            _out = []
+            for _sub in v:
+                if isinstance(_sub, tuple):
+                    _out.extend(_const_leaves(_sub))
+            return _out
+        return []
+
+    # fg 表里的 const（quoted 数据）折叠多个 res 槽为一个 fg 槽（net/module
+    # `_al-bind-alist '(entry now)` 的 ENTRY/NOW 占 res[110,111]、fg[98] 一个
+    # 槽），使 `_res_offset` 在 const 之后失效（MOD-SYM res[112]-12=100，
+    # CAD 用 fg[99]=112-13）。记录每个 const 的（res 位置, 叶子数），目标符号
+    # res 槽在 const 之后时按叶子数-1 补偏移。
+    _const_collapse = []
+    for _i, _v in enumerate(fg):
+        if isinstance(_v, tuple) and not (
+            len(_v) == 2 and _v[0] in ("SYMBOL", "STRING", "REAL", "CONS", "FUNC")
+        ):
+            _leaves = _const_leaves(_v)
+            if len(_leaves) > 1:
+                _cpos = _res_slot_of(str(_leaves[0]).upper())
+                if _cpos is not None:
+                    _const_collapse.append((_cpos, len(_leaves)))
+
+    def _res_to_fg(rs: int) -> int:
+        """资源 symbol_slots 索引 → fg 槽（`_res_offset` + const 折叠补偿）。
+
+        const（quoted 数据）折叠多个 res 槽为一个 fg 槽（net/module
+        `(entry now)` 占 res[110,111]、fg[98] 一槽），目标 res 槽在 const 之后
+        时偏移 +（叶子数-1）。`gvar_slot_res`/表外符号/字符串 fallback 共用。"""
+        _off = _res_offset or 0
+        if _best_res is not None:
+            for _cpos, _lcount in _const_collapse:
+                if _best_res < _cpos < rs:
+                    _off += _lcount - 1
+        return rs - _off
 
     def _strip_list_markers(v):
         """symtab 常量结构 → fg 表可比较形式（规范化大小写/INT/REAL/LIST）。
@@ -864,7 +907,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         if _res_offset is not None:
             _rs = _res_slot_of(str(name).upper())
             if _rs is not None:
-                _af = _rs - _res_offset
+                _af = _res_to_fg(_rs)
                 if 0 <= _af < nsyms:
                     return _af, True
         return _gs, False
@@ -903,9 +946,16 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     cur_func = None
     lambda_idx = 0
     arg_i = 0
+    # kwote lambda 的 `-lambda-` DEFUN 不注册 name_by_offset：进入时把宿主
+    # 函数参数压栈，END_DEFUN 时弹出恢复——否则 lambda 结束后宿主函数体的
+    # 参数读取（PUSH_VALUE mod-sym 等）仍用 lambda 的 cur_args（net/module
+    # @::handle-module-failure 内嵌 0 参 lambda 后 `(vl-remove mod-sym ...)`
+    # 的 mod-sym 读取被误走通用符号映射 → 99 错槽，CAD 用 98）。
+    _arg_stack: list = []
     for inst in insts:
         new_idx: Optional[int] = None
         if inst.op_name == "DEFUN":
+            _arg_stack.append((cur_args, arg_i))
             fname = name_by_offset.get(inst.offset)
             if fname is not None:
                 cur_func = fname
@@ -930,6 +980,9 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     cur_args = _la[lambda_idx] if lambda_idx < len(_la) else None
                     lambda_idx += 1
             arg_i = 0
+        elif inst.op_name == "END_DEFUN":
+            if _arg_stack:
+                cur_args, arg_i = _arg_stack.pop()
         # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
         if (multi or top_lambda_args) and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
             arg = cur_args[arg_i]
@@ -1171,7 +1224,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                             # 表外字符串（init/steps `"flag-nomnl"` symbol_slots[113]
                             # 偏移 6 → fg 107 → 操作数 106，CAD 实测）：同表外符号
                             # 规则 `_rslot - _res_offset`。旧 fallback nsyms-1 偏移 5。
-                            _fg_str = _rslot - _res_offset
+                            _fg_str = _res_to_fg(_rslot)
                             if 0 <= _fg_str < nsyms:
                                 new_idx = _fg_str - 1 - offset
                             else:
@@ -1242,7 +1295,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                             # config/migrate `@::*prefix-config*` 118-12 = 106 →
                             # 105（CAD 实测）。旧 fallback `nsyms-1` 偏移 5/2。
                             if _res_offset is not None and _rs is not None:
-                                _fg_ext = _rs - _res_offset
+                                _fg_ext = _res_to_fg(_rs)
                                 if 0 <= _fg_ext < nsyms:
                                     new_idx = _fg_ext - 1
                                 else:

@@ -1421,7 +1421,7 @@ class CodeGenerator:
         body = node.body
         for expr in body[:-1]:
             self._emit_stmt(buf, expr)
-            if not isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode)):
+            if not isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, IfNode, Cond)):
                 buf.emit(encode_op_noarg(POP))
         if body:
             self._emit_expr(buf, body[-1], _tail=True)

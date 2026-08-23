@@ -365,6 +365,35 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   修复：`_seen`/`_in_name_set` 对以 `"` 开头的字符串键用精确匹配（大小写敏感），
   仅普通符号走大小写不敏感。回归：voice/log/i18n/cl-macros 保持 byte-identical
   （符号合并不受影响）。
+- **2026-08-23（CAD 对拍）net/module.lsp byte-identical（43/67）**：四个通用修复
+  （`_res_offset` const 折叠补偿 + `_local_is_param_order` order="local" 共享
+  符号 + `_patch_usubr_idx` cur_args 栈 + `_emit_nested_lambda` if 排除），
+  net/module **seg0+seg1+nsyms 完全一致**（`/ 局部变量` + 共享参数 + 双 kwote
+  lambda + `_al-bind-alist` 复杂组合）：
+  1. **`_res_offset` const 折叠补偿**（`cli.py` `_res_to_fg`）：const（quoted
+     数据）折叠多个 res 槽为一个 fg 槽（net/module `(quote (entry now))` 占
+     res[110,111]、fg[98] 一槽），使 `_res_offset`（= 末 fg 符号差，12）在
+     const 之后失效（MOD-SYM res[112]-12=100，CAD 用 fg[99]=112-13）。记录
+     fg 表每个 const 的（res 位置, 叶子数），目标符号 res 槽在 const 之后时
+     偏移 +（叶子数-1）。`gvar_slot_res`/表外符号/字符串 fallback 共用。
+  2. **`_local_is_param_order` 的 order="local" 共享符号**（`cad_symbols.py`）：
+     net/module `response-str`/`http-response` = cache-module-response/eval-module
+     参数（shared）+ load-module/fetch-module 局部（order="local"，局部拥有者
+     后处理）。三处协调：args 循环 order="local" 参数跳过（shared 检查之前）；
+     函数体组仅 `i == _local_is_param_last` 的最后局部拥有者注册；locals 循环
+     对 order="local" 局部即使 shared/kept 过滤也注册。`_collect_byteorder`
+     Symbol/Setq target 对 shared 符号若在 cur_locals（当前函数局部）仍收集
+     （局部拥有者函数体须在 body 位置注册，否则仅 locals 循环尾部错位）。
+  3. **`_patch_usubr_idx` cur_args 栈**（`cli.py`）：kwote lambda 的 `-lambda-`
+     DEFUN 不注册 name_by_offset，进入时把宿主函数 (cur_args, arg_i) 压栈，
+     END_DEFUN 弹出恢复——否则 lambda 结束后宿主函数体的参数读取
+     （`(vl-remove mod-sym ...)` 的 mod-sym PUSH_VALUE）仍用 lambda 的
+     cur_args（net/module @::handle-module-failure 内嵌 0 参 lambda 后 mod-sym
+     读取误走通用符号映射 → 99 错槽，CAD 用 98）。
+  4. **`_emit_nested_lambda` 中间语句 POP 排除**（`codegen.py` line 1424）：
+     kwote lambda 体非末语句的 if/cond 不追加 POP（if 语句上下文自平衡，
+     与 generate_function line 1616 同规则；net/module cache-module-response
+     的 kwote lambda `(if fp ...)` 后多 `0a` → seg0 +1）。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

@@ -547,6 +547,8 @@ class CadSymbolCollector:
             if any(loc in g.args for g in defuns)
         }
         _local_is_param_order = {}
+        _local_is_param_last = {}
+        _param_is_param_last = {}
         for _loc in _local_is_param:
             _local_last = max(
                 (_n_funcs - 1 - _j for _j, _f in enumerate(defuns) if _loc in _f.locals),
@@ -557,6 +559,8 @@ class CadSymbolCollector:
                 default=-1,
             )
             _local_is_param_order[_loc] = "local" if _local_last >= _param_last else "param"
+            _local_is_param_last[_loc] = _local_last
+            _param_is_param_last[_loc] = _param_last
         # 共享参数注册位置：逆序处理**最后遇到**的引用者（参数声明或 body/
         # foreach 引用，如 persist `pkg-name` = package-path/get-local-pkg-info
         # 参数 + save-pkg-in-use foreach 变量 → CAD fg[81] 在 save-pkg-in-use
@@ -683,18 +687,34 @@ class CadSymbolCollector:
                     else:
                         self.add("T", force=True)
                     continue
-                if name in f.locals and name in _local_is_param and _local_is_param_order.get(name) == "param":
-                    # 局部同时是其它函数参数、且参数拥有者后处理（net/probe
-                    # `cached`）：由参数函数 args 循环注册，函数体组不收集。
-                    continue
+                if isinstance(name, str) and name in _local_is_param:
+                    # 局部同时是其它函数参数：槽注册在**最后处理的拥有者**处。
+                    # order="param"（参数拥有者后处理，net/probe `cached`）：局部
+                    # 拥有者（name in f.locals）跳过，参数拥有者注册。
+                    # order="local"（局部拥有者后处理，net/module `response-str` =
+                    # load-module/fetch-module 局部 + cache-module-response/eval-module
+                    # 参数）：参数拥有者（name not in f.locals）与**非最后**局部
+                    # 拥有者（i != _local_is_param_last）跳过，仅最后局部拥有者
+                    # 注册（否则 @::load-module i=0 抢先占低位槽，CAD 在
+                    # @::fetch-module i=4 组 fg[50]）。
+                    _lo = _local_is_param_order.get(name)
+                    if _lo == "param":
+                        if name in f.locals:
+                            continue
+                    else:
+                        if name not in f.locals or i != _local_is_param_last.get(name):
+                            continue
                 if (
                     isinstance(name, str)
                     and name in self.shared
+                    and name not in _local_is_param
                     and _shared_last.get(name) != i
                 ):
                     # 共享参数名在 body/foreach 引用（persist pkg-name foreach 变量、
                     # cache subdir foreach 变量）：仅在逆序最后引用者（_shared_last）
-                    # 处注册，先处理者跳过（否则抢先占低位槽）。
+                    # 处注册，先处理者跳过（否则抢先占低位槽）。_local_is_param
+                    # 符号（局部+参数混合）由 _local_is_param_order/_last 决定
+                    # 注册者，不走 _shared_last。
                     continue
                 self.add(
                     name,
@@ -725,25 +745,38 @@ class CadSymbolCollector:
                 # **当前函数体**引用（`loc in 本函数 kept`）且未被函数体组
                 # 注册时才 add——实际已由函数体组注册，此处为安全 no-op。
                 _kept_names = {n for n, _ in kept}
-                if loc in _kept_names and loc not in self.shared and loc not in self._name_set:
-                    if loc in _local_is_param and _local_is_param_order.get(loc) == "param":
-                        # 局部同时是其它函数参数、且参数拥有者后处理（net/probe
-                        # `cached`）：由参数函数 args 循环注册（fg[75]），locals
-                        # 循环不注册。
+                if loc in _local_is_param:
+                    # 局部同时是其它函数参数：由 _local_is_param_order/_last 决定
+                    # 注册者。order="param" 局部拥有者跳过（参数拥有者注册）；
+                    # order="local" 仅**最后**局部拥有者注册——即使 local 被
+                    # shared 过滤出 kept（net/module `response-str` shared 参数
+                    # 被 Setq target 收集过滤，@::fetch-module kept 无 response-str，
+                    # 仅 locals 循环能注册）。
+                    _lo = _local_is_param_order.get(loc)
+                    if _lo == "param" or (
+                        _lo == "local" and i != _local_is_param_last.get(loc)
+                    ):
                         continue
+                    if loc not in self._name_set:
+                        self.add(loc)
+                    continue
+                if loc in _kept_names and loc not in self.shared and loc not in self._name_set:
                     self.add(loc)
             for arg in reversed(f.args):
+                if arg in _local_is_param and _local_is_param_order.get(arg) == "local":
+                    # 局部拥有者后处理（net/module `response-str` = cache-module-
+                    # response/eval-module 参数 + load-module/fetch-module 局部，
+                    # order="local"）：由局部拥有者注册，参数 args 循环不注册
+                    # （否则 @::cache-module-response 按 _shared_last=3 抢先占槽，
+                    # CAD 在 @::fetch-module i=4 组）。注意此检查须在 shared 之前
+                    # （response-str 同时是 shared 参数）。
+                    continue
                 if arg in self.shared:
                     # 共享参数注册在逆序最后引用者（_shared_last）处：
                     # persist pkg-name 在 save-pkg-in-use（foreach）注册；
                     # cache subdir 在 cache-store（参数，i 更高）注册。
                     if _shared_last.get(arg) == i:
                         self.add(arg)
-                elif arg in _local_is_param and _local_is_param_order.get(arg) == "local":
-                    # 局部拥有者后处理（cmd.lsp `pkg-name`：C:@DEP reversed idx 1
-                    # > @::package-remove idx 0）：由局部拥有者函数体组/局部注册，
-                    # 参数 args 循环不注册（否则抢先占用低位槽）。
-                    continue
                 elif arg not in self._name_set:
                     self.add(arg)
 
@@ -1361,8 +1394,16 @@ class CadSymbolCollector:
         if isinstance(node, Symbol):
             if (
                 node.name not in arg_names
-                and node.name not in self.shared
                 and not self._seen(out, node.name)
+                and (
+                    node.name not in self.shared
+                    # shared 参数名同时是**当前函数局部**（net/module `response-str`
+                    # = cache-module-response/eval-module 参数 + fetch-module 局部）：
+                    # 局部拥有者函数体须收集（注册在 body 位置），否则被 shared
+                    # 过滤 → 仅 locals 循环尾部注册错位。共享参数跨函数引用
+                    # （persist pkg-name 在 save-pkg-in-use foreach）仍过滤。
+                    or (cur_locals and node.name in cur_locals)
+                )
             ):
                 out.append((node.name, False))
         elif isinstance(node, InPackage):
@@ -1407,8 +1448,11 @@ class CadSymbolCollector:
                 if isinstance(target, Symbol):
                     if (
                         target.name not in arg_names
-                        and target.name not in self.shared
                         and not self._seen(out, target.name)
+                        and (
+                            target.name not in self.shared
+                            or (cur_locals and target.name in cur_locals)
+                        )
                     ):
                         out.append((target.name, False))
                 else:
