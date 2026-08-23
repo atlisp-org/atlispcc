@@ -1641,6 +1641,21 @@ class CadSymbolCollector:
         elif isinstance(node, ListExpr):
             for item in node.items:
                 self._collect_byteorder(item, out, arg_names, in_quote)
+        elif isinstance(node, LambdaNode):
+            # 裸 lambda 值（`(setq *error* (lambda (msg) ...))`，CAD 编译为
+            # `-lambda-` DEFUN）：参数注册符号槽 + 体符号收集（file-utils/
+            # update/menu/load 的 `*error*` 处理器实测）。与 kwote lambda 参数
+            # 同规则（可收集参数 + 体）。
+            _lam_args = [a for a in node.args if a != "/"]
+            for _a in _lam_args:
+                if (
+                    _a not in arg_names
+                    and _a not in self.shared
+                    and not self._seen(out, _a)
+                ):
+                    out.append((_a, False))
+            for _b in node.body:
+                self._collect_byteorder(_b, out, arg_names, in_quote)
         elif isinstance(node, QuotedExpr):
             if node.kwote:
                 # `(function ...)`：CAD kwote 机制（i18n-cad 实测）。

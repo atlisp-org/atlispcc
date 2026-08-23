@@ -474,6 +474,17 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   '@::wget) ... nil)` 语句，CAD 实测 `JUMP 0; PUSH_VALUE result` 无 `01 0a`）——
   与 then 常量 `nil`/`T` 的省略对称（init/steps）。值上下文不省略。回归：
   既有 47 个 byte-identical 全部保持，372 tests pass。
+- **2026-08-23（CAD 对拍）裸 lambda 值 `-lambda-`（file-utils/update/menu/load/
+  error-handler/config-dialog）**：函数体 `(setq *error* (lambda (msg) ...))` 的
+  裸 LambdaNode 值，CAD 编译为内嵌 `-lambda-` DEFUN（`JUMP; DEFUN -lambda-;
+  PUSH_G <-lambda-槽>; SETQ_G`）。旧 codegen（`_emit_expr` LambdaNode 分支）把
+  裸 lambda 当 quoted lambda 数据 → 缺 `-lambda-` DEFUN、MSG 等参数/体符号未
+  注册（file-utils nsyms 75→79、seg0 1273→1468 与 CAD 对齐）。修复：
+  - `codegen.py` `_emit_setq_value`：setq 值 = 裸 LambdaNode 时走
+    `_emit_nested_lambda` + `PUSH_G <-lambda-槽>`（`_emit_setq`/`_emit_setq_expr`
+    共用）。
+  - `cad_symbols.py` `_collect_byteorder` LambdaNode 分支：裸 lambda 参数注册
+    符号槽 + 体符号收集。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

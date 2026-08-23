@@ -684,7 +684,7 @@ class CodeGenerator:
                     _idx = self.symtab.get_or_add(normalize_vla_name(value.name))
                     buf.emit(encode_op_u16(PUSH_G, _idx))
                 else:
-                    self._emit_expr(buf, value)
+                    self._emit_setq_value(buf, value)
             if self.stub_format:
                 if self._in_tail_context:
                     buf.emit(encode_op_noarg(DUP))
@@ -716,13 +716,23 @@ class CodeGenerator:
         else:
             buf.emit(encode_op_u16(PUSH_VALUE, idx))
 
+    def _emit_setq_value(self, buf: BytecodeBuffer, value: Node):
+        """发射 setq 值：裸 lambda（`(setq *error* (lambda (msg) ...))`）走
+        `-lambda-` DEFUN（CAD 实测 `JUMP; DEFUN -lambda-; PUSH_G <-lambda-槽>;
+        SETQ_G`），其余走 `_emit_expr`。"""
+        if isinstance(value, LambdaNode):
+            lam_idx = self._emit_nested_lambda(buf, value)
+            buf.emit(encode_op_u16(PUSH_G, lam_idx))
+        else:
+            self._emit_expr(buf, value)
+
     def _emit_setq(self, buf: BytecodeBuffer, node: Setq):
         pairs = list(node.pairs)
         n = len(pairs)
         for i, (target, value) in enumerate(pairs):
             if isinstance(target, Symbol) and value:
                 with self._value_ctx():
-                    self._emit_expr(buf, value)
+                    self._emit_setq_value(buf, value)
                 if self.stub_format:
                     # 多对 setq 最后对：值位置（非语句上下文）总是 DUP 保留
                     # 返回值（CAD p05/i18n 实测 `PUSH; ...; DUP; SETQ_G`，与
