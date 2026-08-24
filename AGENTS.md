@@ -678,6 +678,27 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   仍照常收集（SYMBOL 槽，_quoted_param_collected）。dcl 残余 DIFF（2557 vs
   2555）：`\\` 字符串（@::dcl-escape `"\\\\"`）注册在 symbol_slots 227 而非
   GVARINIT（CAD fg[150]）、STR const 位置（item 269 vs 292）——待后续对拍。
+- **2026-08-23（CAD 对拍）`(let ...)` 原生 LET 模式（event-bus/error-handler/nlp
+  结构对齐，nsyms 全对齐）**：
+  1. **`_lower_let` bug 修复**（cli.py）：parser 把 `(let ((v e)...) body)` 的
+     绑定对 `(v e)` 解析为 **Call(name=v, args=[e])**（首元素符号 → Call），
+     旧 else 分支用 `str(b)` 当变量名 → `"CALL(NAME='ENTRY'...)"` 错误符号槽。
+     修复：Call 绑定对取 `b.name` + `b.args[0]`。
+  2. **移除 `_lower_let` 降级**（cli.py line 2559 注释）：let 保留为 Call，
+     codegen 原生编译（CAD `LET + EVAL 0` 模式）。safe-eval 的 `'(let let*)`
+     是 quoted 数据（非调用）不受影响。
+  3. **codegen `_emit_let`**（codegen.py）：`<e求值>; USUBR(1, list);
+     EVAL 0, 7; <body>`——绑定值求值后压成列表，`EVAL 0`（LET 内建）建立
+     局部环境，body 直接执行（绑定变量为普通符号槽 PUSH_VALUE 读取，不生成
+     `-lambda-`）。event-bus `(let ((entry (assoc ...))) (if entry ...))`
+     实测 `USUBR; EVAL 0; PUSH_VALUE entry; JMP32_IFNOT`。
+  4. **`_collect_byteorder` let 分支**（cad_symbols.py）：前向符号序 = 绑定值
+     args → 绑定值 name → 绑定变量 → body → LIST → LET（fg 表
+     `LET LIST SUBST CONS CDR ENTRY ASSOC *EVENTS*` = reversed）。
+  效果：event-bus nsyms 35→31（=CAD）、fg 表逐槽一致。**残余 DIFF**：let 的
+  `USUBR(1, list)` 操作数我们 22（build_mvar fg[23]-1）vs CAD 26——CAD 原始
+  gvar/function 表与 build_mvar 重建有偏移，需 CAD 真机逆向。功能正确性待
+  CAD 真机验证（`_emit_let` 无测试覆盖）。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

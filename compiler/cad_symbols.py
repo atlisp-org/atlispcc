@@ -1554,6 +1554,34 @@ class CadSymbolCollector:
             if not self._seen(out, 'in-package'):
                 out.append(('in-package', False))
         elif isinstance(node, Call):
+            if node.name == "let" and node.args:
+                # CAD 原生 LET（event-bus golden 实测，前向符号序）：
+                # 绑定值 args → 绑定值 name → 绑定变量 → body → LIST → LET
+                # （fg 表 `LET LIST SUBST CONS CDR ENTRY ASSOC *EVENTS*` =
+                # reversed：*EVENTS* ASSOC ENTRY CDR CONS SUBST LIST LET）。
+                # 绑定变量是符号槽（body PUSH_VALUE 读取，非函数调用——parser
+                # 把 `(v e)` 绑定对解析为 Call(name=v)）。
+                bindings = node.args[0]
+                if isinstance(bindings, ListExpr):
+                    for b in bindings.items:
+                        if isinstance(b, Call) and b.args:
+                            self._collect_byteorder(b.args[0], out, arg_names, in_quote)
+                            v = b.name
+                        elif isinstance(b, ListExpr) and b.items:
+                            if len(b.items) > 1:
+                                self._collect_byteorder(b.items[1], out, arg_names, in_quote)
+                            v = b.items[0].name if isinstance(b.items[0], Symbol) else str(b.items[0])
+                        else:
+                            v = str(b)
+                        if v not in arg_names and not self._seen(out, v):
+                            out.append((v, False))
+                for form in node.args[1:]:
+                    self._collect_byteorder(form, out, arg_names, in_quote)
+                if not self._seen(out, "list"):
+                    out.append(("list", False))
+                if not self._seen(out, "let"):
+                    out.append(("let", False))
+                return
             if node.name == "command":
                 # CAD 把 `(command a b ...)` 编译为每参数独立 `FUNC 1 <ads-cmd>`
                 # 调用，符号收集序 = 每参数后紧跟 ads-cmd（net/wget `(command

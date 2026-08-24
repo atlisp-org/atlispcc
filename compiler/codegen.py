@@ -566,6 +566,10 @@ class CodeGenerator:
         upper = name.upper()
         args = node.args
 
+        if upper == "LET" and args:
+            self._emit_let(buf, node)
+            return
+
         if name in ARITH_OP_TO_FAS:
             self._emit_arith(buf, name, args)
             return
@@ -680,6 +684,39 @@ class CodeGenerator:
             self._emit_func3(buf, len(args), idx)
         else:
             self._emit_usubr(buf, len(args), idx)
+
+    def _emit_let(self, buf: BytecodeBuffer, node: Call):
+        """CAD 原生 LET（event-bus CAD golden 实测）：
+
+        `(let ((v1 e1) (v2 e2) ...) body...)` →
+        ```
+        <e1 求值>; USUBR(1, list); <e2 求值>; USUBR(1, list); ...
+        EVAL 0, 7          ; LET 内建：绑定列表建立局部环境，执行后续 body
+        <body...>
+        ```
+        不生成 `-lambda-`（fg 注册 LET/LIST 符号，bindings 变量为普通符号槽，
+        body 用 PUSH_VALUE 读取——event-bus `(let ((entry (assoc ...))) (if
+        entry ...))` 实测 `USUBR; EVAL 0; PUSH_VALUE entry; JMP32_IFNOT`）。
+        """
+        bindings = node.args[0]
+        body = node.args[1:]
+        if isinstance(bindings, ListExpr):
+            for b in bindings.items:
+                if isinstance(b, Call) and b.args:
+                    e = b.args[0]
+                elif isinstance(b, ListExpr) and len(b.items) > 1:
+                    e = b.items[1]
+                else:
+                    e = None
+                if e is not None:
+                    self._emit_expr(buf, e)
+                else:
+                    buf.emit(encode_op_noarg(PUSH_NIL))
+                list_idx = self.symtab.get_or_add("list")
+                self._emit_usubr(buf, 1, list_idx)
+        buf.emit(encode_eval(0, 7))
+        for form in body:
+            self._emit_stmt(buf, form)
 
     def _emit_setq_expr(self, buf: BytecodeBuffer, target: Node, value: Node):
         if isinstance(target, Symbol):

@@ -449,6 +449,14 @@ def _lower_let(forms):
                         v = b.items[0]
                         vars_.append(v.name if isinstance(v, Symbol) else str(v))
                         inits.append(rewrite(b.items[1]) if len(b.items) > 1 else _Sym("nil"))
+                    elif isinstance(b, Call):
+                        # parser 把 `(v e)` 绑定对解析为 Call(name='v', args=[e])
+                        # （`(let ((entry (assoc ...))) ...)` 的 `(entry (assoc
+                        # ...))` 首元素是符号 → Call）。旧 else 分支用 str(b)
+                        # 当变量名 → `"CALL(NAME='ENTRY'...)"` 错误符号槽。
+                        v = b.name
+                        vars_.append(v)
+                        inits.append(rewrite(b.args[0]) if b.args else _Sym("nil"))
                     else:
                         vars_.append(b.name if isinstance(b, Symbol) else str(b))
                         inits.append(_Sym("nil"))
@@ -2556,7 +2564,8 @@ def cmd_compile(
     # `(let ...)` 先降级为 lambda-apply。`((lambda ...) args)` 立即调用保留
     # ListExpr（head=LambdaNode），codegen 走 CAD「内嵌 -lambda- DEFUN + EVAL」
     # 模式（dcl/permission/audit/user-manager/config-sync/file 实测 `EVAL argc, 7`）。
-    program.forms = _lower_let(program.forms)
+    # `(let ...)` 由 codegen 原生编译（CAD `LET + EVAL 0` 模式，不降级 lambda）。
+    # program.forms = _lower_let(program.forms)
 
     package_table = parser_obj.packages
 
