@@ -177,6 +177,11 @@ def to_const(node):
         inner = to_const(node.expr)
         if inner is None:
             return None
+        # quoted lambda 数据（`'(lambda ...)` 或 quoted 内 `(function (lambda
+        # ...))`）：CAD 展开为 `(FUNCTION (LAMBDA ...))`（setup 实测 fg
+        # FUNCTION+LAMBDA），普通 quoted 数据为 `(QUOTE ...)`（i18n `'file`）。
+        if isinstance(node.expr, LambdaNode):
+            return ('LIST', (('SYMBOL', 'function'), inner))
         return ('LIST', (('SYMBOL', 'QUOTE'), inner))
     if isinstance(node, IfNode):
         # 引用数据里的 `(if ...)`：`if` 是数据符号（CAD 收集 IF 作常量结构，

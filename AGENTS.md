@@ -727,9 +727,12 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   也注册）——改为 **Call 分支**（`_form_read_target`）：仅**调用参数**的
   kwote lambda 注册 `kwote`（setq 值绑定不注册，platform 保持）。`to_const
   (Defun)` 对 quoted defun 返回 `defun-q`；`_generate_quoted_defun` 与
-  `_lower_nested_defuns._as_lambda` 对 defun-q 用 kwote（FUNCTION）。残余
-  DIFF：`'(... (defun-q atlisp-startup ...) ...)` quoted 数据 const 的 QUOTE
-  vs CAD FUNCTION（slot[95]）、nsyms 164 vs 166 少 2——待后续对拍。
+  `_lower_nested_defuns._as_lambda` 对 defun-q 用 kwote（FUNCTION）；`to_const
+  (QuotedExpr)` 对 quoted lambda 数据（expr 是 LambdaNode）返回
+  `(FUNCTION (LAMBDA ...))`（CAD 区分 FUNCTION/QUOTE，setup slot[95]）。
+  残余 DIFF：nsyms 164 vs 166 少 2、slot[272] 起函数体符号序 105 处（
+  @::add-domain-in-trusteddomains 组 CADR/:// 等 kwote lambda 体符号序）
+  ——待后续对拍。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n
