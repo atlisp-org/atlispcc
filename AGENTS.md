@@ -498,6 +498,25 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      `USUBR; DUP; SETQ_G; COND_OR`），与 if 条件同规则。
   回归：i18n/platform/base-function/cl-macros/voice/persist/config-store/browse/
   platform-api/net-module 保持 byte-identical，372 tests pass。
+- **2026-08-23（CAD 对拍）file-utils.lsp byte-identical（50/67）**：两个通用修复
+  （`_shared_last` 大小写不敏感 + quoted 唯一参数逆序收集），file-utils **seg0+seg1+
+  nsyms 完全一致**（共享参数 `str` 的 `'STR` quoted 引用 + kwote/裸 lambda 混合）：
+  1. **`_shared_last` kept 扫描大小写不敏感**（`cad_symbols.py`）：共享参数被
+     **其它函数 quoted 引用**（file-utils `'STR` 在 parse-header、参数声明 str 在
+     path-win/path-unix/path-os）时，CAD 按**逆序最后引用者**注册（parse-header
+     组 slot 60，非 path-win args 组 slot 49）。旧 kept 扫描 `_n in self.shared`
+     大小写敏感（'STR' ≠ 'str'）→ `_shared_last['str']` 漏掉 parse-header 的
+     `'STR` → path-win args 抢先占槽。修复：kept 扫描按 `_shared_ci`（大写集）
+     匹配并存入**规范键**（参数声明名）。
+  2. **quoted 唯一参数逆序收集**（`cad_symbols.py` quoted 单符号分支 + args 循环）：
+     唯一参数被**逆序更晚处理**的函数 quoted 引用（owner src > quoter src，CAD
+     槽在引用函数组）时收集并记 `_quoted_param_collected`，owner args 循环跳过；
+     owner 逆序更晚处理（platform-api `'str` = platform-path src0 参数 +
+     platform-open-url src10 引用）时仍排除由 owner 注册（回归保持）。
+     **注意**：`'STR`/`str` 大小写变体——`_all_params`/`self.shared` 为小写键，
+     quoted 单符号 `_n` 大写，排除/记录判断须大小写不敏感。
+  回归：platform-api/base-function/i18n/cl-macros/browse/net-module/update/persist/
+  config-store 保持 byte-identical，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

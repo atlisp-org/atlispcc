@@ -332,6 +332,9 @@ class CadSymbolCollector:
         # 模块注册函数名数（模块尾块 defun 数；CAD 只把模块代码引用的尾块
         # 函数名注册进模块注册段，其余库函数名经函数体符号区注册）。
         self.module_reg_func_count = 0
+        # 唯一参数被逆序更晚处理的函数 quoted 引用（file-utils `'STR`）时由
+        # 引用函数组收集注册；owner args 循环须跳过（否则抢先占低位槽）。
+        self._quoted_param_collected = set()
 
     def add(self, name, force=False):
         if is_const_entry(name):
@@ -608,10 +611,19 @@ class CadSymbolCollector:
             for _arg in _f.args:
                 if _arg in self.shared:
                     _shared_last[_arg] = max(_shared_last.get(_arg, -1), _i)
+        # 共享参数在 body/quoted 引用（含大小写变体，file-utils `'STR` 引用
+        # parse-header、参数声明 str 在 path-win/path-unix/path-os）时按
+        # **逆序最后引用者**注册：kept 扫描大小写不敏感（与 `_ci_ref_key`
+        # 一致），存入规范键（参数声明名）——否则 parse-header 的 `'STR` 不
+        # 计入 → _shared_last['str']=7（path-win args）抢先占槽，CAD 在
+        # parse-header 组 slot 60。
+        _shared_ci = {str(s).upper(): s for s in self.shared}
         for _i, _k in enumerate(reversed(kept_refs)):
             for _n, _ in _k:
-                if _n in self.shared:
-                    _shared_last[_n] = max(_shared_last.get(_n, -1), _i)
+                if isinstance(_n, str) and _n.upper() in _shared_ci:
+                    _shared_last[_shared_ci[_n.upper()]] = max(
+                        _shared_last.get(_shared_ci[_n.upper()], -1), _i
+                    )
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             # 函数体符号逆序注册；CAD 对 kwote 块（kwote + lambda 体，由
             # `__kwote_end__` 标记）保持收集序整体插到**调用者**（块后第一个
@@ -813,6 +825,15 @@ class CadSymbolCollector:
                     if _shared_last.get(arg) == i:
                         self.add(arg)
                 elif arg not in self._name_set:
+                    # 唯一参数被逆序更晚处理的函数 quoted 引用（file-utils
+                    # `'STR` = path-win 参数 + parse-header `(eq 'STR ...)`，
+                    # CAD slot 在 parse-header 组）：由引用函数组收集注册，
+                    # args 循环跳过（否则 owner 先处理抢低位槽）。
+                    if any(
+                        str(arg).upper() == x.upper()
+                        for x in getattr(self, "_quoted_param_collected", set())
+                    ):
+                        continue
                     # 参数同时是**逆序更晚处理**的 kwote lambda 参数（string-utils
                     # `x` = strbytelen 参数 + string-split lambda 参数，宿主
                     # reversed idx 6 > strbytelen 0）：由 kwote lambda 宿主收集
@@ -1754,16 +1775,30 @@ class CadSymbolCollector:
                         _n not in arg_names
                         # 唯一参数名（非共享）被其它函数 quoted 引用时排除——由
                         # 参数拥有者注册（platform-api `'str` = @::platform-path
-                        # 唯一参数，CAD 单槽 fg[120]）。共享参数（cl-functions
-                        # `str` = 4 函数参数）quoted 引用照常收集（CAD 双槽
-                        # fg[64] body + fg[105] param）。
+                        # 唯一参数，owner src0 < quoter src10，CAD 单槽 fg[120]
+                        # 在 owner 组）。共享参数（cl-functions `str` = 4 函数
+                        # 参数）quoted 引用照常收集（CAD 双槽 fg[64] body +
+                        # fg[105] param）。**quoter 逆序处理更晚**（owner src >
+                        # quoter src，file-utils `'STR` = path-win src3 参数 +
+                        # parse-header src2 `(eq 'STR ...)`，CAD slot 60 在
+                        # parse-header 组）时**收集**——槽注册在引用函数组、
+                        # owner args 循环跳过（_quoted_param_collected）。
                         and not (
                             _n in getattr(self, "_all_params", set())
                             and _n not in self.shared
+                            and getattr(self, "_param_first_source", {}).get(_n, 10**9)
+                            < getattr(self, "_cur_source_idx", 10**9)
                         )
                         and not self._seen(out, _n)
                     ):
                         out.append((_n, False))
+                        if (
+                            _n.upper()
+                            in {p.upper() for p in getattr(self, "_all_params", set())}
+                            and _n.lower()
+                            not in {s.lower() for s in getattr(self, "shared", set())}
+                        ):
+                            self._quoted_param_collected.add(_n)
                 else:
                     const = to_const(node.expr)
                     if const is not None:
