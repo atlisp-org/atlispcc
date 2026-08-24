@@ -669,6 +669,15 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      `_then_tail=False`（语句上下文，config-sync/file `(if content ((lambda
      ...) ...) nil)` 实测 `EVAL; POP; JUMP(0)`）丢弃 EVAL 结果。
   回归：55/67 无回退（audit/permission/event-bus 等保持），372 tests pass。
+- **2026-08-23（CAD 对拍）dcl quoted `'STR` const 化（2558→2557）**：
+  `_collect_byteorder` quoted 单符号分支——唯一参数被**其它函数** quoted 引用
+  （dcl `'STR` = @::dcl-escape 参数 + @::dcl-attrs-to-str `(eq 'STR (type ...))`
+  引用）时注册 const（`('SYMBOL','STR')` const 槽）而非排除——排除后 codegen
+  `_emit_quoted` 的 `get_const_idx` 找不到会 get_or_add 注册独立 SYMBOL 槽
+  → slot 错位（slot 205 应为 `=` 而非 STR）。共享参数（file-utils `'STR`）
+  仍照常收集（SYMBOL 槽，_quoted_param_collected）。dcl 残余 DIFF（2557 vs
+  2555）：`\\` 字符串（@::dcl-escape `"\\\\"`）注册在 symbol_slots 227 而非
+  GVARINIT（CAD fg[150]）、STR const 位置（item 269 vs 292）——待后续对拍。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

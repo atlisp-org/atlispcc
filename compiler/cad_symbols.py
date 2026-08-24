@@ -1848,24 +1848,25 @@ class CadSymbolCollector:
                     # 'vla-postcommand vla-sendcommand)` CAD 实测 `'vla-postcommand`
                     # → `vla-PostCommand` 符号槽）。
                     _n = normalize_vla_name(node.expr.name)
+                    # 唯一参数名（非共享）被其它函数 quoted 引用时排除——由
+                    # 参数拥有者注册（platform-api `'str` = @::platform-path
+                    # 唯一参数，owner src0 < quoter src10，CAD 单槽 fg[120]
+                    # 在 owner 组）。共享参数（cl-functions `str` = 4 函数
+                    # 参数）quoted 引用照常收集（CAD 双槽 fg[64] body +
+                    # fg[105] param）。**quoter 逆序处理更晚**（owner src >
+                    # quoter src，file-utils `'STR` = path-win src3 参数 +
+                    # parse-header src2 `(eq 'STR ...)`，CAD slot 60 在
+                    # parse-header 组）时**收集**——槽注册在引用函数组、
+                    # owner args 循环跳过（_quoted_param_collected）。
+                    _is_other_param = (
+                        _n in getattr(self, "_all_params", set())
+                        and _n not in self.shared
+                        and getattr(self, "_param_first_source", {}).get(_n, 10**9)
+                        < getattr(self, "_cur_source_idx", 10**9)
+                    )
                     if (
                         _n not in arg_names
-                        # 唯一参数名（非共享）被其它函数 quoted 引用时排除——由
-                        # 参数拥有者注册（platform-api `'str` = @::platform-path
-                        # 唯一参数，owner src0 < quoter src10，CAD 单槽 fg[120]
-                        # 在 owner 组）。共享参数（cl-functions `str` = 4 函数
-                        # 参数）quoted 引用照常收集（CAD 双槽 fg[64] body +
-                        # fg[105] param）。**quoter 逆序处理更晚**（owner src >
-                        # quoter src，file-utils `'STR` = path-win src3 参数 +
-                        # parse-header src2 `(eq 'STR ...)`，CAD slot 60 在
-                        # parse-header 组）时**收集**——槽注册在引用函数组、
-                        # owner args 循环跳过（_quoted_param_collected）。
-                        and not (
-                            _n in getattr(self, "_all_params", set())
-                            and _n not in self.shared
-                            and getattr(self, "_param_first_source", {}).get(_n, 10**9)
-                            < getattr(self, "_cur_source_idx", 10**9)
-                        )
+                        and not _is_other_param
                         and not self._seen(out, _n)
                     ):
                         out.append((_n, False))
@@ -1876,6 +1877,18 @@ class CadSymbolCollector:
                             not in {s.lower() for s in getattr(self, "shared", set())}
                         ):
                             self._quoted_param_collected.add(_n)
+                    elif _is_other_param and not arg_names:
+                        # 唯一参数被**其它函数** quoted 引用（dcl `'STR` =
+                        # @::dcl-escape 参数 + @::dcl-attrs-to-str
+                        # `(eq 'STR (type ...))` 引用）：CAD 作 const 数据
+                        # （quoted 单符号 `('SYMBOL','STR')` const 槽，slot
+                        # 205 = `=` 而非 STR）——收集器排除 SYMBOL 槽后若
+                        # codegen `_emit_quoted` 的 get_const_idx 找不到会
+                        # get_or_add 注册独立 SYMBOL 槽 → 后续槽位错位。
+                        # 注册 const 使 codegen 命中 const 槽（PUSH_G）。
+                        _c = ("SYMBOL", _n)
+                        if not self._seen(out, (CONST_MARK, _c)):
+                            out.append(((CONST_MARK, _c), False))
                 else:
                     const = to_const(node.expr)
                     if const is not None:
