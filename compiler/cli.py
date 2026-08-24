@@ -2462,10 +2462,10 @@ def cmd_compile(
     # codegen._emit_nested_lambda / resource_builder）。`_lower_multi_kwote` 仅作为
     # 后备保留（单 kwote 文件不受影响，多 kwote 走原生）。
     # program.forms = _lower_multi_kwote(program.forms)
-    # `((lambda ...) args)` 立即调用改写为显式 `(apply '(lambda ...) (list ...))`
-    # `(let ...)` 先降级为 lambda-apply（CAD 用 EVAL，我们走 apply 引用常量路径）
+    # `(let ...)` 先降级为 lambda-apply。`((lambda ...) args)` 立即调用保留
+    # ListExpr（head=LambdaNode），codegen 走 CAD「内嵌 -lambda- DEFUN + EVAL」
+    # 模式（dcl/permission/audit/user-manager/config-sync/file 实测 `EVAL argc, 7`）。
     program.forms = _lower_let(program.forms)
-    program.forms = _lower_immediate_lambda(program.forms)
 
     package_table = parser_obj.packages
 

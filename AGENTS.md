@@ -533,6 +533,31 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      分支（line 1815，死代码）。
   回归：base-function/file-utils/update/persist/browse/download/reload 保持
   byte-identical，372 tests pass。
+- **2026-08-23（CAD 对拍）立即应用 lambda `-lambda-` DEFUN + EVAL 模式**（52/67，
+  config-sync/file 转正；dcl/audit/permission/user-manager/safe-eval 从远 DIFF
+  收敛到 nsyms 对齐 + seg0 ≤4 字节）：`((lambda (a b) body...) args...)` 不再
+  `_lower_immediate_lambda` 改写为 `(apply '(lambda ...) (list ...))`，保留
+  ListExpr（head=LambdaNode）走 CAD 原生模式：
+  1. **`_lower_immediate_lambda` 从管线移除**（`cli.py`）：`(let ...)` 降级
+     仍保留 `_lower_let`。genuine `((lambda ...) args)` 由 codegen 处理。
+  2. **codegen ListExpr-LambdaNode-head**（`codegen.py`）：实参先求值（留栈）→
+     `_emit_nested_lambda`（JUMP + `-lambda-` DEFUN）→ `PUSH_G <-lambda->;
+     EVAL argc, 7`。**不**发 CLEAR_ARGS（host 函数 CLEAR_ARGS 由 generate_function
+     末尾发；user-manager if 语句上下文 CAD 实测 `EVAL 1,7` 后直接 `JUMP 1;
+     PUSH_NIL` 无 CLEAR_ARGS）。
+  3. **`_collect_byteorder` ListExpr 分支**：立即 lambda 先收集 args（字节码序，
+     dcl CAD 实测 gensym 在 lambda 参数 dcl-str 之前）再收集 lambda 头。
+  4. **`_iter_kwote_lambdas` ListExpr 分支**：立即 lambda 参数进 `_param_lam_hosts`
+     （dcl `dcl-name` = dcl-run/dcl-run-with-setup 参数 + dcl-dialog lambda
+     参数，CAD 槽在 dcl-dialog 组 idx6，owner args 循环跳过）。
+  5. **LambdaNode 分支共享参数收集**：裸/立即 lambda 参数**共享**（dcl
+     `dcl-name`）也收集（`_shared_last` 按 kept 逆序最后引用者注册，owner
+     args 跳过）；移除 `_a not in self.shared` 守卫。
+  6. **`_emit_expr(LambdaNode)` 裸 lambda 值走 `-lambda-`**（函数返回/表达式值，
+     package/load `@::load-error-handler` 返回 `(lambda (msg / fp) ...)` 实测）。
+  **注意**：`(let ...)` 文件（event-bus/error-handler/nlp）经 `_lower_let` 也走
+  此 EVAL 模式，与 CAD 的 `LET + EVAL 0,const` 不同（let 任务另开）。
+  回归：52/67 无回退，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

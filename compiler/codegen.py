@@ -31,6 +31,7 @@ from asm.opcodes import (
     encode_op_u8,
     encode_op_s32,
     encode_op_noarg,
+    encode_eval,
     encode_real,
     encode_defun,
 )
@@ -466,17 +467,21 @@ class CodeGenerator:
 
         elif isinstance(node, ListExpr):
             if node.items and isinstance(node.items[0], LambdaNode):
-                # `((lambda ...) args)` 立即应用：编译为
-                # `(apply '(lambda ...) (list args...))`（USUBR 调 apply）。
-                # 显式 `(apply '(lambda ...) (list ...))` 在 CAD 真机全通过
-                # （apply_forms/t11-t13 实测：cond/if/while 体、`t` 参数、
-                # 引用外层参数均正常）。FUNC 版报"函数错误: ="，缺 cleanup
-                # 报"函数错误: -1962934012"；CAD 嵌套 -lambda- DEFUN 方案需
-                # 多 `-lambda-` 目录 + 槽修正（catalog 仅支持 1 个），暂不用。
-                self._emit_expr(buf, QuotedExpr(expr=self._lambda_list(node.items[0])))
-                self._emit_expr(buf, Call(name="list", args=node.items[1:]))
-                self._emit_usubr(buf, 2, self.symtab.get_or_add("apply"))
-                self._emit_subr_cleanup(buf)
+                # `((lambda (a b) body...) args...)` 立即应用：CAD 编译为
+                # 「内嵌 -lambda- DEFUN + EVAL」——实参先求值（留栈），JUMP 跳过
+                # `-lambda-` DEFUN，然后 `PUSH_G <-lambda->; EVAL argc, 7;
+                # CLEAR_ARGS argc`（dcl `(lambda (dcl-str dcl-name) ...)` 实测
+                # `USUBR; USUBR; JUMP; DEFUN -lambda-; ...; PUSH_G; EVAL 2, 7;
+                # CLEAR_ARGS 2`）。
+                _lam = node.items[0]
+                _args = node.items[1:]
+                _argc = len([a for a in _lam.args if a != "/"])
+                with self._value_ctx():
+                    for _a in _args:
+                        self._emit_expr(buf, _a)
+                _lam_idx = self._emit_nested_lambda(buf, _lam)
+                buf.emit(encode_op_u16(PUSH_G, _lam_idx))
+                buf.emit(encode_eval(_argc, 7))
                 return
             if node.dotted is not None:
                 self._emit_expr(buf, node.dotted)

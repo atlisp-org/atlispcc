@@ -886,11 +886,19 @@ class CadSymbolCollector:
             RepeatNode as _R,
             Cond as _Cnd,
             Setq as _S,
+            ListExpr as _LE,
         )
 
         if isinstance(node, _Q) and getattr(node, "kwote", False) and isinstance(node.expr, _LN):
             yield node.expr
             for _b in node.expr.body:
+                yield from self._iter_kwote_lambdas(_b)
+        elif isinstance(node, _LE) and node.items and isinstance(node.items[0], _LN):
+            # 立即应用 `((lambda ...) args)`（CAD 内嵌 `-lambda-` DEFUN + EVAL）：
+            # lambda 参数同 kwote lambda 注册符号槽（dcl `dcl-name` = dcl-run
+            # 参数 + dcl-dialog lambda 参数，CAD 槽在 dcl-dialog 组）。
+            yield node.items[0]
+            for _b in node.items[0].body:
                 yield from self._iter_kwote_lambdas(_b)
         elif isinstance(node, _LN):
             for _b in node.body:
@@ -1660,8 +1668,16 @@ class CadSymbolCollector:
                 for item in clause[1:]:
                     self._collect_byteorder(item, out, arg_names, in_quote)
         elif isinstance(node, ListExpr):
-            for item in node.items:
-                self._collect_byteorder(item, out, arg_names, in_quote)
+            if node.items and isinstance(node.items[0], LambdaNode):
+                # 立即应用 `((lambda ...) args)`：实参先求值（字节码序，dcl CAD
+                # 实测 args 的 gensym 在 lambda 参数 dcl-str/dcl-name 之前），
+                # 先收集 args、后收集 lambda 头（参数 + 体）。
+                for _it in node.items[1:]:
+                    self._collect_byteorder(_it, out, arg_names, in_quote)
+                self._collect_byteorder(node.items[0], out, arg_names, in_quote)
+            else:
+                for item in node.items:
+                    self._collect_byteorder(item, out, arg_names, in_quote)
         elif isinstance(node, LambdaNode):
             # 裸 lambda 值（`(setq *error* (lambda (msg) ...))`、函数返回
             # `(lambda (msg / fp) ...)`，CAD 编译为 `-lambda-` DEFUN）：参数
@@ -1676,9 +1692,11 @@ class CadSymbolCollector:
                 _lam_locals = _lam_args[_i + 1 :]
                 _lam_args = _lam_args[:_i]
             for _a in _lam_args:
+                # 共享参数（dcl `dcl-name` = dcl-run/dcl-run-with-setup 参数 +
+                # dcl-dialog 立即 lambda 参数）也收集——`_shared_last` 按 kept
+                # 逆序最后引用者（dcl-dialog idx 6）注册，owner args 循环跳过。
                 if (
                     _a not in arg_names
-                    and _a not in self.shared
                     and not self._seen(out, _a)
                 ):
                     out.append((_a, False))
