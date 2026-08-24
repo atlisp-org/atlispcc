@@ -814,8 +814,16 @@ class CodeGenerator:
             _then_const = isinstance(node.then, Symbol) and node.then.name.lower() in ("nil", "t")
             if not (self._in_stmt_ctx and _then_const):
                 self._emit_expr(buf, node.then or Symbol("nil"), _tail=_then_tail)
-                if self._in_stmt_ctx and not isinstance(
-                    node.then, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond)
+                _then_imm = isinstance(node.then, ListExpr) and node.then.items and isinstance(
+                    node.then.items[0], LambdaNode
+                )
+                if (
+                    self._in_stmt_ctx
+                    and not isinstance(
+                        node.then,
+                        (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond),
+                    )
+                    and not _then_imm
                 ):
                     # 语句上下文（中间 if，值被丢弃）：then 分支值被 POP。值上下文
                     # （setq RHS、函数/算术实参）不 POP——值需流到外层消费者。
@@ -842,15 +850,24 @@ class CodeGenerator:
                     isinstance(node.else_expr, Symbol)
                     and node.else_expr.name.lower() in ("nil", "t")
                 )
-                if not (self._in_stmt_ctx and _else_const):
+                # else 常量省略仅当 then 分支被 POP 丢弃（普通表达式）；then 为
+                # 立即 lambda（值保留，EVAL 结果流到 if 假路径）时不省略——CAD
+                # user-manager `(if token-callback ((lambda ...) ...) nil)` 实测
+                # `EVAL; JUMP(1); 01(nil); CLEAR_ARGS(1)`（then 立即 lambda 无 POP）。
+                if not (self._in_stmt_ctx and _else_const and not _then_imm):
                     self._emit_expr(buf, node.else_expr, _tail=self._in_tail_context)
-                    if self._in_stmt_ctx and not isinstance(
-                        node.else_expr, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond)
+                    if (
+                        self._in_stmt_ctx
+                        and not _else_const
+                        and not isinstance(
+                            node.else_expr, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond)
+                        )
                     ):
                         # 语句上下文（中间 if，值被丢弃）：else 分支末尾同样 POP 丢弃
                         # 分支值（large_synthetic lgf-000..119 实测 CAD else 分支
                         # `USUBR; POP`）。与 then 分支对称；else 为 setq 时 SETQ_G
-                        # 已消费栈顶无需 POP，progn/if/循环由其自身管理栈。
+                        # 已消费栈顶无需 POP，progn/if/循环由其自身管理栈。else 为
+                        # 常量 nil/T 时值留栈由 CLEAR_ARGS 清理（CAD 无 `01 0a`）。
                         buf.emit(encode_op_noarg(POP))
             elif self._in_tail_context or not self._in_stmt_ctx:
                 # CAD stub：尾上下文 / 值位置无 else 分支时在 else 标签处补隐式
@@ -1247,6 +1264,11 @@ class CodeGenerator:
         self._emit_expr(buf, count_expr)
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
+        if self._in_tail_context and self.stub_format:
+            # 尾 repeat（函数最后语句的 repeat，anti-crack `(if (and ...)
+            # (repeat 10 ...))` 实测）：同尾 while，loop 头前 PUSH_NIL 占位、
+            # JMP32_IFNOT 后 POP 弹掉。
+            buf.emit(encode_op_noarg(PUSH_NIL))
         label_loop = f"_repeat_stub_loop_{buf.pos()}"
         label_end = f"_repeat_stub_end_{buf.pos()}"
         buf.label(label_loop)
@@ -1256,14 +1278,23 @@ class CodeGenerator:
         jmp_pos = buf.pos()
         buf.emit(encode_op_s32(JMP32_IFNOT, 0))
         buf.add_patch(jmp_pos + 1, label_end, 4)
+        if self._in_tail_context and self.stub_format:
+            buf.emit(encode_op_noarg(POP))
 
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
         buf.emit(encode_op_noarg(DEC))
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         self._loop_depth += 1
-        for form in body:
+        for i, form in enumerate(body):
             self._emit_stmt(buf, form)
+            # CAD stub：多语句体中间语句值被 POP 丢弃（anti-crack `(repeat 10
+            # (prompt ...) (prompt "\n"))` 实测 `USUBR; POP`）；最后语句是 repeat
+            # 的"值"不 POP。setq 已消费栈顶、if/循环自平衡不 POP。
+            if i < len(body) - 1 and not isinstance(
+                form, (Setq, WhileNode, IfNode, Cond, ForeachNode, RepeatNode)
+            ):
+                buf.emit(encode_op_noarg(POP))
         self._loop_depth -= 1
 
         jmp_back = buf.pos()

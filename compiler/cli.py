@@ -1244,7 +1244,14 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     # gvar 槽映射；否则（单函数/表外）注册于符号槽末尾
                     # （gvar 槽 = nsyms，操作数 = nsyms-1，t15 实测）。
                     strval = symtab.entries[idx0][1]
-                    gkey = str(strval)  # 字符串大小写敏感（`"date"`/`"DATE"` 异槽）
+                    # 字符串大小写敏感（`"date"`/`"DATE"` 异槽）。emoji 等 GBK
+                    # 无法编码字符在资源流注册为 `\U+XXXX` 转义（`_enc_with_escape`，
+                    # user-manager `"\n✅ "` → fg `\n\U+2705 `），symtab 保留实际
+                    # 字符——查询须同样转义才能命中 str_map（否则 fallback
+                    # nsyms-1 错槽）。
+                    from compiler.resource_builder import ResourceBuilder as _RB
+
+                    gkey = _RB._enc_with_escape(str(strval))
                     if gkey in str_map:
                         new_idx = str_map[gkey] - 1
                     else:

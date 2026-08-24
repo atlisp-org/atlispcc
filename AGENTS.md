@@ -626,6 +626,23 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   （nested_list 序）——nested_list 已在 cli 按正确顺序构建。
   回归：55/67 无回退（safe-eval/browse/log/module/persist/cn-commands 全恢复），
   372 tests pass。
+- **2026-08-23（CAD 对拍）user-manager seg0 对齐（模块代码残余 DIFF）**：
+  通用修复（立即 lambda if-then 无 POP + else 常量保留、repeat 多语句体中间
+  POP + 尾 repeat PUSH_NIL 占位、str_map emoji `\U+XXXX` 转义匹配）使
+  user-manager **seg0 完全一致**（`((lambda ...) args)` EVAL + `(if ... nil)`
+  语句、anti-crack `(repeat 10 (prompt ...) (prompt "\n"))` 尾 repeat、
+  `@::save-login-session` `"\n✅ "` emoji 字符串 fg 槽）：
+  1. `_emit_if` then 立即 lambda（ListExpr head LambdaNode）不 POP 分支值；
+     else 常量 nil/T 仅在 then 被 POP 时省略，否则保留 + 不 POP（user-manager
+     `(if token-callback ((lambda (result) ...) ...) nil)` 实测
+     `EVAL; JUMP(1); 01; CLEAR_ARGS`）。
+  2. `_emit_repeat_stub` 多语句体中间语句 POP（anti-crack 实测 `USUBR; POP`）；
+     尾 repeat（函数返回值的 repeat）loop 头 PUSH_NIL 占位 + JMP32_IFNOT 后
+     POP（同尾 while 协议）。
+  3. `_patch_usubr_idx` str_map 查询用 `_enc_with_escape` 转义键——emoji 等
+     GBK 无法编码字符在资源流注册为 `\U+XXXX`（`"\n✅ "` → fg `\n\U+2705 `），
+     symtab 保留实际字符，旧查询失配 → fallback nsyms-1 错槽。
+  回归：55/67 无回退，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n
