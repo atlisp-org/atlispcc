@@ -291,7 +291,10 @@ def to_const(node):
         body = tuple(to_const(b) for b in node.body)
         if any(b is None for b in body):
             return None
-        return ('LIST', (('SYMBOL', 'defun'), ('SYMBOL', node.name),
+        # `(defun-q name ...)`（parser Defun quoted=True）注册 DEFUN-Q 符号
+        #（CAD setup 实测 fg DEFUN-Q），普通 defun 为 DEFUN。
+        _kind = "defun-q" if getattr(node, "quoted", False) else "defun"
+        return ('LIST', (('SYMBOL', _kind), ('SYMBOL', node.name),
                          ('LIST', tuple(arg_items))) + body)
     return None
 
@@ -1453,7 +1456,16 @@ class CadSymbolCollector:
                 reads.add(node.name)
         elif isinstance(node, Call):
             for a in node.args:
-                self._form_read_target(a, reads, targets, arg_names, in_quote)
+                if isinstance(a, QuotedExpr) and a.kwote and isinstance(a.expr, LambdaNode):
+                    # 调用参数的 kwote lambda（`(mapcar (function (lambda ...))
+                    # @::*uris*)`，setup 模块注册段实测 slot[7]=kwote）——
+                    # 注册 `kwote` 标记符号。setq 值（platform setq-lambda 绑定）
+                    # 不走 Call 分支不注册（CAD 只对函数调用参数的 kwote 注册）。
+                    if "kwote" not in reads:
+                        reads.add("kwote")
+                    self._form_read_target(a.expr, reads, targets, arg_names, in_quote)
+                else:
+                    self._form_read_target(a, reads, targets, arg_names, in_quote)
             if node.name not in self.func_names:
                 # `command` 内建 SUBR 的**调用目标**以 `ads-cmd` 槽独立注册
                 # （与值引用的 `COMMAND` 分离），read 归属同步用该名。

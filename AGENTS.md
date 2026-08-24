@@ -720,6 +720,16 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      `USUBR(1,list); SET_LOCAL` 无 POP）。
   回归：56/67 无回退（`_emit_foreach` 非 stub 路径同步加 `_value_ctx`），
   372 tests pass。
+- **2026-08-23（CAD 对拍）setup 模块注册 kwote + defun-q（部分）**：
+  setup 顶层 `(mapcar (function (lambda ...)) @::*uris*)` 的 kwote lambda 在
+  模块注册段缺 `kwote` 符号（CAD slot[7]=kwote，我们 @::*URIS*）——通用
+  `_form_read_target` 加 kwote 分支会破坏 platform（setq-lambda 绑定 kwote
+  也注册）——改为 **Call 分支**（`_form_read_target`）：仅**调用参数**的
+  kwote lambda 注册 `kwote`（setq 值绑定不注册，platform 保持）。`to_const
+  (Defun)` 对 quoted defun 返回 `defun-q`；`_generate_quoted_defun` 与
+  `_lower_nested_defuns._as_lambda` 对 defun-q 用 kwote（FUNCTION）。残余
+  DIFF：`'(... (defun-q atlisp-startup ...) ...)` quoted 数据 const 的 QUOTE
+  vs CAD FUNCTION（slot[95]）、nsyms 164 vs 166 少 2——待后续对拍。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

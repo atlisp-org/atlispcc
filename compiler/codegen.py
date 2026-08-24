@@ -1815,7 +1815,10 @@ class CodeGenerator:
             for l in func.locals:
                 lambda_args.append(Symbol(l))
         lambda_call = ListExpr(items=[lambda_sym] + [ListExpr(items=lambda_args)] + lambda_body)
-        quoted = QuotedExpr(expr=lambda_call)
+        # `(defun-q name ...)`：CAD 编译为 kwote `(setq name (function (lambda
+        # ...)))`（setup 实测 fg FUNCTION 符号，非 QUOTE 数据）——`-lambda-`
+        # DEFUN + PUSH_G 绑定，与 `(setq *error* (lambda ...))` 裸 lambda 同路径。
+        quoted = QuotedExpr(expr=lambda_call, kwote=True)
 
         self._emit_setq_expr(buf, Symbol(func.name), quoted)
         buf.resolve()

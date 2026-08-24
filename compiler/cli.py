@@ -153,7 +153,11 @@ def _lower_nested_defuns(forms):
         # 条件/嵌套 defun 改写为 lambda 数据时同样剥离 docstring（base-function
         # CAD 实测 vla-postcommand 条件定义字符串不注册）。
         body = strip_docstring(f.body)
-        return _Q(expr=_L(items=[Symbol("lambda"), _L(items=all_args)] + body))
+        # `defun-q`（Defun quoted=True）CAD 编译为 kwote `(function (lambda
+        # ...))`（setup 嵌套 defun-q 实测 FUNCTION 符号），普通嵌套 defun 用
+        # quoted 数据（QUOTE）。
+        return _Q(expr=_L(items=[Symbol("lambda"), _L(items=all_args)] + body),
+                  kwote=getattr(f, "quoted", False))
 
     def _rewrite(node):
         if isinstance(node, Defun):
