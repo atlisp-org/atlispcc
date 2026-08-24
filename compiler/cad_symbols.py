@@ -342,6 +342,9 @@ class CadSymbolCollector:
         # 唯一参数被逆序更晚处理的函数 quoted 引用（file-utils `'STR`）时由
         # 引用函数组收集注册；owner args 循环须跳过（否则抢先占低位槽）。
         self._quoted_param_collected = set()
+        # 唯一参数被其它函数 quoted 引用的 const（dcl `'STR`）：延迟到资源序
+        # 末尾注册（单函数路径也初始化，否则 _is_other_param 分支 AttributeError）。
+        self._deferred_consts: list = []
 
     def add(self, name, force=False):
         if is_const_entry(name):
@@ -488,6 +491,9 @@ class CadSymbolCollector:
         #    由调用者引用组登记（递归名不重复槽）。
         seen_refs = set()
         kept_refs = []
+        # 唯一参数被其它函数 quoted 引用的 const（dcl `'STR`）：延迟到资源序
+        # 末尾注册（kept_refs[-1] 末尾，reversed 注册最后）——CAD slot 227。
+        self._deferred_consts: list = []
 
         def _ci_ref_key(n):
             """跨函数 seen_refs 去重的规范化键：普通符号大小写不敏感
@@ -533,6 +539,12 @@ class CadSymbolCollector:
             kept = [(n, fr) for n, fr in intra_dedup if _ci_ref_key(n) not in seen_refs]
             seen_refs.update(_ci_ref_key(n) for n, _ in intra_dedup)
             kept_refs.append(kept)
+
+        # 延迟 const（唯一参数 quoted 引用）：追加到**第一个函数**的 kept
+        # 末尾（zip(reversed(defuns), reversed(kept_refs)) 最后迭代 = 资源序
+        # 末尾，CAD `'STR` slot 227）。
+        if self._deferred_consts:
+            kept_refs[0].extend(((CONST_MARK, _c), False) for _c in self._deferred_consts)
 
         nfuncs = len(defuns)
         # 每个共享参数：记录源码序最先使用它的函数索引（逆序迭代最后处理到）。
@@ -1886,10 +1898,20 @@ class CadSymbolCollector:
                     # parse-header src2 `(eq 'STR ...)`，CAD slot 60 在
                     # parse-header 组）时**收集**——槽注册在引用函数组、
                     # owner args 循环跳过（_quoted_param_collected）。
+                    # `_all_params`/`self.shared`/`_param_first_source` 为参数
+                    # 声明名（小写 str），quoted 单符号 `_n` 可能大写 `'STR`
+                    # （dcl line 32 `(eq 'STR ...)`）——排除判断须大小写不敏感
+                    #（AGENTS file-utils 段），否则 dcl 的 `'STR` 落普通分支
+                    # 注册 SYMBOL 槽（slot 205）而非 const。
+                    _all_params_ci = {p.upper() for p in getattr(self, "_all_params", set())}
+                    _shared_ci2 = {s.upper() for s in getattr(self, "shared", set())}
+                    _pfs_ci = {
+                        k.upper(): v for k, v in getattr(self, "_param_first_source", {}).items()
+                    }
                     _is_other_param = (
-                        _n in getattr(self, "_all_params", set())
-                        and _n not in self.shared
-                        and getattr(self, "_param_first_source", {}).get(_n, 10**9)
+                        _n.upper() in _all_params_ci
+                        and _n.upper() not in _shared_ci2
+                        and _pfs_ci.get(_n.upper(), 10**9)
                         < getattr(self, "_cur_source_idx", 10**9)
                     )
                     if (
@@ -1913,10 +1935,14 @@ class CadSymbolCollector:
                         # 205 = `=` 而非 STR）——收集器排除 SYMBOL 槽后若
                         # codegen `_emit_quoted` 的 get_const_idx 找不到会
                         # get_or_add 注册独立 SYMBOL 槽 → 后续槽位错位。
-                        # 注册 const 使 codegen 命中 const 槽（PUSH_G）。
+                        # 注册 const 使 codegen 命中 const 槽（PUSH_G）。const
+                        # 延迟到**资源序末尾**注册（kept_refs[-1] 末尾，reversed
+                        # 注册最后）——CAD 的 `'STR` const 在 slot 227（末尾），
+                        # 旧实现在引用函数组注册 → slot 205 提前 22 槽、后续
+                        # 整体偏移 +1。
                         _c = ("SYMBOL", _n)
-                        if not self._seen(out, (CONST_MARK, _c)):
-                            out.append(((CONST_MARK, _c), False))
+                        if _c not in self._deferred_consts:
+                            self._deferred_consts.append(_c)
                 else:
                     const = to_const(node.expr)
                     if const is not None:

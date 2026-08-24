@@ -699,6 +699,27 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   `USUBR(1, list)` 操作数我们 22（build_mvar fg[23]-1）vs CAD 26——CAD 原始
   gvar/function 表与 build_mvar 重建有偏移，需 CAD 真机逆向。功能正确性待
   CAD 真机验证（`_emit_let` 无测试覆盖）。
+- **2026-08-23（CAD 对拍）dcl byte-identical（57/67）**：三个通用修复
+  （quoted `'STR` const 延迟到资源序末尾 + `_is_other_param` 大小写不敏感 +
+  foreach 列表求值 `_value_ctx`），dcl **seg0+seg1+nsyms 完全一致**（`'STR`
+  const、`\\` 字符串 GVARINIT、@::dcl-escape 组槽位全部对齐）：
+  1. **`'STR` const 延迟到资源序末尾**（`cad_symbols.py`）：唯一参数被其它函数
+     quoted 引用的 const（dcl `'STR` = @::dcl-escape 参数 + @::dcl-attrs-to-str
+     `(eq 'STR (type ...))`）**不注册到引用函数组**（旧 slot 205 提前 22 槽），
+     收集到 `self._deferred_consts`，collect_program 末尾追加到**第一个函数**
+     的 kept 末尾（zip(reversed) 最后迭代 = 资源序末尾，CAD slot 227）。
+     `_deferred_consts` 在 `__init__` 初始化（单函数路径也访问）。
+  2. **`_is_other_param` 大小写不敏感**：`_all_params`/`self.shared`/
+     `_param_first_source` 为参数声明名（小写 str），quoted 单符号可能大写
+     `'STR`（dcl line 32）——排除判断用 `.upper()` 集——否则 dcl 的 `'STR`
+     落普通分支注册 SYMBOL 槽（slot 205）而非 const。
+  3. **foreach 列表求值 `_value_ctx`**（`codegen.py` `_emit_foreach_stub`）：
+     列表是 foreach 的输入（值上下文），须清 `_in_stmt_ctx`——否则列表为 if
+     时（dcl @::dcl-run-with-setup `(foreach line (if ... (list dcl-content))
+     ...)`）else 分支 `(list ...)` 被 `_emit_if` 的语句 POP 误丢（CAD 实测
+     `USUBR(1,list); SET_LOCAL` 无 POP）。
+  回归：56/67 无回退（`_emit_foreach` 非 stub 路径同步加 `_value_ctx`），
+  372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

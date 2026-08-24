@@ -1005,7 +1005,12 @@ class CodeGenerator:
         slot = self._get_local_slot(f"__foreach_list__{buf.pos()}")
         item_slot = self._get_local_slot(f"__foreach_item__{buf.pos()}")
 
-        self._emit_expr(buf, node.list_expr or Symbol("nil"))
+        # 列表求值是 foreach 的输入（值上下文）：`_value_ctx` 清 `_in_stmt_ctx`，
+        # 否则列表为 if 时（dcl @::dcl-run-with-setup `(foreach line (if ...
+        # (list dcl-content)) ...)`）else 分支 `(list ...)` 被 `_emit_if` 的
+        # 语句 POP 误丢（CAD 实测 `USUBR(1,list); SET_LOCAL` 无 POP）。
+        with self._value_ctx():
+            self._emit_expr(buf, node.list_expr or Symbol("nil"))
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         label_loop = f"_foreach_loop_{buf.pos()}"
@@ -1051,7 +1056,12 @@ class CodeGenerator:
         slot = self._get_local_slot(f"__foreach_list__{self._loop_depth}")
         v_idx = self.symtab.get_or_add(var_name)
 
-        self._emit_expr(buf, node.list_expr or Symbol("nil"))
+        # 列表求值是 foreach 的输入（值上下文）：`_value_ctx` 清 `_in_stmt_ctx`，
+        # 否则列表为 if 时（dcl @::dcl-run-with-setup `(foreach line (if ...
+        # (list dcl-content)) ...)`）else 分支 `(list ...)` 被 `_emit_if` 的
+        # 语句 POP 误丢（CAD 实测 `USUBR(1,list); SET_LOCAL` 无 POP）。
+        with self._value_ctx():
+            self._emit_expr(buf, node.list_expr or Symbol("nil"))
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
         # CAD 预载：PUSH_G <var>; PUSH_NIL; INIT_ARGS 3
         buf.emit(encode_op_u16(PUSH_G, v_idx))
