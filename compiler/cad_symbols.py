@@ -93,7 +93,14 @@ def normalize_vla_name(name):
     按标准 ActiveX CamelCase（base-function CAD 实测 ``vla-sendcommand`` →
     ``vla-SendCommand``）。``vlax-`` 前缀的 VLISP 扩展函数保持小写
     （``vlax-get-acad-object`` 原样）。非 vla-/vlax- 符号不变。
+
+    三个 CAD 实测全大写（不在 CAD 真实方法表，白名单 const 数据里
+    ``vla-addrectangle``/``vla-adddimension``/``vla-get-distance`` → 全大写
+    VLA-ADDRECTANGLE/VLA-ADDDIMENSION/VLA-GET-DISTANCE；safe-eval 白名单实测，
+    而 vla-addline 保留 vla-AddLine）。
     """
+    if name.lower() in ("vla-addrectangle", "vla-adddimension", "vla-get-distance"):
+        return name.upper()
     for prefix in ("vla-get-", "vla-put-", "vla-call-", "vla-add-", "vla-insert-"):
         if name.lower().startswith(prefix):
             method = name[len(prefix):]

@@ -612,15 +612,20 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   106）。首叶子/`_res_slot_of` 单一匹配会误取普通符号引用（safe-eval CAR 体
   引用），须全序列匹配。回归：54/67 无回退（audit 保持 byte-identical），
   372 tests pass。
-- **2026-08-23 内嵌 `-lambda-` 参数按发射序解析**（`cli.py` + `codegen.py`）：
-  `_emit_nested_lambda` 记录 `(start, end, args, lam_idx)` 到 `_nested_lambdas`；
-  cli 按 **nested_start 排序**（codegen `_nested_lambdas` 记录序 =
-  `_emit_nested_lambda` 调用序，cond 逆向发射 ≠ 缓冲区位置序）构建
-  `nested_lambda_args` 传入 `_patch_usubr_idx`，DEFUN 跟踪优先用发射序参数
-  （复杂 cond 下 `_collect_kwote_lambda_args` 源码序与发射序不一致，safe-eval
-  b/clause/ok-tail 参数绑定错配）。`_collect_kwote_lambda_args` 加 ListExpr
-  分支收集立即应用 `((lambda ...) args)` 参数（fn/ok-tail，safe-eval）。
-  回归：54/67 无回退，372 tests pass。
+- **2026-08-23 内嵌 `-lambda-` DEFCODE 槽序 + 源码序覆盖**（`cli.py` +
+  `resource_builder.py`，safe-eval byte-identical 55/67）：`-lambda-` 槽
+  （lam_order，`new_idx = nsyms-1-_li`）与 DEFCODE 目录键顺序（nested_list →
+  lam_offsets）按函数类型区分：
+  1. **含立即 lambda 且单函数内 ≥2 个 `-lambda-`**（safe-eval safe-form-p 4 个）：
+     lam_order 按**源码序逆序**（fn=_li 3 → 槽 62），nested_list 按**源码序正序**
+     （DEFCODE item 顺序 fn/ok-tail/clause/b）。跨函数（audit/browse 每函数 1 个）
+     不覆盖（symtab 顺序即正确）。
+  2. **纯 kwote 文件**（log/browse 等）：nested_list 全局按 **offset 逆序**
+     （CAD DEFCODE 逆序发射；跨函数拼接默认函数序递增须全局排序）。
+  `resource_builder.lam_offsets` 由 offset 逆序排序改为 **func_offsets 键顺序**
+  （nested_list 序）——nested_list 已在 cli 按正确顺序构建。
+  回归：55/67 无回退（safe-eval/browse/log/module/persist/cn-commands 全恢复），
+  372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

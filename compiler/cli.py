@@ -578,6 +578,7 @@ def _subr_bytes(opcode: int, argc: int, idx: int, flags: int = 3, wide: bool = F
 def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: Optional[int] = None,
                      params_by_name: Optional[dict] = None, lambda_args_by_func: Optional[dict] = None,
                      nested_lambda_args: Optional[dict] = None,
+                     nested_lambda_order: Optional[dict] = None,
                      has_top_forms: bool = False, n_real_funcs: int = 1,
                      top_lambda_args: Optional[list] = None,
                      top_lambda_offsets: Optional[dict] = None,
@@ -930,6 +931,9 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         if _e[0] == "SYMBOL" and str(_e[1]).upper() == "-LAMBDA-":
             lam_order[_ei] = _li
             _li += 1
+    # 含立即 lambda 的函数：源码序逆序覆盖 lam_order（safe-eval fn=_li 3 → 槽 62）。
+    if nested_lambda_order:
+        lam_order.update(nested_lambda_order)
 
     out = bytearray()
     multi = bool(func_args) and len(func_args) > 1
@@ -2168,6 +2172,52 @@ def _lambda_real_args(lam):
     return args
 
 
+def _has_immediate_lambda(node):
+    """检测 AST 是否含立即应用 lambda（`((lambda (a b) ...) args...)`，ListExpr
+    头为 LambdaNode）。立即 lambda 在 codegen 里即时发射 `-lambda-` DEFUN +
+    EVAL，与 kwote lambda（`(function (lambda ...))` 延迟发射）的 DEFCODE 槽序
+    不同——CAD 对含立即 lambda 的函数按**源码序逆序**分配 `-lambda-` 槽
+    （safe-eval fn/ok-tail 实测），纯 kwote 函数按 symtab 顺序（log 实测）。
+    """
+    from compiler.ast_nodes import (
+        ListExpr as _LE,
+        LambdaNode as _LN,
+        QuotedExpr as _Q,
+        Call as _C,
+        Setq as _S,
+        IfNode as _I,
+        WhileNode as _W,
+        ForeachNode as _F,
+        RepeatNode as _R,
+        Progn as _P,
+        Cond as _Cnd,
+        Defun as _D,
+    )
+    if isinstance(node, _D):
+        return any(_has_immediate_lambda(b) for b in node.body)
+    if isinstance(node, _LE) and node.items and isinstance(node.items[0], _LN):
+        return True
+    if isinstance(node, _LE):
+        return any(_has_immediate_lambda(i) for i in node.items)
+    if isinstance(node, _Q):
+        return bool(node.expr) and _has_immediate_lambda(node.expr)
+    if isinstance(node, _C):
+        return any(_has_immediate_lambda(a) for a in node.args)
+    if isinstance(node, _S):
+        return any(v and _has_immediate_lambda(v) for _, v in node.pairs)
+    if isinstance(node, _I):
+        return any(x and _has_immediate_lambda(x) for x in (node.cond, node.then, node.else_expr))
+    if isinstance(node, (_W, _F, _R)):
+        return any(_has_immediate_lambda(b) for b in node.body)
+    if isinstance(node, _P):
+        return any(_has_immediate_lambda(b) for b in node.forms)
+    if isinstance(node, _Cnd):
+        return any(_has_immediate_lambda(x) for cl in node.clauses for x in cl)
+    if isinstance(node, _LN):
+        return any(_has_immediate_lambda(b) for b in node.body)
+    return False
+
+
 def _collect_kwote_lambda_args(node):
     """递归收集 `(function (lambda (args...) ...))` 的参数列表（源码顺序）。
 
@@ -2789,26 +2839,68 @@ def cmd_compile(
     # codegen 内嵌 `-lambda-` DEFUN 的**发射序**参数列表（`_emit_nested_lambda`
     # 记录 `(start, end, args, lam_idx)`；发射序 = seg0 DEFUN 出现序，与源码收集
     # 序 `_collect_kwote_lambda_args` 在复杂 cond（safe-eval）下不一致——参数绑定
-    # 须按发射序解析，否则 cur_args 错配（b lambda 得 ok/tail 参数）。
-    # **`-lambda-` 槽 = nsyms-1-源码序逆序位**（CAD DEFCODE 逆序弹出分配末尾
-    # 槽）：safe-eval 源码序 [fn, ok-tail, clause, b] → 逆序 [b, clause, ok-tail,
-    # fn] → _li fn=3、ok-tail=2、clause=1、b=0 → 槽 fn=62、ok-tail=63、clause=64、
-    # b=65。symtab `-lambda-` 顺序 = codegen 调用序（fn 先），须按 `_collect_kwote_
-    # lambda_args` 源码序匹配重排 lam_order。
+    # 须按发射序解析，否则 cur_args 错配。
+    # **`-lambda-` 槽（lam_order）**：含**立即 lambda**（`((lambda ...) args)`
+    # 即时发射 DEFUN+EVAL）的函数按**源码序逆序**（CAD safe-eval fn/ok-tail
+    # 实测：源码序 [fn, ok-tail, clause, b] → 逆序 [b, clause, ok-tail, fn] →
+    # _li fn=3/ok-tail=2 → 槽 fn=62/ok-tail=63）；纯 kwote 函数（log，延迟发射）
+    # 用 symtab 顺序即正确。symtab `-lambda-` 顺序 = codegen 调用序，须按
+    # `_collect_kwote_lambda_args` 源码序匹配重排。
     nested_lambda_args: dict = {}
+    nested_lambda_order: dict = {}
+    _src_lam_args = {}
+    _has_imm = {}
+    for _df in defun_forms:
+        _dfn = normalize_vla_name(_df.name)
+        _src_lam_args[_dfn.upper()] = [list(la) for la in _collect_kwote_lambda_args(_df)]
+        _has_imm[_dfn.upper()] = _has_immediate_lambda(_df)
     for name, off in list(func_offsets.items()):
-        _fnl = sorted(codegen._func_nested_lambdas.get(name, []))
-        if not _fnl:
+        _fnl_raw = list(codegen._func_nested_lambdas.get(name, []))
+        if not _fnl_raw:
             continue
-        # seg0 序（参数绑定按 seg0 DEFUN 序解析）。
+        _fnl = sorted(_fnl_raw)  # seg0 序（参数绑定按 seg0 DEFUN 序解析）
         nested_lambda_args[name.upper()] = [list(a) for _, _, a, _ in _fnl]
-        for rel_start, rel_end, _, _ in _fnl:
+        # DEFCODE 目录键顺序（nested_list → lam_offsets 键顺序）：含立即 lambda
+        # 且**单函数内 ≥2 个 lambda** 的函数按**源码序**（safe-eval fn/ok-tail/
+        # clause/b = [fn, ok-tail, clause, b] 实测）；纯 kwote 函数（log，延迟
+        # 发射）按 **offset 逆序**（a-b 先、f 后，CAD log 实测）。跨函数的
+        # lambda（audit/browse 每函数 1 个）key 顺序即自身 offset 序。
+        _ordered = sorted(_fnl_raw, reverse=True)  # offset 逆序（纯 kwote DEFCODE 序）
+        if _has_imm.get(name.upper()) and len(_fnl_raw) >= 2:
+            _total = len(_fnl_raw)
+            _src_pos = {}
+            for _pos, _sa in enumerate(_src_lam_args.get(name.upper(), [])):
+                for _t in _fnl_raw:
+                    if list(_t[2]) == _sa:
+                        _src_pos[_t[3]] = _pos
+                        break
+            if len(_src_pos) == _total:
+                for _lam_idx, _pos in _src_pos.items():
+                    nested_lambda_order[_lam_idx] = _total - 1 - _pos
+                # nested_list 按**源码序正序**（DEFCODE item 顺序 = 源码序）。
+                _by_src = {}
+                for _sa in _src_lam_args.get(name.upper(), []):
+                    for _t in _fnl_raw:
+                        if list(_t[2]) == _sa:
+                            _by_src[_sa[0]] = _t
+                            break
+                _ordered = [_by_src[list(sa)[0]] for sa in _src_lam_args.get(name.upper(), [])]
+        for rel_start, rel_end, _, _ in _ordered:
             n_start = off + rel_start
             n_end = off + rel_end
             nested_list.append((n_start, n_end))
     for i, (n_start, n_end) in enumerate(nested_list):
         func_offsets[f"-lambda-#{i + 1}" if i else "-lambda-"] = n_start
         nested_ends[n_start] = n_end
+    # 无源码序覆盖（纯 kwote 文件，log/browse）时 nested_list 全局按 offset
+    # 逆序（CAD DEFCODE 逆序发射；跨函数拼接默认函数序递增，须全局排序）。
+    # 含立即 lambda 覆盖的文件（safe-eval）nested_list 已按源码序，不排序。
+    if not nested_lambda_order and len(nested_list) > 1:
+        nested_list.sort(key=lambda x: x[0], reverse=True)
+        # 重写 func_offsets 键顺序
+        for i, (n_start, n_end) in enumerate(nested_list):
+            func_offsets[f"-lambda-#{i + 1}" if i else "-lambda-"] = n_start
+    print("DBG nested_list:", nested_list, file=sys.stderr)
 
     for name, offset in func_offsets.items():
         # `-lambda-`/`-lambda-#N`（内嵌 DEFUN）不进符号表（仅 DEFCODE 区注册，
@@ -3150,6 +3242,7 @@ def cmd_compile(
                             params_by_name=params_by_name,
                             lambda_args_by_func=lambda_args_by_func,
                             nested_lambda_args=nested_lambda_args,
+                            nested_lambda_order=nested_lambda_order,
                             has_top_forms=bool(other_forms),
                             n_real_funcs=len(defun_forms),
                             top_lambda_args=[_lambda_real_args(la) for _, la in top_lambda_binds]

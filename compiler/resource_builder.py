@@ -755,12 +755,13 @@ class ResourceBuilder:
             # 使大 GVARINIT 的 module_id 解出 FUNC 而非裸符号
             # （ref i18n-cad 实测）：GET_LOCAL 0 + INT32 offset +
             # SYMBOL -lambda- + DEFCODE。每个内嵌 lambda 独立 DEFCODE，
-            # 按 seg0 偏移**逆序**发射（CAD 实测：先发射的 lambda 被 GVARINIT
-            # 后弹出，分配更高槽——t3 槽 18、t4 槽 17、t5 槽 16，nsyms=19）。
-            lam_offsets = sorted(
-                (off for k, off in func_offsets.items() if ResourceBuilder._is_lambda_key(k)),
-                reverse=True,
-            )
+            # 按 func_offsets 键顺序发射（`-lambda-#N` 出现序 = nested_list 序；
+            # CAD safe-eval 实测 fn(137) 先、ok-tail(1308) 后 = 源码序正序；
+            # 纯 kwote 文件 nested_list 为 offset 序，键顺序即 offset 序，等价
+            # 旧 offset 逆序。先发射的 lambda 被 GVARINIT 后弹出分配更高槽）。
+            lam_offsets = [
+                off for k, off in func_offsets.items() if ResourceBuilder._is_lambda_key(k)
+            ]
             for off in lam_offsets:
                 if -128 <= off <= 127:
                     out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
