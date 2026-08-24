@@ -605,6 +605,13 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   注册（CAD fn 在 safe-fn-in-list-p 组 fg[61]，非 safe-form-p 组）。dcl `dcl-name`
   （owner src9 < quoter src5）不受影响。safe-eval fg 表全对齐（seg0 仍 DIFF：
   deferred 大 const 编址）。回归：54/67 无回退，372 tests pass。
+- **2026-08-23 deferred 大 const 叶子序列匹配**（`cli.py` CONST 分支）：多叶子
+  deferred const 按 const 叶子**序列**在资源流中匹配起始位置 `_res_to_fg` 编址
+  （safe-eval 白名单 `'(car cdr ...)` 的 CAR 体引用 res60 不匹配全序列 → 落在
+  const 块 res70 → fg 62 → 操作数 61；audit `:PACKAGE` 首现 res 128 → 107 →
+  106）。首叶子/`_res_slot_of` 单一匹配会误取普通符号引用（safe-eval CAR 体
+  引用），须全序列匹配。回归：54/67 无回退（audit 保持 byte-identical），
+  372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

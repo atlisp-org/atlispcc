@@ -1206,22 +1206,23 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                             # 旧公式 idx0-len(func_args)+1 会越界。
                             # 含多叶子的 deferred const（audit `'(:package.install
                             # ...)` 18 个 `:package` 截断关键字占 res 128-145、
-                            # fg 一槽）：按**首叶子**资源位置 `_res_to_fg` 编址
-                            # （audit `:PACKAGE` 首现 res 128 - 21 = fg 107 →
-                            # 操作数 106，CAD 实测；`nsyms-1` 偏移 4）。
+                            # fg 一槽；safe-eval 白名单 `'(car cdr ...)` const）：
+                            # 按 const 叶子**序列**在资源流中匹配起始位置 `_res_to_fg`
+                            # 编址（safe-eval CAR 体引用 res60 不匹配序列 → 落在
+                            # const 块 res70 → fg 62 → 操作数 61；audit `:PACKAGE`
+                            # 首现 res 128 - 21 = fg 107 → 106）。单叶子/首叶子
+                            # 匹配会误取普通符号引用，须全序列匹配。
                             _cl = _const_leaves(const_structure)
                             _mapped = None
-                            if _cl and _res_offset is not None:
-                                _lf = str(_cl[0]).upper()
-                                _lf_res = None
-                                for _i2, _v2 in enumerate(_res_symbol_slots):
-                                    if str(_v2) == _lf:
-                                        _lf_res = _i2
+                            if _cl and _res_offset is not None and len(_cl) > 1:
+                                _lens = [str(l).upper() for l in _cl]
+                                _res_upper = [str(v).upper() for v in _res_symbol_slots]
+                                for _p in range(len(_res_upper) - len(_lens) + 1):
+                                    if _res_upper[_p : _p + len(_lens)] == _lens:
+                                        _fg_c = _res_to_fg(_p)
+                                        if 0 <= _fg_c < nsyms:
+                                            _mapped = _fg_c - 1 - offset
                                         break
-                                if _lf_res is not None:
-                                    _fg_c = _res_to_fg(_lf_res)
-                                    if 0 <= _fg_c < nsyms:
-                                        _mapped = _fg_c - 1 - offset
                             if _mapped is not None:
                                 new_idx = _mapped
                             else:
