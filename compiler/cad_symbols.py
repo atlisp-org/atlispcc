@@ -1663,11 +1663,18 @@ class CadSymbolCollector:
             for item in node.items:
                 self._collect_byteorder(item, out, arg_names, in_quote)
         elif isinstance(node, LambdaNode):
-            # 裸 lambda 值（`(setq *error* (lambda (msg) ...))`，CAD 编译为
-            # `-lambda-` DEFUN）：参数注册符号槽 + 体符号收集（file-utils/
-            # update/menu/load 的 `*error*` 处理器实测）。与 kwote lambda 参数
-            # 同规则（可收集参数 + 体）。
-            _lam_args = [a for a in node.args if a != "/"]
+            # 裸 lambda 值（`(setq *error* (lambda (msg) ...))`、函数返回
+            # `(lambda (msg / fp) ...)`，CAD 编译为 `-lambda-` DEFUN）：参数
+            # 注册符号槽 + 体符号收集（file-utils/update/menu/load 的
+            # `*error*` 处理器实测）。forward 序 = 参数 → `/ 局部变量`
+            # locals 常量 → locals → 体（load.lsp CAD 实测 `[MSG, (FP), FP,
+            # body...]`，逆序注册 `[body, FP, (FP), MSG]`）。
+            _lam_args = list(node.args)
+            _lam_locals = []
+            if "/" in _lam_args:
+                _i = _lam_args.index("/")
+                _lam_locals = _lam_args[_i + 1 :]
+                _lam_args = _lam_args[:_i]
             for _a in _lam_args:
                 if (
                     _a not in arg_names
@@ -1675,6 +1682,13 @@ class CadSymbolCollector:
                     and not self._seen(out, _a)
                 ):
                     out.append((_a, False))
+            if _lam_locals:
+                _lc = ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))
+                if not self._seen(out, (CONST_MARK, _lc)):
+                    out.append(((CONST_MARK, _lc), False))
+                for _l in _lam_locals:
+                    if not self._seen(out, _l):
+                        out.append((_l, False))
             for _b in node.body:
                 self._collect_byteorder(_b, out, arg_names, in_quote)
         elif isinstance(node, QuotedExpr):
@@ -1812,16 +1826,6 @@ class CadSymbolCollector:
                         # 不可常量化的 quoted 表达式运行时拆开构建：其内部
                         # `(if ...)` 等特殊形式的 `if` 作为数据符号收集。
                         self._collect_byteorder(node.expr, out, arg_names, in_quote=True)
-        elif isinstance(node, LambdaNode):
-            const = to_const(node)
-            if const is not None:
-                if not self._seen(out, (CONST_MARK, const)):
-                    out.append(((CONST_MARK, const), False))
-            else:
-                out.append(("lambda", False))
-                lambda_args = set(node.args)
-                for expr in node.body:
-                    self._collect_byteorder(expr, out, arg_names | lambda_args, in_quote)
         elif isinstance(node, String):
             if not self._seen(out, '"' + node.value + '"'):
                 out.append(('"' + node.value + '"', False))

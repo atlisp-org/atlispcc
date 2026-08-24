@@ -538,7 +538,12 @@ class CodeGenerator:
             self._emit_cond(buf, node)
 
         elif isinstance(node, LambdaNode):
-            self._emit_expr(buf, QuotedExpr(expr=self._lambda_list(node)))
+            # 裸 lambda 值（函数返回/表达式值，load.lsp `@::load-error-handler`
+            # `(lambda (msg / fp) ...)` 返回 CAD 实测 `-lambda-` DEFUN）走内嵌
+            # `-lambda-`（与 `_emit_setq_value` 同规则）。quoted `'(lambda ...)`
+            # 仍走 `_emit_quoted`（数据 const，`_emit_quoted` 的 LambdaNode 分支）。
+            lam_idx = self._emit_nested_lambda(buf, node)
+            buf.emit(encode_op_u16(PUSH_G, lam_idx))
 
         else:
             raise NotImplementedError(f"Cannot emit expression: {type(node).__name__}")

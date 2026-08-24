@@ -517,6 +517,22 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      quoted 单符号 `_n` 大写，排除/记录判断须大小写不敏感。
   回归：platform-api/base-function/i18n/cl-macros/browse/net-module/update/persist/
   config-store 保持 byte-identical，372 tests pass。
+- **2026-08-23（CAD 对拍）package/load.lsp byte-identical（51/67）**：一个通用修复
+  （`_emit_expr` 裸 lambda 值走 `-lambda-` DEFUN + LambdaNode 分支 `/ 局部变量`
+  协议），load **seg0+seg1+nsyms 完全一致**（`@::load-error-handler` 裸 lambda
+  **函数返回** `(lambda (msg / fp) ...)`）：
+  1. **`_emit_expr(LambdaNode)`**（`codegen.py`）：裸 lambda 值（函数返回/表达式
+     值）走 `_emit_nested_lambda` + `PUSH_G <-lambda-槽>`（原 `_emit_setq_value`
+     仅覆盖 setq 值；load `@::load-error-handler` 把 `(lambda (msg / fp) ...)`
+     作**返回值**，旧 codegen 当 quoted const BUILD_LIST → 缺 `-lambda-` DEFUN）。
+     quoted `'(lambda ...)` 仍走 `_emit_quoted`（数据 const）。
+  2. **LambdaNode 分支 `/ 局部变量`**（`cad_symbols.py` line 1665）：裸 lambda
+     forward 序 = 参数 → locals 常量 → locals → 体（load CAD 实测
+     `[MSG, (FP), FP, body...]`，逆序注册 `[body, FP, (FP), MSG]`）。`_al-bind-alist`
+     不在此注册（共享槽，由多函数 locals 循环统一注册）。删除旧的重复 LambdaNode
+     分支（line 1815，死代码）。
+  回归：base-function/file-utils/update/persist/browse/download/reload 保持
+  byte-identical，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n
