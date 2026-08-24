@@ -1716,8 +1716,19 @@ class CadSymbolCollector:
                 # 共享参数（dcl `dcl-name` = dcl-run/dcl-run-with-setup 参数 +
                 # dcl-dialog 立即 lambda 参数）也收集——`_shared_last` 按 kept
                 # 逆序最后引用者（dcl-dialog idx 6）注册，owner args 循环跳过。
+                # **参数拥有者逆序更晚处理**（`_param_first_source < 当前 source`，
+                # safe-eval `fn` = safe-fn-in-list-p src3 参数 + safe-form-p src4
+                # lambda 参数，owner 更晚 idx3）时**排除**——由 owner（_shared_last）
+                # args 循环注册（CAD fn 在 safe-fn-in-list-p 组 fg[61]，非
+                # safe-form-p 组）。
+                _excluded = (
+                    _a in getattr(self, "_all_params", set())
+                    and getattr(self, "_param_first_source", {}).get(_a, 10**9)
+                    < getattr(self, "_cur_source_idx", 10**9)
+                )
                 if (
                     _a not in arg_names
+                    and not _excluded
                     and not self._seen(out, _a)
                 ):
                     out.append((_a, False))

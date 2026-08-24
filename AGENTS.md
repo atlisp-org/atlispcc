@@ -598,6 +598,13 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   IfNode then/else 分支传播 `_is_tail`（if 值为分支值）；`_collect_multi` 函数体
   循环、kwote lambda 体、裸 lambda 体末 form 均 `_is_tail=True`。回归：53/67
   无回退（command.lsp 恢复 byte-identical），372 tests pass。
+- **2026-08-23 裸 lambda 参数拥有者排除**（`cad_symbols.py` 裸 LambdaNode 分支）：
+  共享参数被**逆序更晚处理**的函数拥有者（`_param_first_source < 当前 source`，
+  safe-eval `fn` = safe-fn-in-list-p src3 参数 + safe-form-p src4 lambda 参数，
+  owner 更晚 idx3）时裸 lambda **排除**收集——由 owner（_shared_last）args 循环
+  注册（CAD fn 在 safe-fn-in-list-p 组 fg[61]，非 safe-form-p 组）。dcl `dcl-name`
+  （owner src9 < quoter src5）不受影响。safe-eval fg 表全对齐（seg0 仍 DIFF：
+  deferred 大 const 编址）。回归：54/67 无回退，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n
