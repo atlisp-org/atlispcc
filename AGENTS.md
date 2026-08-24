@@ -613,12 +613,14 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   引用），须全序列匹配。回归：54/67 无回退（audit 保持 byte-identical），
   372 tests pass。
 - **2026-08-23 内嵌 `-lambda-` 参数按发射序解析**（`cli.py` + `codegen.py`）：
-  `_emit_nested_lambda` 记录 `(start, end, args)` 到 `_nested_lambdas`；cli 按
-  **nested_start 排序**（codegen `_nested_lambdas` 记录序 = `_emit_nested_lambda`
-  调用序，cond 逆向发射 ≠ 缓冲区位置序）构建 `nested_lambda_args` 传入
-  `_patch_usubr_idx`，DEFUN 跟踪优先用发射序参数（复杂 cond 下
-  `_collect_kwote_lambda_args` 源码序与发射序不一致，safe-eval b/clause/ok-tail
-  参数绑定错配）。回归：54/67 无回退，372 tests pass。
+  `_emit_nested_lambda` 记录 `(start, end, args, lam_idx)` 到 `_nested_lambdas`；
+  cli 按 **nested_start 排序**（codegen `_nested_lambdas` 记录序 =
+  `_emit_nested_lambda` 调用序，cond 逆向发射 ≠ 缓冲区位置序）构建
+  `nested_lambda_args` 传入 `_patch_usubr_idx`，DEFUN 跟踪优先用发射序参数
+  （复杂 cond 下 `_collect_kwote_lambda_args` 源码序与发射序不一致，safe-eval
+  b/clause/ok-tail 参数绑定错配）。`_collect_kwote_lambda_args` 加 ListExpr
+  分支收集立即应用 `((lambda ...) args)` 参数（fn/ok-tail，safe-eval）。
+  回归：54/67 无回退，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

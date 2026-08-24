@@ -1517,7 +1517,7 @@ class CodeGenerator:
             # `_nested_lambdas` 的偏移相对模块缓冲区，若混入会污染后续
             # generate_function 的 catalog 偏移（atlisp_u 顶层 `(function
             # (lambda ...))` 实测 89237 > seg0，触发 "Xsubr 偏移超出模块"）。
-            self._nested_lambdas.append((nested_start, nested_end, args))
+            self._nested_lambdas.append((nested_start, nested_end, args, lam_idx))
         return lam_idx
 
     def _emit_defun_header(self, buf: BytecodeBuffer, func: Defun):

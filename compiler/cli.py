@@ -2195,6 +2195,15 @@ def _collect_kwote_lambda_args(node):
         yield _lambda_real_args(node.expr)
         for e in node.expr.body:
             yield from _collect_kwote_lambda_args(e)
+    elif isinstance(node, ListExpr) and node.items and isinstance(node.items[0], LambdaNode):
+        # 立即应用 `((lambda (a b) ...) args...)`：CAD 内嵌 `-lambda-` DEFUN +
+        # EVAL，参数列表照常收集（safe-eval `((lambda (fn) (cond ...)) (car
+        # form))` → fn、`((lambda (ok tail) ...) ...)` → [ok, tail]，源码序）。
+        yield _lambda_real_args(node.items[0])
+        for e in node.items[0].body:
+            yield from _collect_kwote_lambda_args(e)
+        for a in node.items[1:]:
+            yield from _collect_kwote_lambda_args(a)
     elif isinstance(node, LambdaNode):
         # 裸 lambda 值（`(setq *error* (lambda (msg) ...))`，CAD `-lambda-`
         # DEFUN）：参数列表照常收集，供 `_patch_usubr_idx` 修正 `-lambda-`
@@ -2778,17 +2787,22 @@ def cmd_compile(
     nested_ends = {}
     nested_list = []
     # codegen 内嵌 `-lambda-` DEFUN 的**发射序**参数列表（`_emit_nested_lambda`
-    # 记录 `(start, end, args)`；发射序 = seg0 DEFUN 出现序，与源码收集序
-    # `_collect_kwote_lambda_args` 在复杂 cond（safe-eval）下不一致——参数绑定
+    # 记录 `(start, end, args, lam_idx)`；发射序 = seg0 DEFUN 出现序，与源码收集
+    # 序 `_collect_kwote_lambda_args` 在复杂 cond（safe-eval）下不一致——参数绑定
     # 须按发射序解析，否则 cur_args 错配（b lambda 得 ok/tail 参数）。
+    # **`-lambda-` 槽 = nsyms-1-源码序逆序位**（CAD DEFCODE 逆序弹出分配末尾
+    # 槽）：safe-eval 源码序 [fn, ok-tail, clause, b] → 逆序 [b, clause, ok-tail,
+    # fn] → _li fn=3、ok-tail=2、clause=1、b=0 → 槽 fn=62、ok-tail=63、clause=64、
+    # b=65。symtab `-lambda-` 顺序 = codegen 调用序（fn 先），须按 `_collect_kwote_
+    # lambda_args` 源码序匹配重排 lam_order。
     nested_lambda_args: dict = {}
     for name, off in list(func_offsets.items()):
         _fnl = sorted(codegen._func_nested_lambdas.get(name, []))
-        if _fnl:
-            # 按 seg0 DEFUN 位置（nested_start）排序——codegen `_nested_lambdas`
-            # 记录序（`_emit_nested_lambda` 调用序，cond 逆向发射）≠ 缓冲区位置序。
-            nested_lambda_args[name.upper()] = [list(a) for _, _, a in _fnl]
-        for rel_start, rel_end, _ in _fnl:
+        if not _fnl:
+            continue
+        # seg0 序（参数绑定按 seg0 DEFUN 序解析）。
+        nested_lambda_args[name.upper()] = [list(a) for _, _, a, _ in _fnl]
+        for rel_start, rel_end, _, _ in _fnl:
             n_start = off + rel_start
             n_end = off + rel_end
             nested_list.append((n_start, n_end))
