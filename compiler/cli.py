@@ -577,6 +577,7 @@ def _subr_bytes(opcode: int, argc: int, idx: int, flags: int = 3, wide: bool = F
 
 def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=None, codegen_nsyms: Optional[int] = None,
                      params_by_name: Optional[dict] = None, lambda_args_by_func: Optional[dict] = None,
+                     nested_lambda_args: Optional[dict] = None,
                      has_top_forms: bool = False, n_real_funcs: int = 1,
                      top_lambda_args: Optional[list] = None,
                      top_lambda_offsets: Optional[dict] = None,
@@ -939,6 +940,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     # 他函数参数 → 体内符号全乱、CAD 加载报"参数太少"）。
     params_by_name = params_by_name or {}
     lambda_args_by_func = lambda_args_by_func or {}
+    nested_lambda_args = nested_lambda_args or {}
     name_by_offset = {}
     for _n, _o in (symtab.function_offsets.items() if hasattr(symtab, "function_offsets") else []):
         name_by_offset[_o] = str(_n).upper()
@@ -971,12 +973,17 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     lambda_idx = 0
                 else:
                     # 内嵌 `-lambda-` DEFUN：取所在函数收集的 kwote lambda 参数。
+                    # 优先用 codegen **发射序**参数（`nested_lambda_args`，seg0
+                    # DEFUN 出现序）——复杂 cond 下 `_collect_kwote_lambda_args`
+                    # 源码序与发射序不一致（safe-eval b/clause/ok-tail 实测）。
                     # 纯顶层 `(set/setq 'sym (lambda ...))`（无宿主 defun）用
                     # top_lambda_args（按 seg0 出现序 = 源码序）。
                     if top_lambda_args and (cur_func is None or cur_func == "-LAMBDA-"):
                         _la = top_lambda_args
                     else:
-                        _la = lambda_args_by_func.get(cur_func, []) if cur_func else []
+                        _la = nested_lambda_args.get(cur_func, []) if cur_func else []
+                        if not _la:
+                            _la = lambda_args_by_func.get(cur_func, []) if cur_func else []
                     cur_args = _la[lambda_idx] if lambda_idx < len(_la) else None
                     lambda_idx += 1
             arg_i = 0
@@ -2770,8 +2777,18 @@ def cmd_compile(
     # 这些键仅用于函数目录（func-ranges）与 DEFCODE 注册，不参与模块注册。
     nested_ends = {}
     nested_list = []
+    # codegen 内嵌 `-lambda-` DEFUN 的**发射序**参数列表（`_emit_nested_lambda`
+    # 记录 `(start, end, args)`；发射序 = seg0 DEFUN 出现序，与源码收集序
+    # `_collect_kwote_lambda_args` 在复杂 cond（safe-eval）下不一致——参数绑定
+    # 须按发射序解析，否则 cur_args 错配（b lambda 得 ok/tail 参数）。
+    nested_lambda_args: dict = {}
     for name, off in list(func_offsets.items()):
-        for rel_start, rel_end in codegen._func_nested_lambdas.get(name, []):
+        _fnl = sorted(codegen._func_nested_lambdas.get(name, []))
+        if _fnl:
+            # 按 seg0 DEFUN 位置（nested_start）排序——codegen `_nested_lambdas`
+            # 记录序（`_emit_nested_lambda` 调用序，cond 逆向发射）≠ 缓冲区位置序。
+            nested_lambda_args[name.upper()] = [list(a) for _, _, a in _fnl]
+        for rel_start, rel_end, _ in _fnl:
             n_start = off + rel_start
             n_end = off + rel_end
             nested_list.append((n_start, n_end))
@@ -3118,6 +3135,7 @@ def cmd_compile(
                             codegen_nsyms=codegen_nsyms,
                             params_by_name=params_by_name,
                             lambda_args_by_func=lambda_args_by_func,
+                            nested_lambda_args=nested_lambda_args,
                             has_top_forms=bool(other_forms),
                             n_real_funcs=len(defun_forms),
                             top_lambda_args=[_lambda_real_args(la) for _, la in top_lambda_binds]
