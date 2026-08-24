@@ -507,8 +507,12 @@ class CadSymbolCollector:
             self._cur_source_idx = _jf
             refs = _SeenList()
             arg_names = set(f.args)
-            for expr in strip_docstring(f.body):
-                self._collect_byteorder(expr, refs, arg_names, cur_locals=set(f.locals))
+            body = strip_docstring(f.body)
+            for _bi, expr in enumerate(body):
+                self._collect_byteorder(
+                    expr, refs, arg_names, cur_locals=set(f.locals),
+                    _is_tail=(_bi == len(body) - 1),
+                )
             # 同一函数内对函数名的多次调用共享同一个重复槽（t09 中 sum-of-squares
             # 两次调用 square 仅 1 个重复 SQUARE 槽；CAD 实测）。
             seen_forced = set()
@@ -1502,8 +1506,13 @@ class CadSymbolCollector:
             # 键与 `_collect_byteorder`/symtab.add_real 一致（`__real_<v>__`）。
             reads.add('__real_%s__' % node.value)
 
-    def _collect_byteorder(self, node, out, arg_names, in_quote=False, cur_locals=None):
-        """按字节码首次引用序向前收集 (name, forced) 列表（单函数算法）。"""
+    def _collect_byteorder(self, node, out, arg_names, in_quote=False, cur_locals=None, _is_tail=False):
+        """按字节码首次引用序向前收集 (name, forced) 列表（单函数算法）。
+
+        `_is_tail=True` 表示该表达式的值是函数返回值（尾/值上下文）——语句
+        上下文（值被丢弃）progn 末 `T`/`nil` 的符号槽 CAD 不注册（permission
+        `@::fetch-user-role` `(progn ... T)` 实测；checksum 函数返回 T 仍注册）。
+        """
         if cur_locals is None:
             cur_locals = getattr(self, "_cur_locals", None)
         elif cur_locals is not None:
@@ -1599,19 +1608,31 @@ class CadSymbolCollector:
             if in_quote and not self._seen(out, 'if'):
                 out.append(('if', False))
             if node.cond:
-                self._collect_byteorder(node.cond, out, arg_names, in_quote)
+                self._collect_byteorder(node.cond, out, arg_names, in_quote, _is_tail=False)
             if node.then:
-                self._collect_byteorder(node.then, out, arg_names, in_quote)
+                # then/else 分支值 = if 的值（if 为尾/值上下文时分支亦为值）。
+                self._collect_byteorder(node.then, out, arg_names, in_quote, _is_tail=_is_tail)
             if node.else_expr:
-                self._collect_byteorder(node.else_expr, out, arg_names, in_quote)
+                self._collect_byteorder(node.else_expr, out, arg_names, in_quote, _is_tail=_is_tail)
         elif isinstance(node, WhileNode):
             if node.cond:
                 self._collect_byteorder(node.cond, out, arg_names, in_quote)
             for expr in node.body:
                 self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, Progn):
-            for form in node.forms:
-                self._collect_byteorder(form, out, arg_names, in_quote)
+            for _pi, form in enumerate(node.forms):
+                _f_tail = _is_tail and (_pi == len(node.forms) - 1)
+                if (
+                    not _f_tail
+                    and _pi == len(node.forms) - 1
+                    and isinstance(form, Symbol)
+                    and form.name.lower() in ("t", "nil")
+                ):
+                    # 语句上下文（值被丢弃）progn 末 `T`/`nil`：CAD 不注册符号槽
+                    # （permission `@::fetch-user-role` `(progn ... T)` 实测；
+                    # checksum 函数返回 T 走尾上下文仍注册）。
+                    continue
+                self._collect_byteorder(form, out, arg_names, in_quote, _is_tail=_f_tail)
         elif isinstance(node, ForeachNode):
             # CAD foreach/vlax-for 字节码：列表求值存局部槽 → loop 头 GET_LOCAL/JMP →
             # 体 SETQ_G <var>（循环变量先于体求值）→ 体各式。故符号引用序 =
@@ -1707,8 +1728,10 @@ class CadSymbolCollector:
                 for _l in _lam_locals:
                     if not self._seen(out, _l):
                         out.append((_l, False))
-            for _b in node.body:
-                self._collect_byteorder(_b, out, arg_names, in_quote)
+            for _bi, _b in enumerate(node.body):
+                self._collect_byteorder(
+                    _b, out, arg_names, in_quote, _is_tail=(_bi == len(node.body) - 1)
+                )
         elif isinstance(node, QuotedExpr):
             if node.kwote:
                 # `(function ...)`：CAD kwote 机制（i18n-cad 实测）。
@@ -1782,8 +1805,12 @@ class CadSymbolCollector:
                         for _p in _collectible:
                             if not self._seen(out, _p):
                                 out.append((_p, False))
-                    for expr in node.expr.body:
-                        self._collect_byteorder(expr, out, _body_args, in_quote)
+                    _kb = node.expr.body
+                    for _bi, expr in enumerate(_kb):
+                        self._collect_byteorder(
+                            expr, out, _body_args, in_quote,
+                            _is_tail=(_bi == len(_kb) - 1),
+                        )
                     # kwote 块结束标记：CAD 注册序把 kwote 块（kwote + lambda 体）
                     # 保持收集序整体插到**调用者**（外层调用名）之后，不随其它
                     # 函数体符号逆序沉底（base-function getf / i18n load-mt 实测）。

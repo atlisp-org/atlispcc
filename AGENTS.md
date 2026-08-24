@@ -586,6 +586,18 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   的 PUSH+POP 为纯 no-op，CAD 省略（permission `@::fetch-user-role` `(progn ...
   T)` 实测无 `T 槽;POP`，与 cl-functions `(progn ... nil)` 同规则）。尾/值上下文
   仍发射。回归：53/67 无回退，372 tests pass。
+- **2026-08-23（CAD 对拍）permission.lsp byte-identical（54/67）**：一个通用修复
+  （`_collect_byteorder` `_is_tail` 尾上下文跟踪），permission **seg0+seg1+nsyms
+  完全一致**（`@::check-permission` 值位置 T + `@::fetch-user-role` 语句 progn
+  尾 T 区分 + 立即 lambda）：
+  `_collect_byteorder(self, node, out, arg_names, in_quote, cur_locals, _is_tail)`
+  ——函数体**最后一个** form 传 `_is_tail=True`（其值为返回值），progn 末
+  `T`/`nil` 仅**非尾**（值被丢弃）时跳过注册符号槽（permission fetch-user-role
+  `(progn ... T)` 的 T 在语句 if 内、不注册；command kwote lambda 内 `t` 是
+  lambda 返回值、注册——kwote/bare lambda 体末 form 也传 `_is_tail=True`）。
+  IfNode then/else 分支传播 `_is_tail`（if 值为分支值）；`_collect_multi` 函数体
+  循环、kwote lambda 体、裸 lambda 体末 form 均 `_is_tail=True`。回归：53/67
+  无回退（command.lsp 恢复 byte-identical），372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n
