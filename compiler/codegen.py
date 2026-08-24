@@ -1459,15 +1459,27 @@ class CodeGenerator:
         buf.emit(encode_op_s32(JUMP, 0))
         buf.add_patch(jmp_pos + 1, label_after, 4)
         nested_start = buf.pos()
-        buf.emit(bytes([0x14, argc & 0xFF, argc & 0xFF, argc & 0xFF, 0]))
+        # b1 = argc + 直接体并发循环深度（含 foreach/repeat，audit-query
+        # 立即 lambda `(foreach e ...)` 实测 `14 04 03 03 00`，与 generate_function
+        # line 1523 同规则）；b2/b3 = argc。
+        _b1 = argc + _direct_loop_depth(node.body)
+        buf.emit(bytes([0x14, _b1 & 0xFF, argc & 0xFF, argc & 0xFF, 0]))
         saved_args = self.current_func_args
         saved_name = self.current_func_name
         saved_slots = self.local_slots
+        saved_next = self.next_slot
+        saved_loop = self._loop_depth
         self.current_func_name = "-lambda-"
         # lambda 参数注册为符号槽，读取用 PUSH_VALUE（CAD 实测：i18n 的
         # `opt%`、06_higher_order 的 `n` 均注册 fg 槽 + PUSH_VALUE 引用，
         # 由 `_patch_usubr_idx` 按 gvar_slot(arg)-1 重映射）。
         self.local_slots = {a: i for i, a in enumerate(args)}
+        # 参数占局部槽 0..argc-1；foreach/repeat 列表槽从 argc 起分配
+        # （audit-query 立即 lambda `(foreach e ...)` SET_LOCAL 3 = argc）。
+        # 嵌套 lambda 是独立函数作用域：`_loop_depth` 归零（与 generate_function
+        # line 229 一致）。
+        self.next_slot = len(args)
+        self._loop_depth = 0
         self._emit_init_args(buf, args)
         if locals_:
             # `/ 局部变量` 与 defun 同协议：`_al-bind-alist` 绑定（CAD
@@ -1492,6 +1504,8 @@ class CodeGenerator:
         buf.emit(encode_op_noarg(0x16))
         nested_end = buf.pos()
         self.local_slots = saved_slots
+        self.next_slot = saved_next
+        self._loop_depth = saved_loop
         self.current_func_args = saved_args
         self.current_func_name = saved_name
         buf.label(label_after)

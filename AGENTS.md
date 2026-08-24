@@ -558,6 +558,29 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   **注意**：`(let ...)` 文件（event-bus/error-handler/nlp）经 `_lower_let` 也走
   此 EVAL 模式，与 CAD 的 `LET + EVAL 0,const` 不同（let 任务另开）。
   回归：52/67 无回退，372 tests pass。
+- **2026-08-23（CAD 对拍）audit.lsp byte-identical（53/67）**：四个通用修复
+  （deferred const 首叶子编址 + `_al-bind-alist` 检测排除 `:keyword` + 嵌套
+  lambda DEFUN 头 b1 循环深度 + `_emit_nested_lambda` next_slot/_loop_depth
+  复位），audit **seg0+seg1+nsyms 完全一致**（`'(:package.install ...)` 事件
+  列表 const + 立即 lambda `(foreach e ...)`）：
+  1. **`_al-bind-alist` locals const 检测排除 `:keyword`**（`cli.py`）：quoted
+     数据列表的 `:keyword` 叶子（audit `'(:package.install ...)` 截断为
+     `:package`）**不是** locals const——旧检测 `all(x[0]=='SYMBOL')` 误匹配 →
+     PUSH_G 落到 `_al-bind-alist` 槽（103，CAD 用 106）。加
+     `not str(x[1]).startswith(':')`。
+  2. **deferred const 首叶子编址**（`cli.py` CONST 分支）：多叶子 deferred
+     const（audit 18 个 `:package` 占 res 128-145、fg 一槽）按**首叶子**资源
+     位置 `_res_to_fg` 编址（`:PACKAGE` 首现 res 128 - 21 = fg 107 → 操作数
+     106，CAD 实测；`nsyms-1` fallback 偏移 4）。仅未命中 const_map 且含多
+     叶子时启用。
+  3. **嵌套 lambda DEFUN 头 b1 循环深度**（`codegen.py` `_emit_nested_lambda`）：
+     `b1 = argc + _direct_loop_depth(node.body)`（audit-query 立即 lambda
+     `(foreach e ...)` 实测 `14 04 03 03 00`，与 generate_function 同规则）。
+  4. **`_emit_nested_lambda` next_slot/_loop_depth 复位**：参数占局部槽
+     0..argc-1，foreach/repeat 列表槽从 argc 起分配（audit SET_LOCAL 3 =
+     argc；旧 host next_slot 复用 → SET_LOCAL 2 与参数冲突）；嵌套 lambda 独立
+     函数作用域 `_loop_depth` 归零（与 generate_function line 229 一致）。
+  回归：52/67 无回退，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

@@ -1180,6 +1180,10 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                                     isinstance(x, tuple)
                                     and len(x) == 2
                                     and x[0] == "SYMBOL"
+                                    # locals 常量叶子是普通标识符；quoted 数据列表
+                                    # 的 `:keyword` 叶子（audit `'(:package.install
+                                    # ...)` 截断为 `:package`）**不**是 locals const。
+                                    and not str(x[1]).startswith(":")
                                     for x in const_structure[1]
                                 )
                             ):
@@ -1200,7 +1204,28 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                             # CAD 注册于符号槽末尾，操作数 = nsyms-1
                             # （cache_cad.fas 实测 PUSH_G[60] = nsyms-1）。
                             # 旧公式 idx0-len(func_args)+1 会越界。
-                            new_idx = nsyms - 1 - offset
+                            # 含多叶子的 deferred const（audit `'(:package.install
+                            # ...)` 18 个 `:package` 截断关键字占 res 128-145、
+                            # fg 一槽）：按**首叶子**资源位置 `_res_to_fg` 编址
+                            # （audit `:PACKAGE` 首现 res 128 - 21 = fg 107 →
+                            # 操作数 106，CAD 实测；`nsyms-1` 偏移 4）。
+                            _cl = _const_leaves(const_structure)
+                            _mapped = None
+                            if _cl and _res_offset is not None:
+                                _lf = str(_cl[0]).upper()
+                                _lf_res = None
+                                for _i2, _v2 in enumerate(_res_symbol_slots):
+                                    if str(_v2) == _lf:
+                                        _lf_res = _i2
+                                        break
+                                if _lf_res is not None:
+                                    _fg_c = _res_to_fg(_lf_res)
+                                    if 0 <= _fg_c < nsyms:
+                                        _mapped = _fg_c - 1 - offset
+                            if _mapped is not None:
+                                new_idx = _mapped
+                            else:
+                                new_idx = nsyms - 1 - offset
                 elif etype == "STRING":
                     # 字符串 PUSH_G：多函数若字符串已在 GVARINIT 表（fg 含 STRING
                     # 项，i18n 实测 `""` fg[44] → 操作数 42 = gvar-1-offset）则按
