@@ -823,7 +823,7 @@ class CodeGenerator:
                         node.then,
                         (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond),
                     )
-                    and not _then_imm
+                    and not (_then_imm and _then_tail)
                 ):
                     # 语句上下文（中间 if，值被丢弃）：then 分支值被 POP。值上下文
                     # （setq RHS、函数/算术实参）不 POP——值需流到外层消费者。
@@ -834,6 +834,11 @@ class CodeGenerator:
                     # while/foreach/repeat 自带栈平衡（循环 JUMP 回跳 + CLEAR_ARGS/
                     # 尾协议），then 后无额外 POP（platform-api @::platform-path
                     # 双 while 分支实测 CAD `57 JUMP` 直接退出，无 0a POP）。
+                    # then 为立即 lambda 且 `_then_tail=True`（值保留，user-manager
+                    # `(if token-callback ((lambda ...) ...) nil)` 实测
+                    # `EVAL; JUMP(1); 01; CLEAR_ARGS`）不 POP；`_then_tail=False`
+                    # （config-sync/file `(if content ((lambda ...) ...) nil)`
+                    # 实测 `EVAL; POP; JUMP(0)`）丢弃 EVAL 结果。
                     # POP 位于 then 末尾、JUMP 之前（ref 实测顺序 `03 0a 57`）。
                     buf.emit(encode_op_noarg(POP))
             jmp2_pos = buf.pos()

@@ -634,7 +634,7 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   `@::save-login-session` `"\n✅ "` emoji 字符串 fg 槽）：
   1. `_emit_if` then 立即 lambda（ListExpr head LambdaNode）不 POP 分支值；
      else 常量 nil/T 仅在 then 被 POP 时省略，否则保留 + 不 POP（user-manager
-     `(if token-callback ((lambda (result) ...) ...) nil)` 实测
+     `(if token-callback ((lambda ...) ...) nil)` 实测
      `EVAL; JUMP(1); 01; CLEAR_ARGS`）。
   2. `_emit_repeat_stub` 多语句体中间语句 POP（anti-crack 实测 `USUBR; POP`）；
      尾 repeat（函数返回值的 repeat）loop 头 PUSH_NIL 占位 + JMP32_IFNOT 后
@@ -643,6 +643,32 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      GBK 无法编码字符在资源流注册为 `\U+XXXX`（`"\n✅ "` → fg `\n\U+2705 `），
      symtab 保留实际字符，旧查询失配 → fallback nsyms-1 错槽。
   回归：55/67 无回退，372 tests pass。
+- **2026-08-23（CAD 对拍）user-manager + config-sync/file byte-identical（56/67）**：
+  四个通用修复（模块代码 setq 函数值 PUSH_VALUE、`_interleave_mid` 放宽为
+  `sum(mid_counts)>0`、mid_counts 跳过 `_top_lambda_names`、if then 立即 lambda
+  语句上下文 POP）：
+  1. **模块代码 setq 函数符号值 PUSH_VALUE**（`cli.py` `_stmt_bytes`）：顶层
+     `(setq @::valid-user @::check-userinfo)` 的值（函数名）CAD 用
+     `PUSH_VALUE`（实测 `03 19 00 0b 06 18 00`），旧实现按函数名发 PUSH_G
+     （@lisp_u `(setq @::unschedule-task @::string-to-list)` 功能验证，
+     字节与 CAD 不符）。PUSH_VALUE 压模块注册段槽的值（函数对象），SETQ_G 绑定。
+  2. **`_interleave_mid` 放宽为 `sum(mid_counts) > 0`**（`cli.py`）：defun 注册
+     与 mid 顶层语句**始终按源码位置交错**（`[reg i, mid[i]]`，mid_counts 分配）。
+     user-manager 的 `anti-crack`（line 18）定义在 setq valid-user（line 16）与
+     setq *userinfo*（line 26）之间 → CAD 注册插在中间。旧条件只对别名 set
+     交错（i18n/platform 等 mid 全在 TAIL 注册前仍正确）。@lisp-env（mid_forms
+     仅 InPackage、mid_counts 全 0）走非交错路径。
+  3. **mid_counts 跳过 `_top_lambda_names`**（`cli.py`）：提升的 setq-lambda
+     defun（platform @::fasext/@::vlx）不占 mid 槽——其后 mid 语句（`(set
+     'fasext ...)`、@::vlx 绑定）归前一个真实 defun（分给 -lambda- 槽会丢失
+     → 模块代码缺语句）。
+  4. **if then 立即 lambda 语句上下文 POP**（`codegen.py` `_emit_if`）：then
+     立即 lambda 的 POP 排除条件由 `not _then_imm` 放宽为
+     `not (_then_imm and _then_tail)`——`_then_tail=True`（值保留，user-manager
+     `(if token-callback ((lambda ...) ...) nil)` EVAL 后 JUMP 无 POP）不 POP；
+     `_then_tail=False`（语句上下文，config-sync/file `(if content ((lambda
+     ...) ...) nil)` 实测 `EVAL; POP; JUMP(0)`）丢弃 EVAL 结果。
+  回归：55/67 无回退（audit/permission/event-bus 等保持），372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

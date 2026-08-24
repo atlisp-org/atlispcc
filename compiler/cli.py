@@ -1581,21 +1581,16 @@ def _build_cad_module_code(
                         if v_idx is None:
                             break  # 复杂值 → 退回通用路径
                         if isinstance(value, Symbol):
-                            # 非引号符号值：函数符号（函数别名 setq）CAD 用
-                            # PUSH_G（@lisp_u 实测 `(setq @::unschedule-task
-                            # @::string-to-list)` → `09 <槽>`）；普通变量用
-                            # PUSH_VALUE（setcmp `(setq _ @::_)` 实测
-                            # `03 <槽+1>`）。PUSH_VALUE 读函数槽得到 SUBR，
-                            # SETQ_G 绑定报"要绑定的对象不正确"。
-                            _vn = value.name
-                            _fns = symtab.function_offsets if hasattr(symtab, "function_offsets") else {}
-                            _is_func = _vn in _fns or _vn in set(func_names) or (
-                                _vn.lower() in {str(k).lower() for k in _fns}
-                            )
-                            if _is_func:
-                                pre += bytes([0x09]) + struct.pack("<H", _slot_gv(v_idx))  # PUSH_G
-                            else:
-                                pre += bytes([0x03]) + struct.pack("<H", _slot_gv(v_idx))  # PUSH_VALUE
+                            # 非引号符号值：普通变量用 PUSH_VALUE（setcmp
+                            # `(setq _ @::_)` 实测 `03 <槽+1>`）。函数符号
+                            # 也用 PUSH_VALUE（user-manager CAD golden
+                            # `(setq @::valid-user @::check-userinfo)` 实测
+                            # `03 19 00 0b 06 18 00`）——PUSH_VALUE 压模块
+                            # 注册段槽的值（函数对象），SETQ_G 绑定。旧实现
+                            # 对函数名发 PUSH_G（@lisp_u `(setq @::unschedule
+                            # -task @::string-to-list)` 功能验证），字节与 CAD
+                            # 不符。
+                            pre += bytes([0x03]) + struct.pack("<H", _slot_gv(v_idx))  # PUSH_VALUE
                         else:
                             pre += bytes([0x09]) + struct.pack("<H", _slot_gv(v_idx))  # PUSH_G
                         v_ok = True
@@ -1882,10 +1877,7 @@ def _build_cad_module_code(
         # （i18n/platform 的 setq/if 占多数）仍全部 mid 先、注册后。
         # base-function 的 mid[0] `(set '$platform (read ...))`（值非符号）
         # 与 mid[5] `(setq @::*mktime-epoch* ...)` 非干净别名 set，但同样交错。
-        _interleave_mid = (
-            len(mid_forms) > 0
-            and sum(_mid_is_set(_m) for _m in mid_forms) * 2 > len(mid_forms)
-        )
+        _interleave_mid = sum(mid_counts) > 0
         # START 函数注册：前 n_pre 个函数（定义在首个顶层语句之前，CAD
         # platform 实测 set-locale/get-locale 在 globals 语句前注册）。
         # 每组 `JUMP; PUSH_G b; SETQ_G c; PUSH_G c; POP`；命令组为 CAD
@@ -3066,10 +3058,16 @@ def cmd_compile(
             _n_pre = 0
         # 每个 defun 之后的 mid 顶层 form 数（仅统计最后一个 defun 之前）。
         # 交错（cl-functions 别名 set）时按此把 mid_forms 分配给对应函数。
+        # 提升的顶层 setq-lambda defun（`_top_lambda_names`，platform @::fasext/
+        # @::vlx）不占 mid 槽——其后的 mid 语句（`(set 'fasext ...)`、@::vlx
+        # 绑定）归前一个真实 defun（`_emit_mid_for` 从 TAIL 循环对 skip 函数
+        # continue，分给 -lambda- 槽会丢失 → 模块代码缺 mid 语句）。
         _mid_counts = []
         _cur_fn = None
         for _i, _f in enumerate(program.forms):
             if isinstance(_f, _Defun):
+                if getattr(_f, "name", None) in _top_lambda_names:
+                    continue
                 _mid_counts.append(0)
                 _cur_fn = len(_mid_counts) - 1
             elif _cur_fn is not None and not isinstance(_f, (_Defpackage, _InPackage)) and not (
