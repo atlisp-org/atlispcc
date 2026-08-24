@@ -581,6 +581,11 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      argc；旧 host next_slot 复用 → SET_LOCAL 2 与参数冲突）；嵌套 lambda 独立
      函数作用域 `_loop_depth` 归零（与 generate_function line 229 一致）。
   回归：52/67 无回退，372 tests pass。
+- **2026-08-23 语句上下文 progn 末 `T` no-op 省略**（`codegen.py`）：`_last_nil_stmt`
+  扩展为 `_last_const_stmt` 覆盖 `T`——语句上下文（值被丢弃）progn 末 `T`/`nil`
+  的 PUSH+POP 为纯 no-op，CAD 省略（permission `@::fetch-user-role` `(progn ...
+  T)` 实测无 `T 槽;POP`，与 cl-functions `(progn ... nil)` 同规则）。尾/值上下文
+  仍发射。回归：53/67 无回退，372 tests pass。
 - **2026-08-23（CAD 对拍）i18n.lsp byte-identical（40/67）**：n_pre START 注册
   跳过 globals（`cli.py` `_n_pre`），i18n **seg0+seg1+nsyms 完全一致**：CAD 把
   **globals 之后的第一个连续 defun 组**注册在 mid 顶层语句之前（i18n

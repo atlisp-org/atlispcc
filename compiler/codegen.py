@@ -524,18 +524,21 @@ class CodeGenerator:
             if node.forms:
                 self._in_tail_context = saved_tail
                 _last = node.forms[-1]
-                # 语句上下文（值被丢弃）progn 末 `nil`：PUSH_NIL+POP 为纯 no-op，
-                # CAD 省略（cl-functions `(progn (@::alert ...) (princ ...) nil)`
-                # 模块代码实测无 `01 0a`）。尾/值上下文（值被使用）仍发射。
-                _last_nil_stmt = (
-                    isinstance(_last, Symbol) and _last.name.lower() == "nil" and not saved_tail
+                # 语句上下文（值被丢弃）progn 末 `nil`/`T`：PUSH+POP 为纯 no-op，
+                # CAD 省略（cl-functions `(progn ... nil)`、permission `(progn
+                # ... T)` 模块代码/函数体实测无 `01 0a`/`T 槽;POP`）。尾/值上下文
+                # （值被使用）仍发射。
+                _last_const_stmt = (
+                    isinstance(_last, Symbol)
+                    and _last.name.lower() in ("nil", "t")
+                    and not saved_tail
                 )
-                if not _last_nil_stmt:
+                if not _last_const_stmt:
                     self._emit_expr(buf, _last, _tail=saved_tail)
                 _selfbal = isinstance(_last, (Setq, WhileNode, ForeachNode, RepeatNode, Progn, Cond))
                 if isinstance(_last, IfNode) and self._in_stmt_ctx:
                     _selfbal = True
-                if not saved_tail and not _selfbal and not _last_nil_stmt:
+                if not saved_tail and not _selfbal and not _last_const_stmt:
                     buf.emit(encode_op_noarg(POP))
             self._in_tail_context = saved_tail
 
