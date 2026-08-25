@@ -2885,6 +2885,7 @@ def cmd_compile(
     _top_lambda_key_names: dict = {}
     _top_lambda_offsets: dict = {}
     _prev_emitted = False
+    _tl_kwote_offsets: list = []
     _tl_kwote_count = 0
     for form in program.forms:
         if not isinstance(form, Defun):
@@ -2899,9 +2900,10 @@ def cmd_compile(
                 _fdef = _defun_from_lambda("-lambda-", _lam)
                 _fb, _ = codegen.generate_function(_fdef)
                 _off = len(all_bytecode.data)
-                _key = f"-lambda-#{_tl_kwote_count + 1}" if _tl_kwote_count else "-lambda-"
-                func_offsets[_key] = _off
+                # 唯一键（高序号避免与 nested_list 的 `-lambda-#N` 冲突），
+                # 在源码位置写入 func_offsets（CAD 主 DEFCODE 区源码序交错）。
                 _tl_kwote_count += 1
+                func_offsets[f"-lambda-#TL{_tl_kwote_count}"] = _off
                 all_bytecode.emit(_fb)
                 _prev_emitted = True
             continue

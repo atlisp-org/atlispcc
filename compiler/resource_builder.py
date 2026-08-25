@@ -929,7 +929,7 @@ class ResourceBuilder:
     def _is_lambda_key(name) -> bool:
         """判断目录键是否为内嵌 `-lambda-`（含多 `-lambda-` 键 `-lambda-#N`）。"""
         s = str(name)
-        return s == "-lambda-" or s.startswith("-lambda-#")
+        return s == "-lambda-" or s.startswith("-lambda-#") or s.startswith("-lambda-#TL")
 
     @staticmethod
     def _code_ref_bytes(length: int) -> bytes:
