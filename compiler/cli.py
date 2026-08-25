@@ -2988,7 +2988,6 @@ def cmd_compile(
                 funcobj_map[_foi] = _fo_base + _pos
     else:
         funcobj_map = {}
-    print("DBG func_offsets:", func_offsets, file=sys.stderr)
 
     for name, offset in func_offsets.items():
         # `-lambda-`/`-lambda-#N`（内嵌 DEFUN）不进符号表（仅 DEFCODE 区注册，
