@@ -2497,6 +2497,93 @@ def _defun_from_lambda(name, lam):
     )
 
 
+def _is_top_lambda_bind(form, tl_names):
+    """判断 form 是否为顶层 setq-lambda 绑定（`(set/setq 'X (function (lambda
+    ...)))`，X ∈ tl_names）。top_lambda_binds 路径处理，不在此发射 DEFUN。"""
+    from compiler.ast_nodes import LambdaNode as _LN, QuotedExpr as _Q, Symbol as _Sy, Call as _C, Setq as _S
+    if isinstance(form, _C) and form.name == "set" and len(form.args) == 2:
+        _t0, _v1 = form.args
+        return (
+            isinstance(_t0, _Q) and isinstance(_t0.expr, _Sy) and _t0.expr.name in tl_names
+            and (isinstance(_v1, _LN) or (isinstance(_v1, _Q) and isinstance(_v1.expr, _LN)))
+        )
+    if isinstance(form, _S):
+        return any(
+            isinstance(_t, _Sy) and _t.name in tl_names
+            and (isinstance(_v, _LN) or (isinstance(_v, _Q) and isinstance(_v.expr, _LN)))
+            for _t, _v in form.pairs
+        )
+    return False
+
+
+def _tl_kwote_lambdas(node):
+    """收集顶层 form 中作为**调用实参**的 kwote lambda（`(function (lambda ...))`）。
+
+    setup `(if @::*uris* (mapcar (function (lambda (x) ...)) ...))` 实测：CAD 把
+    该 lambda 编译为 seg0 内嵌 `-lambda-` DEFUN。**setq 直接值**（`(setq X
+    (function (lambda ...)))`，由 top_lambda_binds 提升/`-lambda-` 路径处理）
+    不收集——避免与既有机制重复发射。
+    """
+    from compiler.ast_nodes import (
+        QuotedExpr as _Q,
+        LambdaNode as _LN,
+        Call as _C,
+        IfNode as _I,
+        Progn as _P,
+        WhileNode as _W,
+        ForeachNode as _F,
+        RepeatNode as _R,
+        Cond as _Cnd,
+        Setq as _S,
+        ListExpr as _LE,
+    )
+
+    if isinstance(node, _Q) and getattr(node, "kwote", False) and isinstance(node.expr, _LN):
+        yield node.expr
+    elif isinstance(node, _C):
+        for _a in node.args:
+            yield from _tl_kwote_lambdas(_a)
+    elif isinstance(node, _S):
+        for _t, _v in node.pairs:
+            if _v is not None and not (
+                isinstance(_v, _Q) and getattr(_v, "kwote", False)
+                and isinstance(_v.expr, _LN)
+            ):
+                yield from _tl_kwote_lambdas(_v)
+    elif isinstance(node, _I):
+        for _x in (node.cond, node.then, node.else_expr):
+            if _x:
+                yield from _tl_kwote_lambdas(_x)
+    elif isinstance(node, _P):
+        for _f_ in node.forms:
+            yield from _tl_kwote_lambdas(_f_)
+    elif isinstance(node, _W):
+        if node.cond:
+            yield from _tl_kwote_lambdas(node.cond)
+        for _f_ in node.body:
+            yield from _tl_kwote_lambdas(_f_)
+    elif isinstance(node, _F):
+        if node.list_expr:
+            yield from _tl_kwote_lambdas(node.list_expr)
+        for _f_ in node.body:
+            yield from _tl_kwote_lambdas(_f_)
+    elif isinstance(node, _R):
+        if node.count:
+            yield from _tl_kwote_lambdas(node.count)
+        for _f_ in node.body:
+            yield from _tl_kwote_lambdas(_f_)
+    elif isinstance(node, _Cnd):
+        for _c in node.clauses:
+            for _x in _c:
+                yield from _tl_kwote_lambdas(_x)
+    elif isinstance(node, _LE):
+        for _it in node.items:
+            yield from _tl_kwote_lambdas(_it)
+    elif isinstance(node, _LN):
+        for _f_ in node.body:
+            yield from _tl_kwote_lambdas(_f_)
+
+
 def _convert_top_lambda_to_defuns(forms):
     """把混合文件顶层 `(setq X (lambda ...))` / `(set 'X (lambda ...))` 提升为
     独立 defun。
@@ -2797,7 +2884,29 @@ def cmd_compile(
     _top_lam_count = 0
     _top_lambda_key_names: dict = {}
     _top_lambda_offsets: dict = {}
-    for i, form in enumerate(defun_forms):
+    _prev_emitted = False
+    _tl_kwote_count = 0
+    for form in program.forms:
+        if not isinstance(form, Defun):
+            # 顶层 setq-lambda 绑定（`(set/setq 'X (function (lambda ...)))`，
+            # `_rewrite_top_lambda_binds` 改写后为 kwote）由 top_lambda_binds
+            # 路径处理，这里跳过（避免重复发射 `-lambda-` DEFUN）。
+            if top_lambda_binds and _is_top_lambda_bind(form, _top_lambda_names):
+                continue
+            for _lam in _tl_kwote_lambdas(form):
+                if _prev_emitted:
+                    all_bytecode.emit(bytes([0x16]))
+                _fdef = _defun_from_lambda("-lambda-", _lam)
+                _fb, _ = codegen.generate_function(_fdef)
+                _off = len(all_bytecode.data)
+                _key = f"-lambda-#{_tl_kwote_count + 1}" if _tl_kwote_count else "-lambda-"
+                func_offsets[_key] = _off
+                _tl_kwote_count += 1
+                all_bytecode.emit(_fb)
+                _prev_emitted = True
+            continue
+        if _prev_emitted:
+            all_bytecode.emit(bytes([0x16]))
         offset = len(all_bytecode.data)
         func_bytecode, _ = codegen.generate_function(form)
         from compiler.cad_symbols import normalize_vla_name
@@ -2816,10 +2925,7 @@ def cmd_compile(
         else:
             func_offsets[normalize_vla_name(form.name)] = offset
         all_bytecode.emit(func_bytecode)
-        if i < len(defun_forms) - 1:
-            # CAD stub: 函数间分隔符 `16`（CLEAR_ARGS `19 <argc> 00` 已由
-            # generate_function 生成，仅需追加 END_DEFUN 分隔）。
-            all_bytecode.emit(bytes([0x16]))
+        _prev_emitted = True
 
     # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：CAD 把内嵌
     # `-lambda-` DEFUN 放 seg0（完整紧凑 stub：`14 <argc><argc><argc> 00` +
