@@ -730,15 +730,19 @@ class CodeGenerator:
                 self._emit_subr_cleanup(buf)
         buf.emit(encode_eval(0, 7))
         _saved_let_tail = self._in_let_tail
-        self._in_let_tail = True
         try:
             for _bi, form in enumerate(body):
                 if _bi == len(body) - 1:
                     # let 的 body 最后 form 是 let 的值（尾上下文）：if 分支 setq
                     # DUP 保留值（event-bus `(let ((entry ...)) (if entry (setq
-                    # ...) (setq ...)))` CAD 实测 `DUP; SETQ_G`）；尾 if 的 else
-                    # fall-through 后 USUBR(2, LET)（见 `_emit_if` `_in_let_tail`）。
-                    self._emit_expr(buf, form, _tail=True)
+                    # ...) (setq ...)))` CAD 实测 `DUP; SETQ_G`）；尾 if 的 end
+                    # 后 USUBR(2, LET)（见 `_emit_if` `_in_let_tail`）。仅尾 form
+                    # 设标志（非尾 if 不加——nlp 多 let 过度）。
+                    self._in_let_tail = True
+                    try:
+                        self._emit_expr(buf, form, _tail=True)
+                    finally:
+                        self._in_let_tail = False
                 else:
                     self._emit_stmt(buf, form)
         finally:
@@ -844,6 +848,12 @@ class CodeGenerator:
         label_else = f"_if_else_{buf.pos()}"
         label_end = f"_if_end_{buf.pos()}"
 
+        # let body 尾 if 的 end 后 USUBR(2, LET)：仅**最外层** if 加（嵌套 if
+        # 的 then/else 内 if 不加——nlp 多 let/嵌套过度）。保存并在进入时清
+        # 标志（嵌套 if 进入时 False），label_end 处用保存值。
+        _saved_let_tail = self._in_let_tail
+        self._in_let_tail = False
+
         # 条件为值位置：`_tail=True` 使条件内值位置的 setq 保留返回值
         # （`DUP; SETQ_G`，platform-api `(if (not (vl-catch-all-error-p
         # (setq status ...))) ...)` CAD 实测 `DUP SETQ_G`），否则 SETQ_G
@@ -945,7 +955,7 @@ class CodeGenerator:
                 # 的 POP 丢弃栈顶（i18n-cad update-locale / test-cond CAD 实测）。
                 buf.emit(encode_op_noarg(PUSH_NIL))
             buf.patch_label(label_end, buf.pos())
-            if self._in_let_tail:
+            if _saved_let_tail:
                 # let body 尾 if 的 end（then JUMP 目标 + else fall-through 统一）：
                 # CAD 发射 `USUBR(2, LET)`（minlet/let3/let4 CAD 真机实测操作数
                 # = fg LET 槽 - 1：event-bus 21、let3 1；CAD then JUMP 也执行）。
@@ -954,6 +964,7 @@ class CodeGenerator:
                 _let_idx = self.symtab.get_or_add("let")
                 self._emit_usubr(buf, 2, _let_idx)
                 self._emit_subr_cleanup(buf)
+            self._in_let_tail = _saved_let_tail
             return
 
         if node.else_expr:
