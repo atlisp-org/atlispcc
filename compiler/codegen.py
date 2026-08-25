@@ -712,7 +712,7 @@ class CodeGenerator:
                     v = b.items[0].name if isinstance(b.items[0], Symbol) else str(b.items[0])
                     e = b.items[1]
                 else:
-                    v = str(b)
+                    v = b.name if isinstance(b, Symbol) else str(b)
                     e = None
                 # CAD 原生 LET（minlet CAD 真机实测）：绑定值求值后 `USUBR(1,
                 # <绑定变量槽>)`——`(x (1+ a))` 的 USUBR(1,x槽)、event-bus

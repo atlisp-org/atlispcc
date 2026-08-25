@@ -1,0 +1,5 @@
+(defun foo ()
+  (boundp 'bar)
+  (princ)
+  (bar))
+(defun bar () 1)

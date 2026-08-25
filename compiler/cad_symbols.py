@@ -1601,7 +1601,7 @@ class CadSymbolCollector:
                                 self._collect_byteorder(b.items[1], out, arg_names, in_quote)
                             v = b.items[0].name if isinstance(b.items[0], Symbol) else str(b.items[0])
                         else:
-                            v = str(b)
+                            v = b.name if isinstance(b, Symbol) else str(b)
                         if v not in arg_names and not self._seen(out, v):
                             out.append((v, False))
                 for form in node.args[1:]:
@@ -1628,7 +1628,15 @@ class CadSymbolCollector:
                 # （i18n-cad 实测无 AND/OR 符号）。
                 pass
             elif node.name in self.func_names:
-                out.append((node.name, True))
+                # 同函数内对同一函数符号的多次引用（quoted `'bar` + 调用
+                # `(bar)`，probe1-5 CAD 实测）仅保留**首次出现**位置的槽——
+                # 后续引用（含强制调用）复用首槽。旧实现强制调用无条件
+                # append 绕过 _seen，quoted 在前时产生双槽（error/handler
+                # `(boundp '@::*error*) ... (@::*error* msg)` OURS 双
+                # @::*ERROR* 槽 vs CAD 单槽）。首现非强制条目注册时经
+                # `_module_reg_upper` 提升 force，重复槽照常生成。
+                if not self._seen(out, node.name):
+                    out.append((node.name, True))
             elif node.name == "command":
                 # `command` 内建 SUBR 的**调用目标**注册为独立符号槽 `ads-cmd`
                 # （base-function CAD 实测 `(command ...)` → `ads-cmd`），与值
