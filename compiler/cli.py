@@ -594,7 +594,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                      has_top_forms: bool = False, n_real_funcs: int = 1,
                      top_lambda_args: Optional[list] = None,
                      top_lambda_offsets: Optional[dict] = None,
-                     module_reg_count: Optional[int] = None) -> bytes:
+                     module_reg_count: Optional[int] = None,
+                     funcobj_map: Optional[dict] = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
     CAD 实测逆向：
@@ -625,6 +626,28 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         # 单函数无 kwote（`-lambda-`）文件：codegen 槽已与资源 symbol_slots 一致，
         # 重映射反而破坏正确输出（多 kwote PUSH_G 字符串被 `nsyms-1` 回退改错槽、
         # kwote FUNC 槽错位 → CAD 加载报 `-lambda-` 类型错误），直接原样返回。
+        # 函数体内嵌套 `(defun inner ...)` 的 func-obj PUSH_G 槽须先重映射
+        # （codegen 发射序 ≠ DEFCODE offset 升序，n5 实测 mid/inner 互换）。
+        if funcobj_map:
+            from decompiler.fas4_decompiler import Disassembler
+
+            _wide = nsyms > 256
+            try:
+                _insts = Disassembler(short_subr=not _wide).disassemble(
+                    seg0, nsyms, sym_count=len(symtab.entries))
+            except Exception:
+                return seg0
+            _out = bytearray()
+            for _inst in _insts:
+                if _inst.op_name == "PUSH_G" and _inst.operands and _inst.size == 3:
+                    _i0 = _inst.operands[0]
+                    if _i0 in funcobj_map:
+                        _ni = funcobj_map[_i0]
+                        if 0 <= _ni <= 0xFFFF:
+                            _out += bytes([0x09, _ni & 0xFF, (_ni >> 8) & 0xFF])
+                            continue
+                _out += seg0[_inst.offset : _inst.offset + _inst.size]
+            seg0 = bytes(_out)
         # 含内嵌 kwote `-lambda-` 的单函数文件（net/reload.lsp 双 kwote 实测）：
         # `-lambda-` 不参与资源符号注册，按其在所有 `-lambda-` 条目中的序号
         # 编址（lambda i 槽 = nsyms - i，操作数 = nsyms - 1 - i；与多函数
@@ -2537,11 +2560,11 @@ def cmd_compile(
     # 顶层 `(progn ...)`（@lisp 包整体包裹模式）展开后再提取 defun/顶层表达式
     program.forms = _flatten_top_level_forms(program.forms)
     # 条件/嵌套 defun（`(if c (defun f () ...))`）：先按 CAD 方式把顶层 if 内的
-    # defun 提升为独立函数（无条件编译，if 只保留非 defun 表达式），剩余的非顶层
-    # 嵌套 defun（defun 体内）再由 _lower_nested_defuns 改写为 setq lambda。
+    # defun 提升为独立函数（无条件编译，if 只保留非 defun 表达式）。函数体内
+    # 嵌套 defun（`(defun f () (defun g () ...))`）**不再降级**为 setq lambda——
+    # CAD 原生内嵌 DEFUN（n1-n6 实测 `JUMP; DEFUN g; ...; END_DEFUN;
+    # PUSH_G <g-obj>; SETQ_G g`），由 codegen `_emit_nested_defun` 发射。
     program.forms = _hoist_conditional_defuns(program.forms)
-    # 嵌套 defun（`(defun f () (defun g () ...))`）改写为 `(setq g '(lambda ...))`
-    program.forms = _lower_nested_defuns(program.forms)
     # 顶层 `(setq X (lambda ...))`：CAD 编译为可调用 SUBR。
     # - 纯顶层文件（无 defun）：走 CAD `-lambda-` 机制（seg0 紧凑 stub +
     #   DEFCODE 注册 + 模块代码 ``PUSH_G <sym>; PUSH_G <-lambda-槽>;
@@ -2914,6 +2937,59 @@ def cmd_compile(
             func_offsets[f"-lambda-#{i + 1}" if i else "-lambda-"] = n_start
     print("DBG nested_list:", nested_list, file=sys.stderr)
 
+    # 函数体内嵌套 `(defun inner ...)`（CAD 原生内嵌 DEFUN）：登记进 func_offsets
+    # 使 resource_builder 为嵌套函数发射 DEFCODE（函数目录 + func-obj 槽）。
+    # 偏移相对所在函数字节码缓冲，需转换为 seg0 绝对偏移。嵌套 defun 名用真实
+    # 名字（非 `-lambda-`）。
+    # **func_offsets 键序**：顶层函数在前（源码序），嵌套 defun 按 seg0 offset
+    # **降序**（n5 实测 func_offsets = [OUTER, INNER, MID]：嵌套按 offset 降序
+    # [inner@20, mid@10] → 逆序 DEFCODE 发射 [mid, inner, outer]，与 codegen
+    # 内嵌发射序（mid→inner）一致，func-obj 占位槽才能对齐最终槽）。
+    # 嵌套 defun 可再含嵌套（n5 mid→inner）：用 worklist 传递收集。
+    _fnd_seen = set()
+    _fnd_work = list(func_offsets.items())
+    while _fnd_work:
+        _name, _off = _fnd_work.pop(0)
+        _fnd_raw = list(codegen._func_nested_defuns.get(_name, []))
+        for rel_start, rel_end, nd_name, _nd_args, _sym_idx, _fo_idx in sorted(_fnd_raw):
+            n_start = _off + rel_start
+            n_end = _off + rel_end
+            _nkey = normalize_vla_name(nd_name)
+            if _nkey in func_offsets:
+                continue
+            func_offsets[_nkey] = n_start
+            nested_ends[n_start] = n_end
+            _fnd_seen.add((_nkey, n_start))
+            _fnd_work.append((_nkey, n_start))
+    if _fnd_seen:
+        # 嵌套 defun 键整体移到顶层函数之后、按 offset 降序（保证
+        # reversed(func_offsets) 的 DEFCODE 发射序 = codegen 内嵌发射序）。
+        _top_keys = [k for k in func_offsets if func_offsets[k] not in dict(_fnd_seen).values()]
+        _nested_sorted = sorted(_fnd_seen, key=lambda x: x[1], reverse=True)
+        func_offsets = {k: func_offsets[k] for k in _top_keys}
+        for _nk, _no in _nested_sorted:
+            func_offsets[_nk] = _no
+        # **func-obj 槽重映射**：codegen 的 FUNCOBJ 占位槽按发射序分配
+        # （n5 内层 inner 先于 mid），而资源流 func-obj 槽 = base + DEFCODE
+        # 前置发射序（offset **升序**，mid 先 inner 后 → mid@4/inner@5）。
+        # 构建 {codegen_fo_idx: 最终 func-obj 槽} 供 `_patch_usubr_idx` 重映射
+        # PUSH_G。base = 非 FUNCOBJ 符号数；pos = offset 升序排名。
+        _fo_by_name = {}
+        for _name, _off in func_offsets.items():
+            for _fr in codegen._func_nested_defuns.get(_name, []):
+                _fo_by_name.setdefault(_fr[2], _fr[5])
+        _n_funcobj = sum(1 for _e in symtab.entries if isinstance(_e, tuple) and _e and _e[0] == "FUNCOBJ")
+        _fo_base = len(symtab.entries) - _n_funcobj
+        _fo_asc = sorted(_fnd_seen, key=lambda x: x[1])  # offset 升序
+        funcobj_map = {}
+        for _pos, (_nk, _no) in enumerate(_fo_asc):
+            _foi = _fo_by_name.get(_nk)
+            if _foi is not None:
+                funcobj_map[_foi] = _fo_base + _pos
+    else:
+        funcobj_map = {}
+    print("DBG func_offsets:", func_offsets, file=sys.stderr)
+
     for name, offset in func_offsets.items():
         # `-lambda-`/`-lambda-#N`（内嵌 DEFUN）不进符号表（仅 DEFCODE 区注册，
         # 顶层 lambda 的 `-lambda-` 槽由 top_lambda_slots 计算）。其余函数名
@@ -3266,7 +3342,8 @@ def cmd_compile(
                             top_lambda_args=[_lambda_real_args(la) for _, la in top_lambda_binds]
                             if top_lambda_binds and not defun_forms else None,
                             top_lambda_offsets=_top_lambda_offsets,
-                            module_reg_count=module_reg_count)
+                            module_reg_count=module_reg_count,
+                            funcobj_map=funcobj_map)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(
         func_offsets,

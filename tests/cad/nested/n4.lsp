@@ -1,0 +1,6 @@
+(defun n4-outer (x / r)
+  (setq r 0)
+  (defun n4-inner (y)
+    (setq r (+ r y)))
+  (n4-inner x)
+  r)

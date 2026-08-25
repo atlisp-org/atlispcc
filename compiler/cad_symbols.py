@@ -1111,7 +1111,7 @@ class CadSymbolCollector:
             arg_names = set(all_args)
             refs = _SeenList()
             for expr in strip_docstring(f.body):
-                self._collect_byteorder(expr, refs, arg_names)
+                self._collect_byteorder(expr, refs, arg_names, cur_locals=set(f.locals))
             seen_forced = set()
             deduped = []
             for name, force in refs:
@@ -1654,6 +1654,53 @@ class CadSymbolCollector:
                 and not self._seen(out, node.name)
             ):
                 out.append((node.name, False))
+        elif isinstance(node, Defun):
+            # 函数体内嵌套 `(defun inner ...)`（CAD 原生内嵌 DEFUN，n1-n6 实测）：
+            # 嵌套函数符号块按「参数逆序 → locals 常量 → _al-bind-alist →
+            # 体符号逆序 → 函数名」追加到 forward out——外层 `_collect_single`/
+            # `_collect_multi` 整体逆序注册后，该块落在外层体符号**最前**，
+            # 顺序为「函数名 → 体符号正向 → _al-bind-alist → locals 常量 →
+            # 参数」（n2 CAD 实测 `N2-INNER Z + _al-bind-alist Z Y X`）。
+            # 嵌套函数体引用外层参数/局部（闭包，version `(member name seen)`、
+            # n4 `(setq r (+ r y))` 的 R）时排除（由外层注册，嵌套块不再重复）。
+            _inner_all = node.args + node.optional + ([node.rest] if node.rest else [])
+            _inner_locals = list(node.locals)
+            # 内层体收集排除：内层参数 + 外层参数（arg_names）。外层**局部**
+            # 不排除——闭包引用（n3 `(member name seen)`、n4 `(+ r y)`）由嵌套
+            # 块注册 body 槽（GOLD n3 `... MEMBER SEEN NAME`、n4 `+ Y R`），
+            # 外层 locals 区再注册 _al-bind-alist + const（SEEN/R 双槽）。
+            _collect_args = set(_inner_all) | set(arg_names)
+            _inner_refs = _SeenList()
+            _inner_body = node.body
+            while len(_inner_body) > 1 and isinstance(_inner_body[0], String):
+                _inner_body = _inner_body[1:]
+            for _ie in _inner_body:
+                self._collect_byteorder(_ie, _inner_refs, _collect_args, in_quote,
+                                        cur_locals=set(_inner_locals))
+            # 参数：out 被外层整体逆序，故按正向追加（外层逆序后 = 逆序，
+            # 与普通函数参数 `reversed(all_args)` 一致——version @::pkg-deps-tree-rec
+            # `(name depth)` CAD 实测 `DEPTH NAME`）。
+            for _a in _inner_all:
+                if not self._seen(out, _a):
+                    out.append((_a, False))
+            # locals 常量 + _al-bind-alist 助手（n2 实测 const 在 _al-bind-alist 后）
+            if _inner_locals:
+                _lc = (CONST_MARK, ("LIST", tuple(("SYMBOL", _l) for _l in _inner_locals)))
+                if not self._seen(out, _lc):
+                    out.append((_lc, False))
+                if not self._seen(out, "_al-bind-alist"):
+                    out.append(("_al-bind-alist", False))
+            # 体符号：_inner_refs 为 `_collect_byteorder` 正向（Setq 值先于目标、
+            # n2 `(+ y 1)` 的 + 在 setq 目标 Z 前），该块在 out 中整体被外层
+            # 逆序——故按正向追加，外层逆序后即目标序（n2 `Z +`）。
+            for _n, _f in _inner_refs:
+                if _n == "__kwote_end__":
+                    continue
+                if not self._seen(out, _n):
+                    out.append((_n, _f))
+            # 函数名最后（外层逆序后落在最前）
+            if not self._seen(out, node.name):
+                out.append((node.name, True))
         elif isinstance(node, Setq):
             for target, value in node.pairs:
                 if value:

@@ -227,6 +227,9 @@ class CodeGenerator:
         # 复用同一槽（CAD reactor.lsp 实测两个顺序 foreach 都 SET_LOCAL 2），
         # 嵌套循环递增深度用独立槽（与 DEFUN 头 b1=argc+并发深度对应）。
         self._loop_depth = 0
+        # 函数体内嵌套 defun（`_emit_nested_defun`）深度：>0 时参数按真实
+        # 符号槽绑定/读取（嵌套参数非顶部槽）。
+        self._nested_defun_depth = 0
         self.current_func_name: str = ""
         self.current_func_args: List[str] = []
         self._tail_entry_label: str = ""
@@ -235,6 +238,8 @@ class CodeGenerator:
         self.stub_offsets: List[int] = []
         self._nested_lambdas: List[tuple] = []
         self._func_nested_lambdas: dict = {}
+        self._nested_defuns: List[tuple] = []
+        self._func_nested_defuns: dict = {}
         self._defined_funcs: set = set(defined_funcs or [])
         self._func_ref_slots: Dict[str, int] = {}
         self._module_mode: bool = False
@@ -378,6 +383,8 @@ class CodeGenerator:
         try:
             if isinstance(node, IfNode):
                 self._emit_if(buf, node)
+            elif isinstance(node, Defun):
+                self._emit_nested_defun(buf, node)
             else:
                 self._emit_expr(buf, node)
         finally:
@@ -405,7 +412,10 @@ class CodeGenerator:
                     buf.emit(encode_op_noarg(PUSH_T))
             elif self.stub_format:
                 if name in self.current_func_args and name in self.local_slots:
-                    if len(self._defined_funcs) <= 1:
+                    if self._nested_defun_depth:
+                        # 嵌套 defun 参数读取用真实符号槽（收集器分配）
+                        idx = self.symtab.get_or_add(name)
+                    elif len(self._defined_funcs) <= 1:
                         # 单函数参数读取逆序（CAD simple3/t13 实测：`+ Z Y X`、
                         # `> C B A`——源码第 i 个参数 → 槽 nsyms-1-i）。
                         idx = self.nsyms - 1 - self.local_slots[name]
@@ -522,7 +532,7 @@ class CodeGenerator:
                 # 中间 setq（SETQ_G 已消费栈顶）、中间 if（_emit_if 内部处理）、
                 # while/foreach/repeat（自带栈平衡）后均无 POP；仅普通表达式
                 # 追加 POP（规则同 generate_function 中间语句）。
-                if not isinstance(form, (IfNode, Setq, WhileNode, ForeachNode, RepeatNode, Cond)):
+                if not isinstance(form, (IfNode, Setq, WhileNode, ForeachNode, RepeatNode, Cond, Defun)):
                     buf.emit(encode_op_noarg(POP))
             if node.forms:
                 self._in_tail_context = saved_tail
@@ -555,6 +565,11 @@ class CodeGenerator:
             # 仍走 `_emit_quoted`（数据 const，`_emit_quoted` 的 LambdaNode 分支）。
             lam_idx = self._emit_nested_lambda(buf, node)
             buf.emit(encode_op_u16(PUSH_G, lam_idx))
+
+        elif isinstance(node, Defun):
+            # 函数体内嵌套 `(defun inner ...)`（含 if/cond 分支内，n6 实测）：
+            # CAD 发射内嵌 DEFUN 块 + PUSH_G/SETQ_G 注册，无值压栈（自平衡）。
+            self._emit_nested_defun(buf, node)
 
         else:
             raise NotImplementedError(f"Cannot emit expression: {type(node).__name__}")
@@ -644,11 +659,18 @@ class CodeGenerator:
                 self._func_ref_slots[name] = rep if rep >= 0 else self.symtab.add_force(name)
             idx = self._func_ref_slots[name]
         elif self.stub_format and name == self.current_func_name:
-            # 递归调用（含尾位置）：CAD 用重复符号槽
-            if name not in self._func_ref_slots:
+            # 递归调用（含尾位置）：CAD 用重复符号槽。**嵌套 defun**（函数体内
+            # `(defun inner ...)`）的递归槽已由收集器注册（嵌套块 body refs，
+            # version @::pkg-deps-tree-rec 递归 `(deps-tree-rec d ...)`），
+            # 不再 add_force 新建重复槽——否则多出符号槽（nsyms +1、CAD 无）。
+            if self._nested_defun_depth:
+                idx = self.symtab.get_or_add(name)
+            elif name not in self._func_ref_slots:
                 rep = self.symtab.next_repeat_slot(name)
                 self._func_ref_slots[name] = rep if rep >= 0 else self.symtab.add_force(name)
-            idx = self._func_ref_slots[name]
+                idx = self._func_ref_slots[name]
+            else:
+                idx = self._func_ref_slots[name]
         is_builtin = self.symtab.is_builtin(name)
         if self.stub_format and name == "command":
             # CAD 把 `(command a b ...)` 编译为每个参数一次独立的 `FUNC 1
@@ -894,7 +916,7 @@ class CodeGenerator:
                     self._in_stmt_ctx
                     and not isinstance(
                         node.then,
-                        (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond),
+                        (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond, Defun),
                     )
                     and not (_then_imm and _then_tail)
                 ):
@@ -938,7 +960,7 @@ class CodeGenerator:
                         self._in_stmt_ctx
                         and not _else_const
                         and not isinstance(
-                            node.else_expr, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond)
+                            node.else_expr, (Setq, IfNode, Progn, WhileNode, ForeachNode, RepeatNode, Cond, Defun)
                         )
                     ):
                         # 语句上下文（中间 if，值被丢弃）：else 分支末尾同样 POP 丢弃
@@ -1622,7 +1644,7 @@ class CodeGenerator:
         body = node.body
         for expr in body[:-1]:
             self._emit_stmt(buf, expr)
-            if not isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, IfNode, Cond)):
+            if not isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, IfNode, Cond, Defun)):
                 buf.emit(encode_op_noarg(POP))
         if body:
             self._emit_expr(buf, body[-1], _tail=True)
@@ -1683,8 +1705,12 @@ class CodeGenerator:
             # 参数先发射，如 t13 `PUSH_G [4],[3],[2]` = C,B,A）。
             single = len(self._defined_funcs) <= 1
             for i, arg in enumerate(args):
-                src_i = (argc - 1 - i) if single else i
-                idx = self.nsyms - argc + src_i
+                if self._nested_defun_depth:
+                    # 嵌套 defun 参数槽 = 真实符号槽（收集器分配，非顶部槽公式）
+                    idx = self.symtab.get_or_add(arg)
+                else:
+                    src_i = (argc - 1 - i) if single else i
+                    idx = self.nsyms - argc + src_i
                 buf.emit(encode_op_u16(PUSH_G, idx))
                 buf.emit(encode_op_u16(GET_LOCAL_16, i))
             buf.emit(encode_op_u16(INIT_ARGS, len(args) * 2 + 1))
@@ -1726,6 +1752,94 @@ class CodeGenerator:
             buf.emit(encode_func(1, al_idx))
             buf.emit(encode_op_noarg(POP))
 
+    def _emit_nested_defun(self, buf: BytecodeBuffer, node: Defun):
+        """发射函数体内嵌套 `(defun inner ...)`（CAD 原生内嵌 DEFUN）。
+
+        CAD n1-n6 实测布局（seg0）：
+        ``DEFUN outer; JUMP <skip>; DEFUN inner; <体>; CLEAR_ARGS; END_DEFUN;
+        <skip>: PUSH_G <inner-func-obj>; SETQ_G <inner-sym>``
+        ——内嵌 DEFUN 出现在外层函数体语句位置，JUMP 跳过（运行时由模块加载器
+        预定义，不执行）；随后 PUSH_G/SETQ_G 把符号绑定到函数对象（与模块代码
+        函数注册同协议）。嵌套函数也进函数目录（DEFCODE），故记录偏移供
+        cli.py 的 func_offsets 登记。
+        """
+        # 嵌套函数是独立函数作用域：保存并重置 codegen 状态（同 generate_function）。
+        saved_name = self.current_func_name
+        saved_args = self.current_func_args
+        saved_slots = self.local_slots
+        saved_next = self.next_slot
+        saved_loop = self._loop_depth
+        saved_tail = self._tail_entry_label
+
+        self.current_func_name = node.name
+        all_args = node.args + node.optional + ([node.rest] if node.rest else [])
+        self.current_func_args = all_args
+        self.local_slots = {}
+        self.next_slot = 0
+        self._loop_depth = 0
+        self._tail_entry_label = f"_tail_entry_{node.name}_{id(node)}"
+        # 嵌套 defun 参数按真实符号槽绑定/读取（Y@6），不走单函数
+        # `nsyms-argc+i` 顶部槽公式（外层参数 X 才在顶部）。
+        saved_nd_depth = self._nested_defun_depth
+        self._nested_defun_depth += 1
+
+        label_after = f"_ndef_{buf.pos()}_{len(self._nested_lambdas)}"
+        jmp_pos = buf.pos()
+        buf.emit(encode_op_s32(JUMP, 0))
+        buf.add_patch(jmp_pos + 1, label_after, 4)
+        nested_start = buf.pos()
+
+        self._emit_defun_header(buf, node)
+        for i, arg in enumerate(all_args):
+            self.local_slots[arg] = i
+        self.next_slot = max(self.next_slot, len(all_args))
+        self._emit_init_args(buf, all_args)
+        if self.stub_format and node.locals:
+            self._emit_al_bind_alist(buf, node)
+        body = node.body
+        while len(body) > 1 and isinstance(body[0], String):
+            body = body[1:]
+        for expr in body[:-1]:
+            self._emit_stmt(buf, expr)
+            if not self.stub_format or isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, Cond, Defun)):
+                pass
+            elif isinstance(expr, IfNode):
+                pass
+            else:
+                buf.emit(encode_op_noarg(POP))
+        if body:
+            self._emit_expr(buf, body[-1], _tail=True)
+        elif self.stub_format:
+            buf.emit(encode_op_noarg(PUSH_NIL))
+        if self.stub_format:
+            if node.args or node.locals:
+                buf.emit(encode_op_u16(CLEAR_ARGS, len(node.args) + len(node.locals)))
+        else:
+            self._emit_clear_args(buf, node.args)
+        # 嵌套函数以 END_DEFUN 收尾（非末位函数，CAD n1 实测 `16`）。
+        buf.emit(encode_op_noarg(0x16))
+        nested_end = buf.pos()
+        buf.label(label_after)
+
+        self.current_func_name = saved_name
+        self.current_func_args = saved_args
+        self.local_slots = saved_slots
+        self.next_slot = saved_next
+        self._loop_depth = saved_loop
+        self._tail_entry_label = saved_tail
+        self._nested_defun_depth = saved_nd_depth
+
+        # 记录嵌套函数（偏移范围 + 名字 + 参数 + 槽占位），cli.py 据此登记
+        # func_offsets。sym_idx/fo_idx 供 `_patch_usubr_idx` 重映射 PUSH_G。
+        sym_idx = self.symtab.get_or_add(node.name)
+        fo_idx = self.symtab.add_funcobj(node.name)
+        self._nested_defuns.append((nested_start, nested_end, node.name, all_args, sym_idx, fo_idx))
+
+        # 注册：PUSH_G <inner-func-obj>; SETQ_G <inner-sym>（CAD n1 实测
+        # `09 02 00; 06 01 00`）。函数对象槽 = 函数名第二次注册（DEFCODE）。
+        buf.emit(encode_op_u16(PUSH_G, fo_idx))
+        buf.emit(encode_op_u16(SETQ_G, sym_idx))
+
     def _emit_tail_call(self, buf: BytecodeBuffer, args: List[Node]):
         for i, arg in enumerate(args):
             if i < len(self.current_func_args):
@@ -1751,6 +1865,7 @@ class CodeGenerator:
         saved_args = self.current_func_args
         saved_label = self._tail_entry_label
         saved_nl_pos = len(self._nested_lambdas)
+        saved_nd_pos = len(self._nested_defuns)
         saved_slots = self.local_slots
         saved_next = self.next_slot
         # 每个函数独立分配局部槽：foreach/repeat 的内部槽（__foreach_list__ 等）
@@ -1814,7 +1929,7 @@ class CodeGenerator:
             # 普通表达式时保留值，追加 POP 丢弃（i18n-cad update-locale 实测
             # 内层 if-then @::load-module 调用后 `POP`）。POP 由 _emit_if 在
             # then 分支末尾（JUMP 前）内部处理，此处对 if 一律跳过，避免二次 POP。
-            if not self.stub_format or isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, Cond)):
+            if not self.stub_format or isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, Cond, Defun)):
                 pass
             elif isinstance(expr, IfNode):
                 pass
@@ -1846,6 +1961,8 @@ class CodeGenerator:
         self._func_nested_lambdas[func.name] = [n for n in self._nested_lambdas if saved_nl_pos <= n[0]]
         del self._nested_lambdas[saved_nl_pos:]
 
+        self._func_nested_defuns[func.name] = [n for n in self._nested_defuns if saved_nd_pos <= n[0]]
+        del self._nested_defuns[saved_nd_pos:]
         return bytes(buf.data), start_offset
 
     def _generate_quoted_defun(self, func: Defun) -> Tuple[bytes, int]:

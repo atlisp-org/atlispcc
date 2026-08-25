@@ -102,6 +102,19 @@ class SymbolTable:
         self.entries.append(('SYMBOL', name))
         return idx
 
+    def add_funcobj(self, name: str) -> int:
+        """注册函数对象槽（嵌套 `(defun inner ...)` 的 PUSH_G 引用目标）。
+
+        函数对象槽不参与资源段符号注册（由 DEFCODE 发射时登记），仅作 codegen
+        占位索引，供 `_patch_usubr_idx` 重映射为最终槽。entry 类型 FUNCOBJ，
+        resource_builder 跳过符号块发射。
+        """
+        name = self._normalize_name(name)
+        idx = len(self.entries)
+        self.entries.append(('FUNCOBJ', name))
+        return idx
+
+
     def repeat_slots(self, name: str) -> List[int]:
         """返回 name 出现的所有符号槽（含重复）。"""
         return [i for i, (t, v) in enumerate(self.entries) if t == 'SYMBOL' and str(v) == str(name)]

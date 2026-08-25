@@ -339,6 +339,18 @@ CAD_GOLDEN_PAIRS = [
     # 纯顶层 `(setq X (lambda ...))` 多 `-lambda-`（setq-lambda.lsp）：seg0 完整
     # compact stub + 函数目录/第二区符号/fg 表布局 + setq 绑定协议（2026-08-15）。
     ('setq-lambda.lsp', 'cad/setq_lambda_cad.fas'),
+    # 函数体内嵌套 `(defun inner ...)`（CAD 原生内嵌 DEFUN，2026-08-25）：
+    # n1 最简 / n2 嵌套参数+locals / n3 闭包引用外层局部 / n4 嵌套位于体中段 /
+    # n5 多层嵌套 / n6 条件内嵌套。源与 golden 均在 tests/cad/nested/。
+    ('cad/nested/n1.lsp', 'cad/nested/n1.fas'),
+    ('cad/nested/n2.lsp', 'cad/nested/n2.fas'),
+    ('cad/nested/n3.lsp', 'cad/nested/n3.fas'),
+    ('cad/nested/n4.lsp', 'cad/nested/n4.fas'),
+    ('cad/nested/n5.lsp', 'cad/nested/n5.fas'),
+    ('cad/nested/n6.lsp', 'cad/nested/n6.fas'),
+    # 非嵌套基线（s1 单函数 / s2 嵌套引用外层局部）对照。
+    ('cad/nested/s1.lsp', 'cad/nested/s1.fas'),
+    ('cad/nested/s2.lsp', 'cad/nested/s2.fas'),
     # NOTE 2026-08-18：`(set 'X (lambda ...))` + in-package/use-package 的纯顶层
     # 回归（bootstrap.lsp）暂缺——原 fixture 未入库（不可恢复），重建版与 CAD
     # 第二区符号槽序有差异（tail-call/共享参数的槽位规则未完全逆向，setq-lambda

@@ -1,0 +1,5 @@
+(defun s2 (x / y)
+  (setq y (* x 2))
+  (defun s2i (a)
+    (+ a y))
+  (s2i y))

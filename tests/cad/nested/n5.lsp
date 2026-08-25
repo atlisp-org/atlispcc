@@ -1,0 +1,6 @@
+(defun n5-outer ()
+  (defun n5-mid ()
+    (defun n5-inner ()
+      t)
+    (n5-inner))
+  (n5-mid))

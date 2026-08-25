@@ -1,0 +1,5 @@
+(defun n2-outer (x)
+  (defun n2-inner (y / z)
+    (setq z (+ y 1))
+    z)
+  (n2-inner x))

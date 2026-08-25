@@ -702,10 +702,20 @@ class ResourceBuilder:
                 if i < skip_first - 1:
                     i += 1
                     continue
+                if entry_type == "FUNCOBJ":
+                    # 函数对象占位（嵌套 `(defun inner ...)` 的 PUSH_G 目标）：
+                    # 不进符号块——由 DEFCODE 发射时登记为 func-obj 符号槽。
+                    i += 1
+                    continue
                 if entry_type == "SYMBOL":
-                    if nested_offs and func_offsets.get(str(entry_val)) in nested_offs:
+                    if (
+                        nested_offs
+                        and func_offsets.get(str(entry_val)) in nested_offs
+                        and ResourceBuilder._is_lambda_key(str(entry_val))
+                    ):
                         # kwote 内嵌 `-lambda-`：仅经资源流前置 DEFCODE 注册
-                        # （ref i18n-cad 实测），不进符号块。
+                        # （ref i18n-cad 实测），不进符号块。函数体内嵌套
+                        # `(defun inner ...)`（真实名字）仍需符号槽。
                         i += 1
                         continue
                     if str(entry_val) in ("_al-bind-alist", "kwote", "ads-cmd"):
@@ -751,14 +761,13 @@ class ResourceBuilder:
             for entry_type, entry_val in entries[1:]:
                 self._push_entry(out, (entry_type, entry_val))
         if stub_format and nested_offs:
-            # kwote/立即应用内嵌 `-lambda-`：在 GVARINIT(0, nsyms) 前置 DEFCODE，
-            # 使大 GVARINIT 的 module_id 解出 FUNC 而非裸符号
-            # （ref i18n-cad 实测）：GET_LOCAL 0 + INT32 offset +
-            # SYMBOL -lambda- + DEFCODE。每个内嵌 lambda 独立 DEFCODE，
-            # 按 func_offsets 键顺序发射（`-lambda-#N` 出现序 = nested_list 序；
-            # CAD safe-eval 实测 fn(137) 先、ok-tail(1308) 后 = 源码序正序；
-            # 纯 kwote 文件 nested_list 为 offset 序，键顺序即 offset 序，等价
-            # 旧 offset 逆序。先发射的 lambda 被 GVARINIT 后弹出分配更高槽）。
+            # kwote/立即应用内嵌 `-lambda-` + 函数体内嵌套 `(defun inner ...)`：
+            # 在 GVARINIT(0, nsyms) 前置 DEFCODE（CAD n1 实测内嵌 DEFUN 的
+            # DEFCODE 在函数注册 GVARINIT 之前、宿主函数 DEFCODE 之后——n1
+            # `5b N1-INNER; 5c0000; 32 0a; 5b N1-INNER; 3a; 5c0000; GVARINIT;
+            # 5c0000; 32 00; 5b N1-OUTER; 3a 01`）。`-lambda-` 按 func_offsets
+            # 键顺序；嵌套 defun 按 seg0 offset **升序**（n5 MID@10 先、
+            # INNER@20 后）。
             lam_offsets = [
                 off for k, off in func_offsets.items() if ResourceBuilder._is_lambda_key(k)
             ]
@@ -768,6 +777,17 @@ class ResourceBuilder:
                 else:
                     out += b"\x5c\x00\x00" + res_int32(off)
                 out += b"\x5b" + self._enc("-lambda-") + b"\x00\x00"
+                out += b"\x3a"
+            nd_offsets = sorted(
+                (off, k) for k, off in func_offsets.items()
+                if not ResourceBuilder._is_lambda_key(k) and off in nested_offs
+            )
+            for off, nd_name in nd_offsets:
+                if -128 <= off <= 127:
+                    out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
+                else:
+                    out += b"\x5c\x00\x00" + res_int32(off)
+                out += b"\x5b" + self._enc_sym(nd_name) + b"\x00\x00"
                 out += b"\x3a"
         out += b"\x5c\x00\x00"
         if stub_format:
@@ -785,7 +805,7 @@ class ResourceBuilder:
         if not func_names:
             name0 = self._entry_name(entries[0])
             func_names = [name0]
-        # kwote 内嵌 `-lambda-` 已前置 DEFCODE 注册，此处剔除避免重复。
+        # kwote 内嵌 `-lambda-` 与嵌套 defun 已前置 DEFCODE 注册，此处剔除避免重复。
         if nested_offs:
             func_names = [k for k in func_names if func_offsets.get(k) not in nested_offs]
         if stub_format:
