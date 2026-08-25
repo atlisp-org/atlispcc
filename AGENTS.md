@@ -994,10 +994,19 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - **回归**：`tests/cad/nested/n1-n6 + s1/s2`（CAD golden 2026-08-25 生成）
   锁入 `test_byte_identity_with_cad_golden`（8 用例）。kernel **60/67** 无回归
   （version.lsp 2026-08-25 转正：前置 DEFCODE 降序/父前 + func-obj 槽重映射 +
-  kwote/STRING 槽序）；string-utils 12/13 一致（剩 2 符号差：嵌套 s2la 名字=外层
-  `/ 局部` 影子的递归槽）、dialog 11/14、panel 17/31——残余 DIFF 为符号槽序
-  边角，部分为历史遗留（version @::prefetch-pkg-cache 的 kwote const 序非嵌套
-  相关）。
+  kwote/STRING 槽序）。
+- **2026-08-26 进展**：setup 顶层 kwote lambda（`(if @::*uris* (mapcar
+  (function (lambda (x) ...)) ...))` 调用实参）的 `-lambda-` DEFUN 发射进 seg0
+  （cli.py seg0 循环源码序交错，`_is_top_lambda_bind` 跳过 setq-lambda 绑定，
+  net/wget 等纯顶层文件不重复）；nsyms/seg0 全对齐（166/3062）。**残余**：符号
+  槽序（kwote lambda 体符号归属——`_form_read_target` 按 const 处理 kwote lambda
+  致 `_owner_of` -1，递归体修复与外部函数归属冲突；collector interleave
+  prepend 有 nsyms +1 副作用，已回退）。
+- string-utils 12/13 一致（剩 2 符号差：嵌套 s2la 名字=外层 `/ 局部` 影子的
+  递归槽——codegen `_nested_shadowing` 递归 add_force 已做，collector 需把
+  递归槽放体符号组末尾位置 70，绕过 `_seen`/`intra_dedup` 双去重）。
+  dialog 11/14、panel 17/31——残余 DIFF 为符号槽序边角，部分为历史遗留
+  （version @::prefetch-pkg-cache 的 kwote const 序非嵌套相关）。
 
 ### 已知限制
 
