@@ -765,9 +765,21 @@ class ResourceBuilder:
             # 在 GVARINIT(0, nsyms) 前置 DEFCODE（CAD n1 实测内嵌 DEFUN 的
             # DEFCODE 在函数注册 GVARINIT 之前、宿主函数 DEFCODE 之后——n1
             # `5b N1-INNER; 5c0000; 32 0a; 5b N1-INNER; 3a; 5c0000; GVARINIT;
-            # 5c0000; 32 00; 5b N1-OUTER; 3a 01`）。`-lambda-` 按 func_offsets
-            # 键顺序；嵌套 defun 按 seg0 offset **升序**（n5 MID@10 先、
-            # INNER@20 后）。
+            # 5c0000; 32 00; 5b N1-OUTER; 3a 01`）。**嵌套 defun 在前、`-lambda-`
+            # 在后**（version CAD 实测 `REV@1491, DEPS@1205, -lambda-×3`），各按
+            # func_offsets 键序发射（func_offsets 嵌套键已按逆 codegen 发射序
+            # 排列：n5 MID 先 INNER 后、version REV 先 DEPS 后）。
+            nd_offsets = [
+                (off, k) for k, off in func_offsets.items()
+                if not ResourceBuilder._is_lambda_key(k) and off in nested_offs
+            ]
+            for off, nd_name in nd_offsets:
+                if -128 <= off <= 127:
+                    out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
+                else:
+                    out += b"\x5c\x00\x00" + res_int32(off)
+                out += b"\x5b" + self._enc_sym(nd_name) + b"\x00\x00"
+                out += b"\x3a"
             lam_offsets = [
                 off for k, off in func_offsets.items() if ResourceBuilder._is_lambda_key(k)
             ]
@@ -777,17 +789,6 @@ class ResourceBuilder:
                 else:
                     out += b"\x5c\x00\x00" + res_int32(off)
                 out += b"\x5b" + self._enc("-lambda-") + b"\x00\x00"
-                out += b"\x3a"
-            nd_offsets = sorted(
-                (off, k) for k, off in func_offsets.items()
-                if not ResourceBuilder._is_lambda_key(k) and off in nested_offs
-            )
-            for off, nd_name in nd_offsets:
-                if -128 <= off <= 127:
-                    out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
-                else:
-                    out += b"\x5c\x00\x00" + res_int32(off)
-                out += b"\x5b" + self._enc_sym(nd_name) + b"\x00\x00"
                 out += b"\x3a"
         out += b"\x5c\x00\x00"
         if stub_format:

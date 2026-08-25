@@ -995,6 +995,17 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     _arg_stack: list = []
     for inst in insts:
         new_idx: Optional[int] = None
+        # 嵌套 `(defun inner ...)` 注册 PUSH_G <func-obj>：funcobj_map 把
+        # codegen 的 FUNCOBJ 占位槽重映射为资源流 func-obj 槽（前置 DEFCODE
+        # 位置，`nsyms - n_pre + pos`）。先于 gvar_map 处理（func-obj 不是
+        # 普通符号槽）。
+        if funcobj_map and inst.op_name == "PUSH_G" and inst.size == 3 and inst.operands:
+            _foi0 = inst.operands[0]
+            if _foi0 in funcobj_map:
+                _ni = funcobj_map[_foi0]
+                if 0 <= _ni <= 0xFFFF:
+                    out += bytes([0x09, _ni & 0xFF, (_ni >> 8) & 0xFF])
+                    continue
         if inst.op_name == "DEFUN":
             _arg_stack.append((cur_args, arg_i))
             fname = name_by_offset.get(inst.offset)
@@ -2962,27 +2973,49 @@ def cmd_compile(
             _fnd_seen.add((_nkey, n_start))
             _fnd_work.append((_nkey, n_start))
     if _fnd_seen:
-        # 嵌套 defun 键整体移到顶层函数之后、按 offset 降序（保证
-        # reversed(func_offsets) 的 DEFCODE 发射序 = codegen 内嵌发射序）。
+        # **func_offsets 键序（嵌套 defun）**：整体移到顶层函数之后，按
+        # **FUNCOBJ 添加序（codegen 发射序）逆序**排列——CAD 前置 DEFCODE
+        # 发射序 = func_offsets 键序 = 逆 codegen 发射序。n5（codegen 发射序
+        # inner→mid，逆序 = [mid, inner] → 前置 DEFCODE MID 先 INNER 后）；
+        # version（@::pkg-deps-tree 先于 @::pkg-reverse-deps-tree 发射 →
+        # 逆序 = [rev, deps] → REV 先 DEPS 后）。不能用 offset 降序（n5 与
+        # version 方向相反）。
         _top_keys = [k for k in func_offsets if func_offsets[k] not in dict(_fnd_seen).values()]
-        _nested_sorted = sorted(_fnd_seen, key=lambda x: x[1], reverse=True)
-        func_offsets = {k: func_offsets[k] for k in _top_keys}
-        for _nk, _no in _nested_sorted:
-            func_offsets[_nk] = _no
-        # **func-obj 槽重映射**：codegen 的 FUNCOBJ 占位槽按发射序分配
-        # （n5 内层 inner 先于 mid），而资源流 func-obj 槽 = base + DEFCODE
-        # 前置发射序（offset **升序**，mid 先 inner 后 → mid@4/inner@5）。
-        # 构建 {codegen_fo_idx: 最终 func-obj 槽} 供 `_patch_usubr_idx` 重映射
-        # PUSH_G。base = 非 FUNCOBJ 符号数；pos = offset 升序排名。
+        _fo_add_order = [
+            e[1] for e in symtab.entries
+            if isinstance(e, tuple) and len(e) == 2 and e[0] == "FUNCOBJ"
+        ]
         _fo_by_name = {}
         for _name, _off in func_offsets.items():
             for _fr in codegen._func_nested_defuns.get(_name, []):
                 _fo_by_name.setdefault(_fr[2], _fr[5])
+        # 逆 FUNCOBJ 添加序的嵌套键（只取 _fnd_seen 中出现的名字）。
+        _nested_order = [
+            n for n in reversed(_fo_add_order)
+            if any(k == n for k, _ in _fnd_seen)
+        ]
+        for _nk in list(dict(_fnd_seen)):
+            if _nk not in _nested_order:
+                _nested_order.append(_nk)
+        func_offsets = {k: func_offsets[k] for k in _top_keys}
+        for _nk in _nested_order:
+            for _ok, _oo in _fnd_seen:
+                if _ok == _nk:
+                    func_offsets[_nk] = _oo
+                    break
+        # **func-obj 槽重映射**：codegen 的 FUNCOBJ 占位槽（按发射序分配）→
+        # 资源流 func-obj 槽。前置 DEFCODE（嵌套 defun + `-lambda-`）的函数
+        # 对象槽 = `nsyms - n_pre + pos`（n5 nsyms=6、n_pre=2 → MID@4/INNER@5；
+        # version nsyms=124、n_pre=5 → REV@119/DEPS@120；CAD 实测 PUSH_G 操作数）。
+        # pos = func_offsets 键序（嵌套在前、-lambda- 在后）。
         _n_funcobj = sum(1 for _e in symtab.entries if isinstance(_e, tuple) and _e and _e[0] == "FUNCOBJ")
-        _fo_base = len(symtab.entries) - _n_funcobj
-        _fo_asc = sorted(_fnd_seen, key=lambda x: x[1])  # offset 升序
+        _nsyms_now = len(symtab.entries) - (len(defun_forms) + top_level_count) + 1
+        _n_pre = len(_nested_order) + sum(
+            1 for k in func_offsets.keys() if str(k) == "-lambda-" or str(k).startswith("-lambda-#")
+        )
+        _fo_base = _nsyms_now - _n_pre
         funcobj_map = {}
-        for _pos, (_nk, _no) in enumerate(_fo_asc):
+        for _pos, _nk in enumerate(_nested_order):
             _foi = _fo_by_name.get(_nk)
             if _foi is not None:
                 funcobj_map[_foi] = _fo_base + _pos

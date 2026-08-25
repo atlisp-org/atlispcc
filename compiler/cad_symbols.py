@@ -737,6 +737,15 @@ class CadSymbolCollector:
                     if _caller is not None:
                         for _j, (_m, _) in enumerate(_rev):
                             if _m == _caller:
+                                # kwote lambda 是调用**首参**、调用者后续引用数据
+                                # 参数（const，version `(vl-remove-if kwote '("base"
+                                # ...))` 实测）时：CAD 把 const 注册在 kwote 块**之前**
+                                # ——插入点推进到调用者后的 const 参数之后。
+                                while (
+                                    _j + 1 < len(_rev)
+                                    and is_const_entry(_rev[_j + 1][0])
+                                ):
+                                    _j += 1
                                 _rev = _rev[: _j + 1] + _pre + _body + _rev[_j + 1 :]
                                 break
                         else:
