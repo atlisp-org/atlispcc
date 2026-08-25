@@ -255,7 +255,8 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   语句 + 80 kwote 回调）编译产物在 CAD 真机**模块代码完整执行、功能全部可用**
   （`@::safe-eval`/`define-config-typed`/`@::compat1` 等正常）。关键修复：
   - 顶层 `(progn ...)` 展开、条件/嵌套 defun → `(setq f '(lambda ...))`、
-    多 kwote 改写（含 Cond 分支与嵌套递归）
+    多 kwote 改写（含 Cond 分支与嵌套递归；函数体内嵌套 defun 2026-08-25
+    起改走 `_emit_nested_defun` 原生内嵌 DEFUN，见「嵌套 defun 原生编译」）
   - **commands + 顶层混合** gvar 槽重映射（`compiler/_gvar_map.py` 解析 seg1
     模块注册段；`_offset_slots` 二次生成模块代码按实际槽位修正符号引用）
   - **大文件 USUBR/FUNC 宽格式**：符号槽 >255 用 5 字节 USUBR
@@ -291,11 +292,11 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
       `~/@lisp/@lisp_u_cad.fas` **非 byte-identical**（nsyms 2670 vs 2610、
       seg0 89437 vs 85008、res 105640 vs 113819），差异为历史遗留（改动前
       即存在）。来源：混合文件（defun+顶层+大量 kwote）的复杂场景——嵌套
-      defun（CAD 原生内嵌 DEFUN，我们 `_lower_nested_defuns` 降级 setq-lambda）、
-      引用数据内 lambda（`'(lambda ...)` CAD 提取内嵌函数 + EVAL 组装）、
-      `-lambda-` SUBR 未实现（KNOWN_ISSUES）。**功能验证通过**（模块代码
-      完整执行、核心函数可调用），byte-identity 未达成。含变参函数的文件
-      同理无法整文件 byte-identity（CAD 不支持变参）。
+      defun（**2026-08-25 已原生支持**：`_emit_nested_defun` 发射 CAD 内嵌
+      DEFUN，见「嵌套 defun 原生编译」）、引用数据内 lambda（`'(lambda ...)`
+      CAD 提取内嵌函数 + EVAL 组装）、`-lambda-` SUBR 未实现（KNOWN_ISSUES）。
+      **功能验证通过**（模块代码完整执行、核心函数可调用），byte-identity
+      未达成。含变参函数的文件同理无法整文件 byte-identity（CAD 不支持变参）。
 - i18n 混合模式拆件 p01-p07 全部 byte-identity（`tests/cad/i18n_split/`，seg0+seg1+nsyms
   对齐 CAD golden，2026-08-06）✅
   - p04-p07 关键修复：DUP 插入按真实 SETQ_G 指令定位（不碰 USUBR 的 0x06 索引字节）；
@@ -964,6 +965,38 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
      test_compiler_output/test_compile_decompile/test_symbol_table 134 passed。
 - 工作流：`python scripts/mcp_cad.py eval "(vlisp-compile 'st <in> <out>)"`
   （模式 `'st`，CAD 文档打开时才可编译；路径用正斜杠）
+
+### 嵌套 defun 原生编译（2026-08-25，P0-A）
+
+函数体内 `(defun inner ...)` 不再由 `_lower_nested_defuns` 降级为 setq-lambda
+数据，而是发射 CAD 原生内嵌 DEFUN：
+
+- **seg0 布局**（n1-n6 CAD 实测）：`DEFUN outer; [体]; JUMP <skip>; DEFUN inner;
+  <体>; CLEAR_ARGS; END_DEFUN; <skip>: PUSH_G <inner-func-obj>; SETQ_G <inner-sym>`
+  ——内嵌 DEFUN 出现在外层函数体语句位置，JUMP 跳过（运行时由模块加载器
+  预定义）；注册 `PUSH_G/SETQ_G` 把符号绑定到函数对象。嵌套函数也进函数目录
+  （DEFCODE 前置注册，offset 升序：n5 MID@10 先 INNER@20 后）。
+- **codegen**（`codegen.py _emit_nested_defun`）：JUMP + DEFUN 块 + 注册；
+  嵌套参数按真实符号槽绑定/读取（`_nested_defun_depth` 标志，非单函数顶部槽
+  公式）；嵌套**递归**不 add_force 重复槽（收集器已注册嵌套块 body refs，
+  version @::pkg-deps-tree-rec 修复）。defun-q（`(defun-q ...)`）嵌套仍走旧
+  setq-lambda 路径（n5b 样本，待对齐）。
+- **符号收集**（`cad_symbols.py _collect_byteorder` Defun 分支）：嵌套块按
+  「函数名 → 体符号正向 → _al-bind-alist → locals 常量 → 参数」注册（外层
+  整体逆序后落在外层体符号最前）；闭包引用外层局部**不排除**（n3 `(member
+  name seen)` 的 SEEN 由嵌套块注册 body 槽 + 外层 locals 区 const 双槽）；
+  多参数嵌套参数逆序（version `(name depth)` → `DEPTH NAME`）。
+- **func-obj 槽**（`cli.py funcobj_map` + `symbol_table.add_funcobj`）：codegen
+  FUNCOBJ 占位槽（发射序 = 内层先于外层）→ `_patch_usubr_idx` 重映射为
+  最终槽（base + DEFCODE 前置 offset **升序**排名，n5 mid/inner 互换修复）。
+- **resource_builder**：嵌套 defun 前置 DEFCODE（offset 升序，`-lambda-` 之后）；
+  FUNCOBJ 跳过符号块发射；主 DEFCODE 区剔除嵌套（同 `-lambda-`）。
+- **回归**：`tests/cad/nested/n1-n6 + s1/s2`（CAD golden 2026-08-25 生成）
+  锁入 `test_byte_identity_with_cad_golden`（8 用例）。kernel 59/67 无回归。
+  version.lsp **14/14 函数逐字节一致**（nsyms/res 对齐）；string-utils 12/13、
+  dialog 11/14、panel 17/31——残余 DIFF 为符号槽序边角（kwote/STRING 放置、
+  递归/-lambda 序），部分为历史遗留（version @::prefetch-pkg-cache 的 kwote
+  const 序非嵌套相关）。
 
 ### 已知限制
 
