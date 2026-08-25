@@ -230,6 +230,8 @@ class CodeGenerator:
         # 函数体内嵌套 defun（`_emit_nested_defun`）深度：>0 时参数按真实
         # 符号槽绑定/读取（嵌套参数非顶部槽）。
         self._nested_defun_depth = 0
+        # 嵌套函数名兼作外层 `/ 局部`（影子）标志（string-utils s2la）
+        self._nested_shadowing = False
         self.current_func_name: str = ""
         self.current_func_args: List[str] = []
         self._tail_entry_label: str = ""
@@ -663,8 +665,15 @@ class CodeGenerator:
             # `(defun inner ...)`）的递归槽已由收集器注册（嵌套块 body refs，
             # version @::pkg-deps-tree-rec 递归 `(deps-tree-rec d ...)`），
             # 不再 add_force 新建重复槽——否则多出符号槽（nsyms +1、CAD 无）。
+            # **例外**：嵌套名兼作外层 `/ 局部`（影子，string-utils `s2la`）时
+            # CAD 独立注册递归槽（不并入名字槽），此时 add_force。
             if self._nested_defun_depth:
-                idx = self.symtab.get_or_add(name)
+                if self._nested_shadowing:
+                    rep = self.symtab.next_repeat_slot(name)
+                    self._func_ref_slots[name] = rep if rep >= 0 else self.symtab.add_force(name)
+                    idx = self._func_ref_slots[name]
+                else:
+                    idx = self.symtab.get_or_add(name)
             elif name not in self._func_ref_slots:
                 rep = self.symtab.next_repeat_slot(name)
                 self._func_ref_slots[name] = rep if rep >= 0 else self.symtab.add_force(name)
@@ -1782,6 +1791,10 @@ class CodeGenerator:
         # `nsyms-argc+i` 顶部槽公式（外层参数 X 才在顶部）。
         saved_nd_depth = self._nested_defun_depth
         self._nested_defun_depth += 1
+        # 嵌套函数名兼作外层 `/ 局部`（影子，string-utils `(defun s2la ...)`
+        # 在外层 `/ s2la` 内）：CAD 为递归独立注册符号槽（递归不并入名字槽）。
+        saved_nd_shadow = self._nested_shadowing
+        self._nested_shadowing = node.name in saved_slots
 
         label_after = f"_ndef_{buf.pos()}_{len(self._nested_lambdas)}"
         jmp_pos = buf.pos()
@@ -1828,6 +1841,7 @@ class CodeGenerator:
         self._loop_depth = saved_loop
         self._tail_entry_label = saved_tail
         self._nested_defun_depth = saved_nd_depth
+        self._nested_shadowing = saved_nd_shadow
 
         # 记录嵌套函数（偏移范围 + 名字 + 参数 + 槽占位），cli.py 据此登记
         # func_offsets。sym_idx/fo_idx 供 `_patch_usubr_idx` 重映射 PUSH_G。
