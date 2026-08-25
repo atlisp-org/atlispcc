@@ -762,33 +762,36 @@ class ResourceBuilder:
                 self._push_entry(out, (entry_type, entry_val))
         if stub_format and nested_offs:
             # kwote/立即应用内嵌 `-lambda-` + 函数体内嵌套 `(defun inner ...)`：
-            # 在 GVARINIT(0, nsyms) 前置 DEFCODE（CAD n1 实测内嵌 DEFUN 的
-            # DEFCODE 在函数注册 GVARINIT 之前、宿主函数 DEFCODE 之后——n1
-            # `5b N1-INNER; 5c0000; 32 0a; 5b N1-INNER; 3a; 5c0000; GVARINIT;
-            # 5c0000; 32 00; 5b N1-OUTER; 3a 01`）。**嵌套 defun 在前、`-lambda-`
-            # 在后**（version CAD 实测 `REV@1491, DEPS@1205, -lambda-×3`），各按
-            # func_offsets 键序发射（func_offsets 嵌套键已按逆 codegen 发射序
-            # 排列：n5 MID 先 INNER 后、version REV 先 DEPS 后）。
-            nd_offsets = [
-                (off, k) for k, off in func_offsets.items()
-                if not ResourceBuilder._is_lambda_key(k) and off in nested_offs
-            ]
-            for off, nd_name in nd_offsets:
+            # 在 GVARINIT(0, nsyms) 前置 DEFCODE。CAD 实测**按 seg0 offset 降序**
+            # 发射（version `REV@1491, DEPS@1205, -lambda-@1089, 248, 128`；
+            # string-utils `-lambda-@1740, 816, S2LA@638`），先发射的 DEFCODE
+            # 被 GVARINIT 后弹出分配更高槽。**父-子链**（n5 MID 含 INNER）例外：
+            # 父函数块在其子块之前（MID@10 先 INNER@20 后），不受降序影响。
+            nd_offsets = sorted(
+                ((off, k) for k, off in func_offsets.items() if off in nested_offs),
+                reverse=True,
+            )
+            # 父子链修正：若后一个（offset 更小）的 span 包含前一个（offset
+            # 更大）的 DEFUN 起始（A 是 B 的父函数），父排前（n5 MID@10 含
+            # INNER@20 → MID 先）。否则保持降序。
+            for _ai in range(len(nd_offsets)):
+                for _bi in range(_ai + 1, len(nd_offsets)):
+                    _aoff, _aname = nd_offsets[_ai]
+                    _boff, _bname = nd_offsets[_bi]
+                    _bend = nested_ends.get(_boff)
+                    if _bend and _boff < _aoff < _bend:
+                        nd_offsets[_ai], nd_offsets[_bi] = nd_offsets[_bi], nd_offsets[_ai]
+            for off, fname in nd_offsets:
                 if -128 <= off <= 127:
                     out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
                 else:
                     out += b"\x5c\x00\x00" + res_int32(off)
-                out += b"\x5b" + self._enc_sym(nd_name) + b"\x00\x00"
-                out += b"\x3a"
-            lam_offsets = [
-                off for k, off in func_offsets.items() if ResourceBuilder._is_lambda_key(k)
-            ]
-            for off in lam_offsets:
-                if -128 <= off <= 127:
-                    out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
-                else:
-                    out += b"\x5c\x00\x00" + res_int32(off)
-                out += b"\x5b" + self._enc("-lambda-") + b"\x00\x00"
+                name_enc = (
+                    self._enc("-lambda-")
+                    if ResourceBuilder._is_lambda_key(fname)
+                    else self._enc_sym(fname)
+                )
+                out += b"\x5b" + name_enc + b"\x00\x00"
                 out += b"\x3a"
         out += b"\x5c\x00\x00"
         if stub_format:

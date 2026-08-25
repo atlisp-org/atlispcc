@@ -3004,21 +3004,33 @@ def cmd_compile(
                     func_offsets[_nk] = _oo
                     break
         # **func-obj 槽重映射**：codegen 的 FUNCOBJ 占位槽（按发射序分配）→
-        # 资源流 func-obj 槽。前置 DEFCODE（嵌套 defun + `-lambda-`）的函数
-        # 对象槽 = `nsyms - n_pre + pos`（n5 nsyms=6、n_pre=2 → MID@4/INNER@5；
-        # version nsyms=124、n_pre=5 → REV@119/DEPS@120；CAD 实测 PUSH_G 操作数）。
-        # pos = func_offsets 键序（嵌套在前、-lambda- 在后）。
+        # 资源流 func-obj 槽。前置 DEFCODE（嵌套 defun + `-lambda-`）按 seg0
+        # offset **降序**发射（父-子链父在前），先发射者被 GVARINIT 弹出分配
+        # 更高槽——func-obj 槽 = `nsyms - n_pre + pos`（pos = 降序排名，
+        # string-utils s2la 在 [lambda, lambda, s2la] pos=2）。
         _n_funcobj = sum(1 for _e in symtab.entries if isinstance(_e, tuple) and _e and _e[0] == "FUNCOBJ")
         _nsyms_now = len(symtab.entries) - (len(defun_forms) + top_level_count) + 1
-        _n_pre = len(_nested_order) + sum(
-            1 for k in func_offsets.keys() if str(k) == "-lambda-" or str(k).startswith("-lambda-#")
-        )
+        _pre_all = [
+            (off, k) for k, off in func_offsets.items()
+            if off in nested_ends
+        ]
+        _pre_all.sort(key=lambda x: x[0], reverse=True)
+        # 父-子链修正（同 resource_builder）
+        for _ai in range(len(_pre_all)):
+            for _bi in range(_ai + 1, len(_pre_all)):
+                _aoff = _pre_all[_ai][0]
+                _boff = _pre_all[_bi][0]
+                _bend = nested_ends.get(_boff)
+                if _bend and _boff < _aoff < _bend:
+                    _pre_all[_ai], _pre_all[_bi] = _pre_all[_bi], _pre_all[_ai]
+        _fo_pos = {k: i for i, (_off, k) in enumerate(_pre_all)}
+        _n_pre = len(_pre_all)
         _fo_base = _nsyms_now - _n_pre
         funcobj_map = {}
-        for _pos, _nk in enumerate(_nested_order):
+        for _nk, _no in _fnd_seen:
             _foi = _fo_by_name.get(_nk)
-            if _foi is not None:
-                funcobj_map[_foi] = _fo_base + _pos
+            if _foi is not None and _nk in _fo_pos:
+                funcobj_map[_foi] = _fo_base + _fo_pos[_nk]
     else:
         funcobj_map = {}
 
