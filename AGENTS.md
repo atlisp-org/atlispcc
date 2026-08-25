@@ -992,11 +992,12 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - **resource_builder**：嵌套 defun 前置 DEFCODE（offset 升序，`-lambda-` 之后）；
   FUNCOBJ 跳过符号块发射；主 DEFCODE 区剔除嵌套（同 `-lambda-`）。
 - **回归**：`tests/cad/nested/n1-n6 + s1/s2`（CAD golden 2026-08-25 生成）
-  锁入 `test_byte_identity_with_cad_golden`（8 用例）。kernel 59/67 无回归。
-  version.lsp **14/14 函数逐字节一致**（nsyms/res 对齐）；string-utils 12/13、
-  dialog 11/14、panel 17/31——残余 DIFF 为符号槽序边角（kwote/STRING 放置、
-  递归/-lambda 序），部分为历史遗留（version @::prefetch-pkg-cache 的 kwote
-  const 序非嵌套相关）。
+  锁入 `test_byte_identity_with_cad_golden`（8 用例）。kernel **60/67** 无回归
+  （version.lsp 2026-08-25 转正：前置 DEFCODE 降序/父前 + func-obj 槽重映射 +
+  kwote/STRING 槽序）；string-utils 12/13 一致（剩 2 符号差：嵌套 s2la 名字=外层
+  `/ 局部` 影子的递归槽）、dialog 11/14、panel 17/31——残余 DIFF 为符号槽序
+  边角，部分为历史遗留（version @::prefetch-pkg-cache 的 kwote const 序非嵌套
+  相关）。
 
 ### 已知限制
 
