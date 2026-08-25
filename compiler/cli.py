@@ -3015,14 +3015,31 @@ def cmd_compile(
             if off in nested_ends
         ]
         _pre_all.sort(key=lambda x: x[0], reverse=True)
-        # 父-子链修正（同 resource_builder）
-        for _ai in range(len(_pre_all)):
-            for _bi in range(_ai + 1, len(_pre_all)):
-                _aoff = _pre_all[_ai][0]
-                _boff = _pre_all[_bi][0]
-                _bend = nested_ends.get(_boff)
-                if _bend and _boff < _aoff < _bend:
-                    _pre_all[_ai], _pre_all[_bi] = _pre_all[_bi], _pre_all[_ai]
+        _has_real_nested = any(
+            not (str(k) == "-lambda-" or str(k).startswith("-lambda-#")) for _o, k in _pre_all
+        )
+        if not _has_real_nested:
+            # 仅 `-lambda-`：func_offsets 键序
+            _key_order = {k: i for i, (k, _o) in enumerate(
+                (k, off) for k, off in func_offsets.items() if off in nested_ends
+            )}
+            _pre_all.sort(key=lambda x: _key_order.get(x[1], 10**9))
+        else:
+            # 父-子链修正（同 resource_builder，仅真实嵌套 defun）
+            for _pi, (_poff, _pname) in enumerate(list(_pre_all)):
+                if str(_pname) == "-lambda-" or str(_pname).startswith("-lambda-#"):
+                    continue
+                _children = [
+                    j for j in range(len(_pre_all))
+                    if j != _pi and _pre_all[j][0] > _poff
+                    and nested_ends.get(_poff) and _poff < _pre_all[j][0] < nested_ends[_poff]
+                ]
+                if not _children:
+                    continue
+                _first = min(_children)
+                if _first < _pi:
+                    _item = _pre_all.pop(_pi)
+                    _pre_all.insert(_first, _item)
         _fo_pos = {k: i for i, (_off, k) in enumerate(_pre_all)}
         _n_pre = len(_pre_all)
         _fo_base = _nsyms_now - _n_pre

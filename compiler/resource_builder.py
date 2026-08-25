@@ -761,26 +761,45 @@ class ResourceBuilder:
             for entry_type, entry_val in entries[1:]:
                 self._push_entry(out, (entry_type, entry_val))
         if stub_format and nested_offs:
-            # kwote/立即应用内嵌 `-lambda-` + 函数体内嵌套 `(defun inner ...)`：
-            # 在 GVARINIT(0, nsyms) 前置 DEFCODE。CAD 实测**按 seg0 offset 降序**
-            # 发射（version `REV@1491, DEPS@1205, -lambda-@1089, 248, 128`；
-            # string-utils `-lambda-@1740, 816, S2LA@638`），先发射的 DEFCODE
-            # 被 GVARINIT 后弹出分配更高槽。**父-子链**（n5 MID 含 INNER）例外：
-            # 父函数块在其子块之前（MID@10 先 INNER@20 后），不受降序影响。
+            # 前置 DEFCODE 顺序：**含真实嵌套 defun**（非 `-lambda-`）的文件按
+            # seg0 offset **降序**（version `REV@1491, DEPS@1205, -lambda-@1089,
+            # 248, 128`；string-utils `-lambda-@1740, 816, S2LA@638`），父-子链
+            # 父在前（n5 MID@10 含 INNER@20）；**仅 `-lambda-`**（无嵌套 defun，
+            # safe-eval/user-manager）按 func_offsets 键序（nested_list 序，
+            # safe-eval `fn@137, ok-tail@1308, clause@1070, b@701` 实测）。
             nd_offsets = sorted(
                 ((off, k) for k, off in func_offsets.items() if off in nested_offs),
                 reverse=True,
             )
-            # 父子链修正：若后一个（offset 更小）的 span 包含前一个（offset
-            # 更大）的 DEFUN 起始（A 是 B 的父函数），父排前（n5 MID@10 含
-            # INNER@20 → MID 先）。否则保持降序。
-            for _ai in range(len(nd_offsets)):
-                for _bi in range(_ai + 1, len(nd_offsets)):
-                    _aoff, _aname = nd_offsets[_ai]
-                    _boff, _bname = nd_offsets[_bi]
-                    _bend = nested_ends.get(_boff)
-                    if _bend and _boff < _aoff < _bend:
-                        nd_offsets[_ai], nd_offsets[_bi] = nd_offsets[_bi], nd_offsets[_ai]
+            _has_real_nested = any(
+                not ResourceBuilder._is_lambda_key(k) for _o, k in nd_offsets
+            )
+            if not _has_real_nested:
+                # 仅 `-lambda-`：func_offsets 键序（非 offset 序）。
+                _key_order = {
+                    k: i for i, (k, _o) in enumerate(
+                        (k, off) for k, off in func_offsets.items() if off in nested_offs
+                    )
+                }
+                nd_offsets.sort(key=lambda x: _key_order.get(x[1], 10**9))
+            else:
+                # 父-子链修正：父函数（span 包含其它前置函数的 DEFUN 起始）排到其
+                # 子函数之前（n5 MID@10 含 INNER@20 → MID 先；safe-eval 宿主 137 含
+                # 3 个 `-lambda-` → 137 先、lambda 降序）。子函数间保持降序。
+                for _pi, (_poff, _pname) in enumerate(list(nd_offsets)):
+                    if ResourceBuilder._is_lambda_key(_pname):
+                        continue
+                    _children = [
+                        j for j in range(len(nd_offsets))
+                        if j != _pi and nd_offsets[j][0] > _poff
+                        and nested_ends.get(_poff) and _poff < nd_offsets[j][0] < nested_ends[_poff]
+                    ]
+                    if not _children:
+                        continue
+                    _first = min(_children)
+                    if _first < _pi:
+                        _item = nd_offsets.pop(_pi)
+                        nd_offsets.insert(_first, _item)
             for off, fname in nd_offsets:
                 if -128 <= off <= 127:
                     out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
