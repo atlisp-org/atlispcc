@@ -699,6 +699,20 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   `USUBR(1, list)` 操作数我们 22（build_mvar fg[23]-1）vs CAD 26——CAD 原始
   gvar/function 表与 build_mvar 重建有偏移，需 CAD 真机逆向。功能正确性待
   CAD 真机验证（`_emit_let` 无测试覆盖）。
+- **2026-08-23（CAD 真机逆向）let 原生 LET 完整模式（event-bus byte-identical，
+  58/67）**：用 `scripts/mcp_cad.py` 编译最小 let 样本（minlet/let3/let4）逐字节
+  确认 CAD 的 LET 结构，修复三处：
+  1. **绑定构造用绑定变量槽**（`codegen.py` `_emit_let`）：CAD 对
+     `(let ((x e)) body)` 发射 `<e求值>; USUBR(1, <x槽>); NIL; PUSH_VALUE[0];
+     EVAL 0,7`——`USUBR(1, 绑定变量槽)`（minlet `USUBR(1,3)`=X、let3
+     `USUBR(1,6)`=ENTRY），旧实现误用 `(list ...)`（list 槽）→ 操作数 22 vs
+     CAD 26。`_patch_usubr_idx` 映射到 gvar（操作数 = fg 槽-1）。
+  2. **let body 尾上下文 + `_in_let_tail`**：body 最后 form 走 `_emit_expr
+     (_tail=True)`（if 分支 setq DUP 保留值）；`_emit_if` 在 label_end（then
+     JUMP 目标 + else fall-through 统一）后发射 `USUBR(2, LET); NIL;
+     PUSH_VALUE[0]`（CAD then/else 都执行）。`_in_let_tail` 标志必须初始化在
+     `__init__`（误加进 `_value_ctx` 导致每次 `_value_ctx` 重置）。
+  回归：57/67 无回退，372 tests pass。
 - **2026-08-23（CAD 对拍）dcl byte-identical（57/67）**：三个通用修复
   （quoted `'STR` const 延迟到资源序末尾 + `_is_other_param` 大小写不敏感 +
   foreach 列表求值 `_value_ctx`），dcl **seg0+seg1+nsyms 完全一致**（`'STR`

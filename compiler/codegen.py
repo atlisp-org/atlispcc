@@ -248,6 +248,9 @@ class CodeGenerator:
         # progn 中间语句、循环体）置位。值上下文（setq RHS、函数/算术实参）
         # 不置位——_emit_if 据此决定 then 分支尾是否兼 POP。
         self._in_stmt_ctx: bool = False
+        # let body 尾 if 的 else fall-through 后 USUBR(2, LET)（CAD 原生 LET
+        # 清理，minlet/let3 CAD 真机实测）——`_emit_let` 设置、`_emit_if` 读取。
+        self._in_let_tail: bool = False
 
     def _get_local_slot(self, name: str) -> int:
         if name not in self.local_slots:
@@ -703,20 +706,43 @@ class CodeGenerator:
         if isinstance(bindings, ListExpr):
             for b in bindings.items:
                 if isinstance(b, Call) and b.args:
+                    v = b.name
                     e = b.args[0]
                 elif isinstance(b, ListExpr) and len(b.items) > 1:
+                    v = b.items[0].name if isinstance(b.items[0], Symbol) else str(b.items[0])
                     e = b.items[1]
                 else:
+                    v = str(b)
                     e = None
+                # CAD 原生 LET（minlet CAD 真机实测）：绑定值求值后 `USUBR(1,
+                # <绑定变量槽>)`——`(x (1+ a))` 的 USUBR(1,x槽)、event-bus
+                # `(entry (assoc ...))` 的 USUBR(1,entry槽)——非 `(list ...)`。
+                # `_patch_usubr_idx` 映射到 gvar 槽（操作数 = gvar-1）。
                 if e is not None:
                     self._emit_expr(buf, e)
                 else:
                     buf.emit(encode_op_noarg(PUSH_NIL))
-                list_idx = self.symtab.get_or_add("list")
-                self._emit_usubr(buf, 1, list_idx)
+                v_idx = self.symtab.get_or_add(v)
+                self._emit_usubr(buf, 1, v_idx)
+                # CAD let 绑定构造后清理占位（minlet 实测 `USUBR; NIL;
+                # PUSH_VALUE[0]; EVAL`）——`_emit_subr_cleanup` 小文件输出
+                # `00 03`（NIL + PUSH_VALUE 0）。
+                self._emit_subr_cleanup(buf)
         buf.emit(encode_eval(0, 7))
-        for form in body:
-            self._emit_stmt(buf, form)
+        _saved_let_tail = self._in_let_tail
+        self._in_let_tail = True
+        try:
+            for _bi, form in enumerate(body):
+                if _bi == len(body) - 1:
+                    # let 的 body 最后 form 是 let 的值（尾上下文）：if 分支 setq
+                    # DUP 保留值（event-bus `(let ((entry ...)) (if entry (setq
+                    # ...) (setq ...)))` CAD 实测 `DUP; SETQ_G`）；尾 if 的 else
+                    # fall-through 后 USUBR(2, LET)（见 `_emit_if` `_in_let_tail`）。
+                    self._emit_expr(buf, form, _tail=True)
+                else:
+                    self._emit_stmt(buf, form)
+        finally:
+            self._in_let_tail = _saved_let_tail
 
     def _emit_setq_expr(self, buf: BytecodeBuffer, target: Node, value: Node):
         if isinstance(target, Symbol):
@@ -919,6 +945,15 @@ class CodeGenerator:
                 # 的 POP 丢弃栈顶（i18n-cad update-locale / test-cond CAD 实测）。
                 buf.emit(encode_op_noarg(PUSH_NIL))
             buf.patch_label(label_end, buf.pos())
+            if self._in_let_tail:
+                # let body 尾 if 的 end（then JUMP 目标 + else fall-through 统一）：
+                # CAD 发射 `USUBR(2, LET)`（minlet/let3/let4 CAD 真机实测操作数
+                # = fg LET 槽 - 1：event-bus 21、let3 1；CAD then JUMP 也执行）。
+                # `_patch_usubr_idx` 映射到 gvar 槽。event-bus CAD 实测 USUBR 后
+                # `00 03`（NIL + PUSH_VALUE[0]）清理占位。
+                _let_idx = self.symtab.get_or_add("let")
+                self._emit_usubr(buf, 2, _let_idx)
+                self._emit_subr_cleanup(buf)
             return
 
         if node.else_expr:
