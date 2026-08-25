@@ -1697,7 +1697,11 @@ class CadSymbolCollector:
                 _lc = (CONST_MARK, ("LIST", tuple(("SYMBOL", _l) for _l in _inner_locals)))
                 if not self._seen(out, _lc):
                     out.append((_lc, False))
-                if not self._seen(out, "_al-bind-alist"):
+                if getattr(self, "_cur_source_idx", None) is None and not self._seen(out, "_al-bind-alist"):
+                    # `_al-bind-alist` 符号全文件共享：单函数路径（n2，无其它
+                    # local 函数）由嵌套块注册；多函数路径由 `source_first_local`
+                    # （源码序第一个 `/ locals` 函数，string-utils @::max-char）
+                    # 统一注册，嵌套块不注册（否则提前到嵌套位置、CAD 槽错位）。
                     out.append(("_al-bind-alist", False))
             # 体符号：_inner_refs 为 `_collect_byteorder` 正向（Setq 值先于目标、
             # n2 `(+ y 1)` 的 + 在 setq 目标 Z 前），该块在 out 中整体被外层
