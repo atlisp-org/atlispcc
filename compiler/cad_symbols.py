@@ -434,6 +434,35 @@ class CadSymbolCollector:
         defuns = [f for f in program.forms if isinstance(f, Defun)]
         others = [f for f in program.forms if not isinstance(f, Defun)]
         self.func_names = {f.name for f in defuns}
+        # 顶层 kwote lambda 调用实参（setup `(if @::*uris* (mapcar (function
+        # (lambda (x) ...)) ...))` 实测）：CAD 把 lambda 体符号注册在源码位置
+        # 的独立函数体组（check-pgp 组后、remove-path-in-trustedpaths 组前）。
+        # 构造伪 Defun（body = lambda 体）插入 defuns 源码序，复用 _collect_multi
+        # 的函数体收集/注册机制（参数过滤、外部函数 seen_refs 去重自然生效）。
+        if len(defuns) > 1:
+            _tl_pseudo = 0
+            _di = 0
+            for _fi, _f in enumerate(program.forms):
+                if isinstance(_f, Defun):
+                    _di += 1
+                    continue
+                for _lam in self._iter_kwote_lambdas(_f):
+                    _la = list(getattr(_lam, "args", []) or [])
+                    _loc = []
+                    if "/" in _la:
+                        _loc = _la[_la.index("/") + 1 :]
+                        _la = _la[: _la.index("/")]
+                    _tl_pseudo += 1
+                    _pd = Defun(
+                        name=f"__tl_lambda_{_tl_pseudo}__",
+                        args=[_a for _a in _la if _a != "/"],
+                        optional=[],
+                        rest=None,
+                        locals=_loc,
+                        body=list(getattr(_lam, "body", []) or []),
+                    )
+                    defuns.insert(_di, _pd)
+                    _di += 1
         # 参数使用统计：argname -> 使用它的函数数（共享参数判定）
         arg_usage: dict = {}
         for f in defuns:
@@ -553,61 +582,6 @@ class CadSymbolCollector:
         # 末尾，CAD `'STR` slot 227）。
         if self._deferred_consts:
             kept_refs[0].extend(((CONST_MARK, _c), False) for _c in self._deferred_consts)
-
-        # 顶层 kwote lambda 调用实参（setup `(if @::*uris* (mapcar (function
-        # (lambda (x) ...)) ...))` 实测）：lambda 体符号注册在**紧随其后的
-        # defun** 函数体组末尾（CAD 实测 check-pgp 组后、remove-path-in-
-        # trustedpaths 组前，slot 272-274）。prepend 到该 defun 的 kept。
-        # 过滤：lambda 参数 + 外部函数名（@::string-to-list，已在其它 defun
-        # 组注册）排除，仅保留函数调用 + 体符号。
-        _next_defun_idx = {}
-        _di = 0
-        for _f in program.forms:
-            if isinstance(_f, Defun):
-                _next_defun_idx.setdefault(id(_f), _di)
-                _di += 1
-        for _fi, _f in enumerate(program.forms):
-            if isinstance(_f, Defun):
-                continue
-            _lam_refs = _SeenList()
-            self._collect_byteorder(_f, _lam_refs, set())
-            _body = []
-            _in = False
-            for _n, _fr in _lam_refs:
-                if _n == "kwote":
-                    _in = True
-                    continue
-                if _n == "__kwote_end__":
-                    _in = False
-                    continue
-                if _in:
-                    _body.append((_n, _fr))
-            if not _body:
-                continue
-            _lam_params = set()
-            for _lam in self._iter_kwote_lambdas(_f):
-                _la = list(getattr(_lam, "args", []) or [])
-                if "/" in _la:
-                    _la = _la[: _la.index("/")]
-                _lam_params.update(_la)
-            _filtered = []
-            for _n, _fr in _body:
-                if isinstance(_n, str) and (_n in self._all_params or _n in _lam_params):
-                    continue
-                _filtered.append((_n, _fr))
-            if not _filtered:
-                continue
-            _target = None
-            for _ff in program.forms[_fi + 1 :]:
-                if isinstance(_ff, Defun):
-                    _target = _next_defun_idx.get(id(_ff))
-                    break
-            if _target is None:
-                _target = len(kept_refs) - 1
-            if 0 <= _target < len(kept_refs):
-                kept_refs[_target] = [x for x in _filtered
-                                      if _ci_ref_key(x[0]) not in seen_refs] + kept_refs[_target]
-                seen_refs.update(_ci_ref_key(x[0]) for x in _filtered)
 
         nfuncs = len(defuns)
         # 每个共享参数：记录源码序最先使用它的函数索引（逆序迭代最后处理到）。
