@@ -596,6 +596,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                      top_lambda_offsets: Optional[dict] = None,
                      module_reg_count: Optional[int] = None,
                      funcobj_map: Optional[dict] = None,
+                     lambda_slot_map: Optional[dict] = None,
                      func_nested_lambdas_raw: Optional[dict] = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
@@ -1029,7 +1030,13 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     out += bytes([0x09, _ni & 0xFF, (_ni >> 8) & 0xFF])
                     continue
         if inst.op_name == "DEFUN":
-            _arg_stack.append((cur_args, arg_i, cur_func, lambda_idx))
+            # 顶层 setq-lambda（top_lambda_args）的 `-lambda-` DEFUN：lambda_idx
+            # 是跨顶层 lambda 的全局计数器（第二个 lambda 用 top_lambda_args[1]），
+            # END_DEFUN 时**不得**恢复（4aeeb2b 的 `_arg_stack` 保存/恢复 lambda_idx
+            # 使第二个顶层 lambda 误取 top_lambda_args[0] → setq-lambda.lsp 参数
+            # 绑定/读取槽错 3）。命名 defun / 宿主函数内嵌 lambda 仍恢复。
+            _was_tl = bool(top_lambda_args and (cur_func is None or cur_func == "-LAMBDA-"))
+            _arg_stack.append((cur_args, arg_i, cur_func, lambda_idx, _was_tl))
             fname = name_by_offset.get(inst.offset)
             if fname is not None:
                 cur_func = fname
@@ -1061,7 +1068,10 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             arg_i = 0
         elif inst.op_name == "END_DEFUN":
             if _arg_stack:
-                cur_args, arg_i, cur_func, lambda_idx = _arg_stack.pop()
+                _pushed_args, _pushed_arg_i, _pushed_func, _pushed_lam, _was_tl = _arg_stack.pop()
+                cur_args, arg_i, cur_func = _pushed_args, _pushed_arg_i, _pushed_func
+                if not _was_tl:
+                    lambda_idx = _pushed_lam
         # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
         if (multi or top_lambda_args) and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
             arg = cur_args[arg_i]
@@ -1169,8 +1179,20 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     # nsyms - i，操作数 = nsyms - 1 - i；i18n-cad 单 kwote
                     # 实测 `PUSH_G[91]`，nsyms=92；lambda_body 多 lambda
                     # 实测 t3→18、t4→17、t5→16，nsyms=19）。
-                    _li = lam_order.get(inst.operands[0], 0)
-                    new_idx = nsyms - 1 - _li
+                    # 含嵌套 defun 时 func-obj 与 `-lambda-` 共享高位槽区，
+                    # 须按 `_pre_all` 位置编址（lambda_slot_map，slot =
+                    # nsyms - n_pre + pos；string-utils s2la=93 → lambda
+                    # 92/91）。旧公式 `nsyms-1-_li` 未计入 func-obj 槽，
+                    # lambda 与 func-obj 槽冲突错 1。
+                    _ls = lambda_slot_map.get(inst.operands[0]) if lambda_slot_map else None
+                    if _ls is not None:
+                        # lambda_slot_map 存 gvar 槽（= `_fo_base + pos`，与 func-obj
+                        # 槽同规则）；PUSH_G 操作数 = 槽本身（CAD string-utils 实测
+                        # s2la=93、lambda=92/91 直接作操作数，funcobj_map 同）。
+                        new_idx = _ls
+                    else:
+                        _li = lam_order.get(inst.operands[0], 0)
+                        new_idx = nsyms - 1 - _li
                     if 0 <= new_idx <= 0xFFFF:
                         if inst.op_name == "PUSH_VALUE" and new_idx == 0 and not wide:
                             out += bytes([0x03])
@@ -1353,14 +1375,21 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     _sym = sym_of(idx0)
                     if _sym and _sym in gvar_map:
                         new_idx = gvar_map[_sym] - 1
-                    elif _sym and cur_args and any(
-                        str(a).lower() == _sym.lower() for a in cur_args
+                    elif (
+                        inst.op_name == "SETQ_G"
+                        and _sym
+                        and cur_args
+                        and any(str(a).lower() == _sym.lower() for a in cur_args)
                     ):
                         # net/wget 纯顶层 setq-lambda 参数（DEFCODE 第二区，
                         # gvar 槽 = nsyms 表外）：SETQ_G 目标操作数 = gvar_slot
                         # - 1（表外参数 = nsyms-1，uri → 30；与参数读取 PUSH_VALUE
                         # 同规则，line 973）。setq-lambda 参数（str-vlx fg[9]）
                         # 走 gvar_slot 命中分支结果相同（gvar-1）。
+                        # **仅 SETQ_G**：PUSH_G 的同名符号是 quoted 值引用
+                        # （string-utils @::to-type `(eq 'STR typep)` 的 'STR 与
+                        # 参数 str 同名），不能当参数写槽（gvar_slot 未命中 →
+                        # nsyms-1=93，CAD 用 deferred const 槽 90）。
                         _gs, _hit = gvar_slot(_sym)
                         new_idx = _gs - 1 - (0 if _hit else offset)
                     else:
@@ -3208,8 +3237,27 @@ def cmd_compile(
             _foi = _fo_by_name.get(_nk)
             if _foi is not None and _nk in _fo_pos:
                 funcobj_map[_foi] = _fo_base + _fo_pos[_nk]
+        # **`-lambda-` 槽（lambda_slot_map）**：与 func-obj 槽同规则，按 `_pre_all`
+        # 位置编址（slot = `_fo_base + pos`）。嵌套 defun func-obj 与 `-lambda-`
+        # 共享高位槽区，顺序由 `_pre_all`（offset 降序 + 父-子链修正）决定：
+        # string-utils `_pre_all=[lambda@1740, lambda@816, s2la@638]` → s2la
+        # func-obj=93、lambda=92/91；version `[rec, rev-rec, lambda...]` →
+        # func-obj=120/119、lambda=121/122/123。旧公式 `nsyms-1-_li` 未计入
+        # func-obj 槽 → string-utils 的 lambda 与 s2la 冲突（93/92 vs CAD 92/91，
+        # seg0 3 处 PUSH_G 差 1）。
+        _pre_pos = {_off: _i for _i, (_off, _k) in enumerate(_pre_all)}
+        lambda_slot_map: dict = {}
+        for _fname, _fnl_raw2 in codegen._func_nested_lambdas.items():
+            _fstart = func_offsets.get(_fname)
+            if _fstart is None:
+                continue
+            for _rel_start, _rel_end, _la_args, _la_idx in _fnl_raw2:
+                _abs = _fstart + _rel_start
+                if _abs in _pre_pos:
+                    lambda_slot_map[_la_idx] = _fo_base + _pre_pos[_abs]
     else:
         funcobj_map = {}
+        lambda_slot_map = {}
 
     for name, offset in func_offsets.items():
         # `-lambda-`/`-lambda-#N`（内嵌 DEFUN）不进符号表（仅 DEFCODE 区注册，
@@ -3591,6 +3639,7 @@ def cmd_compile(
                             top_lambda_offsets=_top_lambda_offsets,
                             module_reg_count=module_reg_count,
                             funcobj_map=funcobj_map,
+                            lambda_slot_map=lambda_slot_map,
                             func_nested_lambdas_raw=codegen._func_nested_lambdas)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(

@@ -1869,6 +1869,12 @@ class CodeGenerator:
         # `09 02 00; 06 01 00`）。函数对象槽 = 函数名第二次注册（DEFCODE）。
         buf.emit(encode_op_u16(PUSH_G, fo_idx))
         buf.emit(encode_op_u16(SETQ_G, sym_idx))
+        # 嵌套 defun 是函数**返回值**（尾上下文，compat `(defun @::compat1
+        # ... )` 内嵌 load-custom 为末语句）时，CAD 再推一次 `PUSH_G <inner-sym>`
+        # （绑定后的函数对象作返回值；compat golden 实测 `09 46 00 06 01 00
+        # 09 01 00 19 01 00`）。非尾（语句）位置无此推——n1-n6 均非尾。
+        if self._in_tail_context:
+            buf.emit(encode_op_u16(PUSH_G, sym_idx))
 
     def _emit_tail_call(self, buf: BytecodeBuffer, args: List[Node]):
         for i, arg in enumerate(args):

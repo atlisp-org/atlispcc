@@ -1002,10 +1002,65 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
   槽序（kwote lambda 体符号归属——`_form_read_target` 按 const 处理 kwote lambda
   致 `_owner_of` -1，递归体修复与外部函数归属冲突；collector interleave
   prepend 有 nsyms +1 副作用，已回退）。
-- string-utils 12/13 一致（剩 2 符号差：嵌套 s2la 名字=外层 `/ 局部` 影子的
-  递归槽——codegen `_nested_shadowing` 递归 add_force 已做，collector 需把
-  递归槽放体符号组末尾位置 70，绕过 `_seen`/`intra_dedup` 双去重）。
-  dialog 11/14、panel 17/31——残余 DIFF 为符号槽序边角，部分为历史遗留
+- **2026-08-26 增补（63/67）**：
+  - **string-utils.lsp byte-identical**：两个通用修复（`-lambda-` 槽按 `_pre_all`
+    位置编址 + 参数同名 quoted 符号仅 SETQ_G 走参数分支）：
+    1. **`-lambda-` 槽（`lambda_slot_map`）**：嵌套 defun func-obj 与 `-lambda-`
+       共享高位槽区，顺序由 `_pre_all`（offset 降序 + 父-子链修正）决定——
+       string-utils `_pre_all=[lambda@1740, lambda@816, s2la@638]` → s2la
+       func-obj=93、lambda=92/91（旧公式 `nsyms-1-_li` 未计入 func-obj 槽 →
+       lambda 与 s2la 冲突错 1）。`cli.py` 在 `_fnd_seen` 分支按
+       `slot = nsyms - n_pre + pos` 建 `lambda_slot_map`（symtab -lambda- 条目 →
+       最终槽），`_patch_usubr_idx` `-LAMBDA-` 分支用它（操作数 = 槽本身，与
+       funcobj_map 同）。version.lsp（func-obj=120/119、lambda=121/122/123）不受
+       影响（lambda_slot_map 与旧公式一致）。
+    2. **quoted 符号 ≠ 参数写槽**（`cli.py` 参数分支加 `inst.op_name == "SETQ_G"`）：
+       @::to-type `(eq 'STR typep)` 的 quoted `'STR` 与参数 `str` 同名，旧分支把
+       PUSH_G 当参数写（gvar_slot 未命中 → nsyms-1=93），CAD 用 deferred const
+       槽 90。参数分支仅 SETQ_G 适用（net/wget setq-lambda 参数写）。
+  - **init/compat.lsp byte-identical**（源码 `(defun @::compat1 ...)` 缺一个右括号
+    致 parser 吞掉后 3 个 form 为嵌套 defun，CAD 同构）：
+    1. **`_al-bind-alist` 单函数路径嵌套块跳过**（`cad_symbols.py` 嵌套 Defun
+       分支）：外层函数也有 `/ locals` 时（compat `/ sym-name` 内嵌 load-custom）
+       由外层 locals 区统一注册，嵌套块跳过——否则提前到嵌套位置（CAD slot 74，
+       OURS 29 错位）。
+    2. **嵌套 defun 尾上下文 `PUSH_G <sym>`**（`codegen.py` `_emit_nested_defun`）：
+       嵌套 defun 是函数**返回值**（末语句）时 CAD 在 `SETQ_G` 后再推一次
+       `PUSH_G <inner-sym>`（函数对象作返回值；compat golden 实测 `09 46 00 06
+       01 00 09 01 00 19 01 00`）。非尾（n1-n6）无。
+    3. **kwote lambda 可收集参数在 locals 常量之前**（`cad_symbols.py`）：compat
+       `(lambda (line / pos) ...)` CAD forward = [kwote, line, const(pos), body...]
+       （fg[39]=const(POS)、fg[40]=LINE）——param 先于 locals const。旧实现 const
+       先 → POS/LINE 交换。无 locals 的 kwote lambda（persist e1/e2）不受影响。
+  - **setq-lambda.lsp 回归修复**（4aeeb2b 引入，380 tests 恢复全绿）：`_arg_stack`
+    保存/恢复 `cur_func`/`lambda_idx` 使顶层 setq-lambda 的第二个 `-lambda-` 误取
+    `top_lambda_args[0]`（参数绑定/读取槽错 3）。DEFUN 时按
+    `top_lambda_args and (cur_func is None or cur_func == "-LAMBDA-")` 记
+    `_was_tl`，END_DEFUN 时**不**恢复 lambda_idx（顶层 lambda 的 lambda_idx 是跨
+    lambda 全局计数器）；命名 defun/宿主函数内嵌 lambda 仍恢复（log.lsp 保持）。
+  - **nlp.lsp 符号槽对齐（seg0 残余 let 结构）**：三个 let 相关收集修复使
+    nsyms/symbol_slots 全对齐，seg0 仍 DIFF（LET 结构差异，见下）：
+    1. **let 体 `_is_tail` 传播**（`cad_symbols.py` let 分支）：let 体末 form 是
+       返回值，`(progn ... t)` 尾 T 须注册（CAD T@67；旧实现不传播 → T 槽缺失
+       整体偏移 1）。
+    2. **let 绑定变量 `_all_params` 排除**：`expr` = @::ensure-str 参数 + 多个
+       @::cmd-match-* let 变量 → CAD 注册在参数拥有者处（EXPR@149），let 组不注册。
+    3. **bare 符号 let 变量在值绑定之前**：`(let ((lst-cmd v) expr pkg-to-ins)`
+       的 expr/pkg-to-ins 先于 `(lst-cmd v)` 的值收集（reversed 后 @::GET-CMD-
+       FROM-WEB 在 PKG-TO-INS 前 slot 55/56）。
+    **残余 seg0**：nlp 的 LET 用 CAD `PUSH_VALUE <var>; <e求值>; EVAL 1,7` 结构
+    （event-bus 用 `value; USUBR(1,var); EVAL 0`），`_emit_let` 需区分两种结构——
+    待 CAD 真机逆向确认（MCP 未连接）。
+  - **menu.lsp 残余（vlax-for ActiveX 协议）**：`(vlax-for g groups ...)` 在 CAD
+    编译为 collect-init/next/release 内部 SUBR 枚举协议（`SETQ_G collect-init`;
+    loop `PUSH_G collect-next; INIT_ARGS; GET_LOCAL; FUNC collect-next; DUP;
+    SETQ_G collect-next; JMP32_IFNOT; 体; JUMP`; 尾部 `GET_LOCAL; FUNC
+    collect-release; POP`），3 个 collect-* 符号注册（nsyms +3）。OURS 当前按
+    list foreach 编译（CAD 对 ActiveX 集合**功能上也是错**的）。parser 注释已标记
+    （`name='vlax-for'` 可另发字节码）。**残余 DIFF**：dialog.lsp nsyms +6（OURS
+    多 kwote 槽）、panel.lsp seg0（符号槽序边角）。
+- 2026-08-26 前 string-utils 残余（嵌套 s2la 递归槽序）已随「lambda_slot_map +
+  SETQ_G 参数分支」转正；dialog/panel 残余 DIFF 为符号槽序边角，部分为历史遗留
   （version @::prefetch-pkg-cache 的 kwote const 序非嵌套相关）。
 
 ### 已知限制

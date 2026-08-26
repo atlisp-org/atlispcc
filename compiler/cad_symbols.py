@@ -1641,6 +1641,20 @@ class CadSymbolCollector:
                 # 把 `(v e)` 绑定对解析为 Call(name=v)）。
                 bindings = node.args[0]
                 if isinstance(bindings, ListExpr):
+                    # 绑定变量收集顺序：**bare 符号变量（无初值，如 `(let ((x v)
+                    # y z) ...)` 的 y/z）先于**值绑定**（`(x v)` 的 v 值 + x）。
+                    # CAD nlp.lsp @::cmd-match-web 实测：forward = [expr, pkg-to-ins,
+                    # input, @::get-cmd-from-web, lst-cmd, ...]，reversed 后
+                    # @::GET-CMD-FROM-WEB 在 PKG-TO-INS 前（slot 55/56）。旧实现
+                    # 逐绑定值先收 → reversed 后 pkg-to-ins 提前错位。event-bus
+                    # 单值绑定不受影响。
+                    for _b1 in bindings.items:
+                        if isinstance(_b1, Symbol):
+                            _v1 = _b1.name
+                            if _v1 not in arg_names and not self._seen(out, _v1):
+                                if _v1 in getattr(self, "_all_params", set()):
+                                    continue
+                                out.append((_v1, False))
                     for b in bindings.items:
                         if isinstance(b, Call) and b.args:
                             self._collect_byteorder(b.args[0], out, arg_names, in_quote)
@@ -1650,11 +1664,25 @@ class CadSymbolCollector:
                                 self._collect_byteorder(b.items[1], out, arg_names, in_quote)
                             v = b.items[0].name if isinstance(b.items[0], Symbol) else str(b.items[0])
                         else:
-                            v = b.name if isinstance(b, Symbol) else str(b)
+                            continue
                         if v not in arg_names and not self._seen(out, v):
+                            # let 绑定变量是符号槽，但若它是**其它函数**的参数
+                            # （nlp.lsp `expr` = @::ensure-str 参数 + 多个
+                            # @::cmd-match-* 的 let 变量），CAD 注册在参数拥有者
+                            # 处（EXPR@149），let 组不注册（否则提前到 let 组、
+                            # CAD 槽错位）。
+                            if v in getattr(self, "_all_params", set()):
+                                continue
                             out.append((v, False))
-                for form in node.args[1:]:
-                    self._collect_byteorder(form, out, arg_names, in_quote)
+                _lb = node.args[1:]
+                for _bi, form in enumerate(_lb):
+                    # let 体末 form 是 let 的返回值 = 函数返回值（`_is_tail`
+                    # 传播）：`(let ((expr ...)) (if expr (progn ... t)))` 的
+                    # 尾 `t` 在值上下文须注册（nlp.lsp CAD T@67；旧实现不传播
+                    # → `(progn ... t)` 尾 T 被 `_last_const_stmt` 跳过 → T
+                    # 槽缺失、后续槽整体偏移 1）。
+                    _f_tail = _is_tail and (_bi == len(_lb) - 1)
+                    self._collect_byteorder(form, out, arg_names, in_quote, _is_tail=_f_tail)
                 if not self._seen(out, "list"):
                     out.append(("list", False))
                 if not self._seen(out, "let"):
@@ -1749,11 +1777,15 @@ class CadSymbolCollector:
                 _lc = (CONST_MARK, ("LIST", tuple(("SYMBOL", _l) for _l in _inner_locals)))
                 if not self._seen(out, _lc):
                     out.append((_lc, False))
-                if getattr(self, "_cur_source_idx", None) is None and not self._seen(out, "_al-bind-alist"):
+                if getattr(self, "_cur_source_idx", None) is None and not cur_locals and not self._seen(out, "_al-bind-alist"):
                     # `_al-bind-alist` 符号全文件共享：单函数路径（n2，无其它
                     # local 函数）由嵌套块注册；多函数路径由 `source_first_local`
                     # （源码序第一个 `/ locals` 函数，string-utils @::max-char）
                     # 统一注册，嵌套块不注册（否则提前到嵌套位置、CAD 槽错位）。
+                    # 外层函数也有 `/ locals` 时（compat `(defun @::compat1
+                    # (/ sym-name) ...)` 内嵌 load-custom）由外层 locals 区
+                    # 统一注册，嵌套块跳过——否则 _al-bind-alist 提前到嵌套
+                    # 位置（compat CAD slot 74，OURS 提前到 29 错位）。
                     out.append(("_al-bind-alist", False))
             # 体符号：_inner_refs 为 `_collect_byteorder` 正向（Setq 值先于目标、
             # n2 `(+ y 1)` 的 + 在 setq 目标 Z 前），该块在 out 中整体被外层
@@ -1946,36 +1978,13 @@ class CadSymbolCollector:
                     if "/" in _lambda_args:
                         _lambda_args = _lambda_args[: _lambda_args.index("/")]
                     lambda_args = set(_lambda_args)
-                    # kwote lambda 的 `/ 局部变量` locals 常量 `(quote (locals...))`
-                    # 需注册（codegen `_emit_al_bind_alist_locals` 会 add_constant），
-                    # 否则 symtab 在 codegen 阶段插入新常量导致后续符号索引漂移
-                    # （@lisp_u `(lambda (line / pos) ...)` 的 `(quote (pos))`
-                    # 被推到 nsyms 外，_patch_usubr_idx const_map 找不到 → PUSH_G
-                    # 越界 → CAD 0xC0000005）。常量结构与 codegen 一致
-                    # （`('LIST', (('SYMBOL', loc)...))`）。
                     _lam_locals = []
                     if "/" in node.expr.args:
                         _lam_locals = node.expr.args[node.expr.args.index("/") + 1 :]
-                    if _lam_locals:
-                        # locals 常量先注册。`_al-bind-alist` 助手：仅当 kwote
-                        # lambda locals == 外层函数 locals（net/proxy kwote
-                        # lambda `/ shell exec stdout result` == 函数 locals，
-                        # CAD `_al-bind-alist` 在 locals 之前、0x56 块在 const
-                        # 前）时早注册；kwote lambda locals ≠ 函数 locals
-                        # （command `@::F` kwote /req resp boot ≠ 函数 /ok req，
-                        # CAD 实测 `const(req resp boot), VL-LOAD-COM,
-                        # _al-bind-alist, const(ok req)`）则 `_al-bind-alist` 由
-                        # 外层函数 locals 处理统一注册，不在此提前。
-                        _lc = ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))
-                        if not self._seen(out, (CONST_MARK, _lc)):
-                            out.append(((CONST_MARK, _lc), False))
-                        if set(_lam_locals) == set(cur_locals or []):
-                            if not self._seen(out, "_al-bind-alist"):
-                                out.append(("_al-bind-alist", False))
                     # kwote lambda 参数：非 `_all_params` 排除（参数拥有者逆序
                     # 更晚处理，base-function `x` = pair 参数 src12 < getf src13
                     # 时由参数拥有者注册，lambda 不收集）的**可收集**参数在
-                    # kwote 块**末尾**逆序注册（= forward 块开头、_rev 块末尾，
+                    # kwote 块**开头**注册（= _rev 块末尾、reverse 后最后，
                     # persist e1/e2、browse X/LIBFILE、string-utils X 实测）。
                     # 逆序更晚的 kwote lambda 宿主（string-utils string-split
                     # src3 vs strbytelen src9）也收集（`_all_params` 条件排除
@@ -1996,10 +2005,35 @@ class CadSymbolCollector:
                     ]
                     _multi = bool(_collectible)
                     _body_args = arg_names | lambda_args if _multi else arg_names
+                    # 可收集参数在 locals 常量**之前**（compat `(lambda (line / pos)
+                    # ...)` CAD 实测 forward = [kwote, line, const(pos), body...]，
+                    # fg[39]=const(POS)、fg[40]=LINE——param 先于 locals const）。
                     if _multi:
                         for _p in _collectible:
                             if not self._seen(out, _p):
                                 out.append((_p, False))
+                    # kwote lambda 的 `/ 局部变量` locals 常量 `(quote (locals...))`
+                    # 需注册（codegen `_emit_al_bind_alist_locals` 会 add_constant），
+                    # 否则 symtab 在 codegen 阶段插入新常量导致后续符号索引漂移
+                    # （@lisp_u `(lambda (line / pos) ...)` 的 `(quote (pos))`
+                    # 被推到 nsyms 外，_patch_usubr_idx const_map 找不到 → PUSH_G
+                    # 越界 → CAD 0xC0000005）。常量结构与 codegen 一致
+                    # （`('LIST', (('SYMBOL', loc)...))`）。
+                    # `_al-bind-alist` 助手：仅当 kwote lambda locals == 外层函数
+                    # locals（net/proxy kwote lambda `/ shell exec stdout result`
+                    # == 函数 locals，CAD `_al-bind-alist` 在 locals 之前、0x56
+                    # 块在 const 前）时早注册；kwote lambda locals ≠ 函数 locals
+                    # （command `@::F` kwote /req resp boot ≠ 函数 /ok req，CAD
+                    # 实测 `const(req resp boot), VL-LOAD-COM, _al-bind-alist,
+                    # const(ok req)`）则 `_al-bind-alist` 由外层函数 locals 处理
+                    # 统一注册，不在此提前。
+                    if _lam_locals:
+                        _lc = ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))
+                        if not self._seen(out, (CONST_MARK, _lc)):
+                            out.append(((CONST_MARK, _lc), False))
+                        if set(_lam_locals) == set(cur_locals or []):
+                            if not self._seen(out, "_al-bind-alist"):
+                                out.append(("_al-bind-alist", False))
                     _kb = node.expr.body
                     for _bi, expr in enumerate(_kb):
                         self._collect_byteorder(
