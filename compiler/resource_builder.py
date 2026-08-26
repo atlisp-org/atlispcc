@@ -573,6 +573,12 @@ class ResourceBuilder:
                 k
                 for k in func_names_all
                 if func_offsets.get(k) not in nested_offs
+                # 顶层 kwote lambda（setup `(if @::*uris* (mapcar (function
+                # (lambda (x) ...)) ...))` 的 `-lambda-#TL` DEFUN）：不作为模块
+                # 注册函数名（DEFCODE 区注册 func-obj），否则 module_entries
+                # 多 1、后续函数体符号（install 体字符串）误入模块段 →
+                # 模块 GVARINIT st_init +1、nsyms/b 槽/seg0 全偏移。
+                and not (ResourceBuilder._is_lambda_key(k) and str(k).startswith("-lambda-#TL"))
                 and not (_only_lambda_keys and ResourceBuilder._is_lambda_key(k))
             ]
             func_names_all = module_func_names
@@ -860,7 +866,16 @@ class ResourceBuilder:
                 out += b"\x3a\x01"
         # DEFCODE 后 GVARINIT：var_pos = 模块注册符号数 + 2（函数名 + 顶层符号 + 2）。
         _nsyms = entry_count - len(func_names) - top_level_count + 1
-        gv_var_pos = len(func_names) + top_level_count + 2 + commands if stub_format else max(0, entry_count - 1)
+        # 顶层 kwote lambda（`-lambda-#TL`）作为 func-obj 在 DEFCODE 区注册，
+        # 但**不计入** var_pos 的函数计数（CAD setup 实测 gv_var_pos=23 =
+        # 14 真函数 + 7 顶层 + 2；st_init 仍含 -lambda-#TL）。否则 var_pos +1
+        # → rg 函数槽整体偏移、seg0 `-lambda-` 槽错位。
+        _tl_lam_count = sum(1 for k in func_offsets if str(k).startswith("-lambda-#TL"))
+        gv_var_pos = (
+            len(func_names) - _tl_lam_count + top_level_count + 2 + commands
+            if stub_format
+            else max(0, entry_count - 1)
+        )
         gv_st_init = len(func_names) if stub_format else len(func_names)
         out += res_gvar_init(gv_var_pos, gv_st_init)
         out += b"\x1c"
@@ -913,6 +928,11 @@ class ResourceBuilder:
             out += b"\x55\x01\x00" + res_u16(len(encoded)) + encoded
         elif kind == "LIST":
             dotted = len(structure) > 2 and structure[2]
+            if not structure[1]:
+                # 空列表 `()`：CAD 编码为 nil（PUSH_NIL `01`），非 `39 00 00`
+                # （setup 的 quoted const `(setq s::startup nil)` 实测）。
+                out.append(0x01)
+                return
             for item in structure[1]:
                 self._emit_const(out, item)
             # dotted 引用 `'(1 . 2)`：CAD 用单字节 `2a`(LIST_END) 收尾

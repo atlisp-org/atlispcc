@@ -1578,14 +1578,20 @@ class CodeGenerator:
             self._emit_quoted(buf, node)
             return
         if self._module_mode:
-            # 顶层 `(set/setq 'sym (function (lambda ...)))`（纯顶层文件）：
-            # CAD 用内嵌 `-lambda-` SUBR（seg0 + DEFCODE 注册为可调用函数），
-            # 模块代码 ``PUSH_G <sym>; PUSH_G <-lambda-槽>; FUNC_REF set``，
-            # 不经 kwote 调用（模块代码里 ``FUNC kwote`` 无定义，CAD 真机报
-            # "no function definition: KWOTE"）。`-lambda-` 槽由 cli 在
-            # seg0 生成阶段注册（DEFCODE），这里只登记并引用。
-            lam_idx = self.symtab.get_or_add("-lambda-")
+            # 顶层 kwote lambda 调用实参（setup `(if @::*uris* (mapcar
+            # (function (lambda (x) ...)) ...))`）：CAD 模块代码
+            # `JUMP 0; PUSH_G <funcobj>; FUNC 1, kwote`（func-obj 由
+            # `_offset_slots` 按 `-lambda-` 占位编址为 DEFCODE 区注册槽）。
+            # 不 get_or_add `-lambda-`（否则多一个额外 symtab 条目 → nsyms
+            # +1、lam_order 偏移、seg0 `-lambda-` 槽错位）。纯顶层 setq-lambda
+            # 绑定（net/wget）不经此处（`_stmt_bytes` top_lambda_slots 特判）。
+            lam_idx = self.symtab.name_to_idx.get("-lambda-", 0)
+            buf.emit(encode_op_s32(JUMP, 0))
             buf.emit(encode_op_u16(PUSH_G, lam_idx))
+            kwote_idx = self.symtab.get_or_add("kwote")
+            # 模块代码 FUNC 恒用 6 字节宽格式（CAD setup 实测 `51 01 08 00
+            # 01 00`，与 nsyms 无关）。
+            buf.emit(encode_func(1, kwote_idx, flags=1))
             return
         lam_idx = self._emit_nested_lambda(buf, node)
         kwote_idx = self.symtab.get_or_add("kwote")

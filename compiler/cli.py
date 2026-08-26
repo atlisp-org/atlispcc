@@ -863,6 +863,11 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
             return None
         if isinstance(v, tuple) and len(v) == 2:
             if v[0] == "LIST":
+                if not v[1]:
+                    # 空列表 `()`：CAD 编码为 nil（fg 表 None，build_mvar_tables
+                    # `0x00/0x01` → None），结构匹配归一化为 None（setup 的
+                    # quoted const `(setq s::startup nil)` 实测）。
+                    return None
                 return tuple(_strip_list_markers(i) for i in v[1])
         if isinstance(v, tuple) and len(v) == 3 and v[0] == "LIST" and v[2]:
             # dotted 引用 `'(a . b)`：symtab 常量 `('LIST', (a, b), True)`，fg 表
@@ -887,7 +892,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 for _canon in _vcp:
                     if _lower == _canon.lower():
                         return ("SYMBOL", _canon)
-                if _lower.startswith(("vla-", "vlax-")):
+                if _lower.startswith(("vla-", "vlax-", ":vlax-", ":vla-")):
                     return ("SYMBOL", _sn)
                 return ("SYMBOL", _sn.upper())
             if v[0] in ("INT", "INT8", "INT32"):
@@ -1494,6 +1499,8 @@ def _build_cad_module_code(
     skip_funcs: Optional[set] = None,
     n_cmds: int = 0,
     mid_counts: tuple = (),
+    _tl_lam_count: int = 0,
+    tl_funcobj_slot: Optional[int] = None,
 ) -> bytes:
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
@@ -1805,7 +1812,7 @@ def _build_cad_module_code(
             if _setq_off is not None:
                 bc = bc[:_setq_off] + b"\x0b" + bc[_setq_off:]
         return _offset_slots(bc, len(symtab.entries), gvar_map=_gvar, symtab=_symtab, real_map=real_map,
-                             n_cmds=n_cmds)
+                             n_cmds=n_cmds, tl_funcobj_slot=tl_funcobj_slot)
 
     def _emit_stmts(forms, last_no_pop: bool):
         """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。
@@ -1880,13 +1887,18 @@ def _build_cad_module_code(
             # 有 defun：追加函数注册尾（CAD 实测）。每函数一组
             # `PUSH_G <b>; SETQ_G <c>`，组间 `PUSH_G <c>; POP; JUMP`；
             # b = 2*n_funcs+1 + top_level_count + n_cmds - i（模块注册偏移，
-            # vl-ACAD-defun 符号使占位符/b 槽全局 +1）。
+            # vl-ACAD-defun 符号使占位符/b 槽全局 +1）。顶层 kwote lambda
+            # func-obj（`-lambda-#TL`）再 +1（setup b0=37 = 29+7+1 实测）。
             # c 槽 = 源码注册序：函数占 c = 符号槽 + 1（p03 实测
             # @::codepage2lang 槽 4 → c=5）；符号槽 ≥ 源码首个命令槽时再 +1
             # （vl 符号占用其后一个槽）；未显式给定函数名时退化为相对编号
             # n_funcs - i。
             nonlocal out
-            b = 2 * n_funcs + 1 + top_level_count + n_cmds - i
+            b = 2 * n_funcs + 1 + top_level_count + n_cmds + _tl_lam_count - i
+            # 顶层 kwote lambda 的 func-obj 槽位于 START 注册之后（setup 槽 29，
+            # START 37..30 / TAIL 28..23）：TAIL 注册（i >= n_pre）让出该槽 -1。
+            if _tl_lam_count and i >= n_pre:
+                b -= 1
             fn_slot = symtab.name_to_idx.get(func_names[i]) if i < len(func_names) and func_names else None
             c = (fn_slot + 1) if fn_slot is not None else (n_funcs - i)
             if fn_slot is not None and _first_cmd_slot is not None and fn_slot >= _first_cmd_slot:
@@ -2029,7 +2041,7 @@ def _is_empty_quote(node) -> bool:
 
 
 def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: Optional[dict] = None,
-                  n_cmds: int = 0) -> bytes:
+                  n_cmds: int = 0, tl_funcobj_slot: Optional[int] = None) -> bytes:
     """把字节码中的符号槽引用 +1（CAD 模块代码用 gvar 槽 = 符号槽+1）。
 
     处理 PUSH_G(0x09)/PUSH_VALUE(0x03)/SETQ_G(0x06)/USUBR(0x35) 的符号槽。
@@ -2088,6 +2100,18 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
             slot = _slot_for(inst.operands[0])
             if slot is not None:
                 out += bytes([raw[0]]) + struct.pack("<H", slot)
+            elif (
+                tl_funcobj_slot is not None
+                and name == "PUSH_G"
+                and symtab is not None
+                and 0 <= inst.operands[0] < len(symtab.entries)
+                and symtab.entries[inst.operands[0]][0] == "SYMBOL"
+                and str(symtab.entries[inst.operands[0]][1]).upper() == "-LAMBDA-"
+            ):
+                # 顶层 kwote lambda 的 func-obj 槽（DEFCODE 区注册的模块 rg
+                # 槽，不在 gvar_map）：setup `(if @::*uris* (mapcar (function
+                # (lambda (x) ...)) ...))` CAD 实测 PUSH_G 29。
+                out += bytes([raw[0]]) + struct.pack("<H", tl_funcobj_slot)
             else:
                 out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1 + n_cmds)
         elif name == "PUSH_VALUE":
@@ -2884,9 +2908,12 @@ def cmd_compile(
     _top_lam_count = 0
     _top_lambda_key_names: dict = {}
     _top_lambda_offsets: dict = {}
+    _tl_kwote_args: dict = {}
     _prev_emitted = False
     _tl_kwote_offsets: list = []
     _tl_kwote_count = 0
+    _tl_kwote_pos: dict = {}
+    _nfuncs_seen = 0
     for form in program.forms:
         if not isinstance(form, Defun):
             # 顶层 setq-lambda 绑定（`(set/setq 'X (function (lambda ...)))`，
@@ -2903,7 +2930,15 @@ def cmd_compile(
                 # 唯一键（高序号避免与 nested_list 的 `-lambda-#N` 冲突），
                 # 在源码位置写入 func_offsets（CAD 主 DEFCODE 区源码序交错）。
                 _tl_kwote_count += 1
-                func_offsets[f"-lambda-#TL{_tl_kwote_count}"] = _off
+                _tl_key = f"-lambda-#TL{_tl_kwote_count}"
+                func_offsets[_tl_key] = _off
+                # 顶层 kwote lambda 的 DEFUN 参数登记（`_patch_usubr_idx` 按
+                # seg0 offset 解析参数槽）：DEFUN 头后 argc 个 PUSH_G 参数绑定
+                # 须映射到 fg 槽（setup `x` → PUSH_G 120），否则落 fallback 错槽。
+                _top_lambda_offsets[_off] = _tl_key
+                _top_lambda_key_names[_tl_key] = _tl_key
+                _tl_kwote_args[_tl_key] = _lambda_real_args(_lam)
+                _tl_kwote_pos[_tl_key] = _nfuncs_seen
                 all_bytecode.emit(_fb)
                 _prev_emitted = True
             continue
@@ -2911,6 +2946,7 @@ def cmd_compile(
             all_bytecode.emit(bytes([0x16]))
         offset = len(all_bytecode.data)
         func_bytecode, _ = codegen.generate_function(form)
+        _nfuncs_seen += 1
         from compiler.cad_symbols import normalize_vla_name
 
         if form.name in _top_lambda_names:
@@ -3181,7 +3217,24 @@ def cmd_compile(
     # 模块注册函数数 = 模块尾块 defun 数（CAD 只把模块代码引用的尾块函数名
     # 注册进模块注册段；atlisp_u 48，其余 416 个库函数名经函数体符号区注册）。
     _mr_func_count = _mrfc(program)
+    # 顶层 kwote lambda（setup `(if @::*uris* (mapcar (function (lambda ...))
+    # ...))` 的 `-lambda-#TL` DEFUN）：作为 func-obj 在 DEFCODE 区注册，占用
+    # 模块 rg 空间一个额外槽。nsyms（len(entries)-module_reg_count+1）与 b 槽
+    # 公式须计入（CAD 实测 nsyms=166、b0=37 = 2*14+1+7+1）。模块注册段
+    # (module_entries) 不含它（resource_builder 已排除），两者差 1。
+    _tl_lam_count = sum(1 for k in func_offsets if str(k).startswith("-lambda-#TL"))
+    # 顶层 kwote lambda 不作为 symtab `-lambda-` 条目（module-mode `_emit_kwote`
+    # 不再 get_or_add），entries 计数不含它；module_reg_count 不加 _tl_lam_count
+    #（否则 nsyms 少 1）。b 槽公式 / gv_var_pos 仍单独计入 func-obj。
     module_reg_count = len(defun_forms) + top_level_count
+    # 顶层 kwote lambda 的 func-obj 槽（模块代码 PUSH_G 引用，DEFCODE 区注册
+    # 的模块 rg 槽）：CAD setup 实测 func-obj=29 = 2*n_funcs+1+tlc+_tl_lam_count
+    # - n_funcs_before（lambda 源码位置前的 defun 数）。
+    _tl_funcobj_slots = {}
+    for _tlk, _pos in _tl_kwote_pos.items():
+        _tl_funcobj_slots[_tlk] = (
+            2 * len(defun_forms) + 1 + top_level_count + _tl_lam_count - _pos
+        )
     # 纯顶层含顶层 `(set/setq 'sym (lambda ...))` 时，收集第二区符号
     # （lambda 体符号 + 参数，CAD DEFCODE 区前置注册，fg 表用）。顺序：源码
     # 逆序（@::vlx 在前、@::fasext 在后），各 lambda 体符号 + 参数。与
@@ -3348,6 +3401,8 @@ def cmd_compile(
             skip_funcs=_top_lambda_names,
             n_cmds=n_cmds,
             mid_counts=tuple(_mid_counts),
+            _tl_lam_count=_tl_lam_count,
+            tl_funcobj_slot=_tl_funcobj_slots.get("-lambda-#TL1") if _tl_funcobj_slots else None,
         )
     elif n_cmds:
         # 纯命令文件（全部函数都是命令，无顶层表达式，t14_command）走
@@ -3396,7 +3451,12 @@ def cmd_compile(
     # 混合文件顶层 setq-lambda 以 `-lambda-` 键登记 func_offsets（DEFCODE 尾
     # 注册为 `-lambda-`）：参数修正按原函数名解析（params_by_name 用原名键）。
     for _lkey, _oname in _top_lambda_key_names.items():
-        params_by_name[_lkey.upper()] = params_by_name.get(normalize_vla_name(_oname).upper())
+        if _lkey in _tl_kwote_args:
+            # 顶层 kwote lambda（setup `(if @::*uris* (mapcar (function (lambda
+            # (x) ...)) ...))` 的 `-lambda-#TL`）：参数 = lambda 真参数。
+            params_by_name[_lkey.upper()] = _tl_kwote_args[_lkey]
+        else:
+            params_by_name[_lkey.upper()] = params_by_name.get(normalize_vla_name(_oname).upper())
 
     # 第一轮：先用未 patch 的 seg0 建 seg1 以获取 gvar 表。
     # commands 标志：纯命令文件（无顶层表达式，走 build_command_module_code）
@@ -3499,6 +3559,8 @@ def cmd_compile(
                 skip_funcs=_top_lambda_names,
                 n_cmds=n_cmds,
                 mid_counts=tuple(_mid_counts),
+                _tl_lam_count=_tl_lam_count,
+                tl_funcobj_slot=_tl_funcobj_slots.get("-lambda-#TL1") if _tl_funcobj_slots else None,
             )
     seg0 = _patch_usubr_idx(seg0, seg1, symtab, fas_nsyms, all_func_args,
                             codegen_nsyms=codegen_nsyms,
