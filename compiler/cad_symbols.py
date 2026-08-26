@@ -553,6 +553,17 @@ class CadSymbolCollector:
             for _a in _f.args:
                 _arg_count[_a] = _arg_count.get(_a, 0) + 1
         self._unique_params = {a for a, c in _arg_count.items() if c == 1}
+        # 共享参数的逆序**最后声明拥有者**（args 声明序，与 `_collect_multi`
+        # 的 `_shared_last` 一致）。嵌套块用它判定参数是否由**当前外层函数**
+        # 的 args 循环注册（string-utils s2la `(str separator)` = 外层参数，
+        # `separator` 的 last=6 == 外层 reversed 6；`str` 的 last=9 ≠ 6）。
+        self._n_funcs = len(defuns)
+        _shared_last_decl: dict = {}
+        for _di, _df in enumerate(reversed(defuns)):
+            for _da in _df.args:
+                if _da in self.shared:
+                    _shared_last_decl[_da] = max(_shared_last_decl.get(_da, -1), _di)
+        self._shared_last_decl = _shared_last_decl
         for _jf, f in enumerate(defuns):
             self._cur_source_idx = _jf
             refs = _SeenList()
@@ -1719,6 +1730,18 @@ class CadSymbolCollector:
             # 与普通函数参数 `reversed(all_args)` 一致——version @::pkg-deps-tree-rec
             # `(name depth)` CAD 实测 `DEPTH NAME`）。
             for _a in _inner_all:
+                # 共享参数且其 args 声明逆序最后拥有者 == **当前外层函数**
+                #（string-utils s2la `(str separator)` = 外层参数，`separator`
+                # last=6 == 外层 reversed 6）：由外层 args 循环注册（在外层
+                # locals 常量之后），嵌套块不注册——否则提前到体符号组、CAD
+                # 槽错位（SEPARATOR 应在外层 `('S2LA',)` locals const 之后）。
+                # STR 的 last=9（max-char）≠ 外层 6，照常由嵌套块注册。
+                if (
+                    _a in self.shared
+                    and self._shared_last_decl.get(_a)
+                    == self._n_funcs - 1 - getattr(self, "_cur_source_idx", 10**9)
+                ):
+                    continue
                 if not self._seen(out, _a):
                     out.append((_a, False))
             # locals 常量 + _al-bind-alist 助手（n2 实测 const 在 _al-bind-alist 后）

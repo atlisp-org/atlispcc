@@ -1785,6 +1785,8 @@ class CodeGenerator:
         saved_next = self.next_slot
         saved_loop = self._loop_depth
         saved_tail = self._tail_entry_label
+        saved_stmt = self._in_stmt_ctx
+        saved_in_tail = self._in_tail_context
 
         self.current_func_name = node.name
         all_args = node.args + node.optional + ([node.rest] if node.rest else [])
@@ -1793,6 +1795,12 @@ class CodeGenerator:
         self.next_slot = 0
         self._loop_depth = 0
         self._tail_entry_label = f"_tail_entry_{node.name}_{id(node)}"
+        # 嵌套函数体是独立求值作用域：体末 form 是函数返回值（值上下文），
+        # 不受外层语句上下文（`_emit_stmt` 置 `_in_stmt_ctx`）影响——否则 s2la
+        # 尾 `(if ...)` 的 then/else 分支值被误 POP（string-utils CAD 无
+        # `0a`），seg0 +2。
+        self._in_stmt_ctx = False
+        self._in_tail_context = False
         # 嵌套 defun 参数按真实符号槽绑定/读取（Y@6），不走单函数
         # `nsyms-argc+i` 顶部槽公式（外层参数 X 才在顶部）。
         saved_nd_depth = self._nested_defun_depth
@@ -1848,6 +1856,8 @@ class CodeGenerator:
         self._tail_entry_label = saved_tail
         self._nested_defun_depth = saved_nd_depth
         self._nested_shadowing = saved_nd_shadow
+        self._in_stmt_ctx = saved_stmt
+        self._in_tail_context = saved_in_tail
 
         # 记录嵌套函数（偏移范围 + 名字 + 参数 + 槽占位），cli.py 据此登记
         # func_offsets。sym_idx/fo_idx 供 `_patch_usubr_idx` 重映射 PUSH_G。

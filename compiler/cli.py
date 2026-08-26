@@ -595,7 +595,8 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                      top_lambda_args: Optional[list] = None,
                      top_lambda_offsets: Optional[dict] = None,
                      module_reg_count: Optional[int] = None,
-                     funcobj_map: Optional[dict] = None) -> bytes:
+                     funcobj_map: Optional[dict] = None,
+                     func_nested_lambdas_raw: Optional[dict] = None) -> bytes:
     """修正 stub 字节码的 USUBR 与参数槽索引为 CAD 的 gvar 槽 - 1。
 
     CAD 实测逆向：
@@ -992,6 +993,22 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     cur_func = None
     lambda_idx = 0
     arg_i = 0
+    # 预建 `-lambda-` DEFUN offset → (cur_args, host_func) 映射：
+    # 避免全局 lambda_idx 计数器被命名 DEFUN 重置后错位（log @::log-cleanup
+    # 的嵌套 defun @684 重置 lambda_idx=0 → 后续 -lambda-@751 误取 [f] 而非 [a,b]）。
+    _lambda_offset_map: dict = {}
+    if func_nested_lambdas_raw:
+        for _fname, _fnl_raw in func_nested_lambdas_raw.items():
+            _fstart = None
+            for _n, _o in (symtab.function_offsets.items() if hasattr(symtab, "function_offsets") else []):
+                if str(_n).upper() == _fname.upper():
+                    _fstart = _o
+                    break
+            if _fstart is None:
+                continue
+            for _rel_start, _rel_end, _la_args, _la_idx in _fnl_raw:
+                _abs = _fstart + _rel_start
+                _lambda_offset_map[_abs] = (_la_args, _fname.upper())
     # kwote lambda 的 `-lambda-` DEFUN 不注册 name_by_offset：进入时把宿主
     # 函数参数压栈，END_DEFUN 时弹出恢复——否则 lambda 结束后宿主函数体的
     # 参数读取（PUSH_VALUE mod-sym 等）仍用 lambda 的 cur_args（net/module
@@ -1012,7 +1029,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     out += bytes([0x09, _ni & 0xFF, (_ni >> 8) & 0xFF])
                     continue
         if inst.op_name == "DEFUN":
-            _arg_stack.append((cur_args, arg_i))
+            _arg_stack.append((cur_args, arg_i, cur_func, lambda_idx))
             fname = name_by_offset.get(inst.offset)
             if fname is not None:
                 cur_func = fname
@@ -1027,24 +1044,24 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                     cur_func = None
                     lambda_idx = 0
                 else:
-                    # 内嵌 `-lambda-` DEFUN：取所在函数收集的 kwote lambda 参数。
-                    # 优先用 codegen **发射序**参数（`nested_lambda_args`，seg0
-                    # DEFUN 出现序）——复杂 cond 下 `_collect_kwote_lambda_args`
-                    # 源码序与发射序不一致（safe-eval b/clause/ok-tail 实测）。
-                    # 纯顶层 `(set/setq 'sym (lambda ...))`（无宿主 defun）用
-                    # top_lambda_args（按 seg0 出现序 = 源码序）。
-                    if top_lambda_args and (cur_func is None or cur_func == "-LAMBDA-"):
+                    # 内嵌 `-lambda-` DEFUN：优先用预建 offset 映射（精确，
+                    # 不受命名 DEFUN 重置 lambda_idx 影响），回退到
+                    # nested_lambda_args/lambda_args_by_func 索引。
+                    if inst.offset in _lambda_offset_map:
+                        cur_args, cur_func = _lambda_offset_map[inst.offset]
+                    elif top_lambda_args and (cur_func is None or cur_func == "-LAMBDA-"):
                         _la = top_lambda_args
+                        cur_args = _la[lambda_idx] if lambda_idx < len(_la) else None
                     else:
                         _la = nested_lambda_args.get(cur_func, []) if cur_func else []
                         if not _la:
                             _la = lambda_args_by_func.get(cur_func, []) if cur_func else []
-                    cur_args = _la[lambda_idx] if lambda_idx < len(_la) else None
+                        cur_args = _la[lambda_idx] if lambda_idx < len(_la) else None
                     lambda_idx += 1
             arg_i = 0
         elif inst.op_name == "END_DEFUN":
             if _arg_stack:
-                cur_args, arg_i = _arg_stack.pop()
+                cur_args, arg_i, cur_func, lambda_idx = _arg_stack.pop()
         # 参数绑定 PUSH_G（DEFUN 后 argc 个，仅多函数）
         if (multi or top_lambda_args) and inst.op_name == "PUSH_G" and cur_args is not None and arg_i < len(cur_args):
             arg = cur_args[arg_i]
@@ -3090,7 +3107,6 @@ def cmd_compile(
         # 重写 func_offsets 键顺序
         for i, (n_start, n_end) in enumerate(nested_list):
             func_offsets[f"-lambda-#{i + 1}" if i else "-lambda-"] = n_start
-    print("DBG nested_list:", nested_list, file=sys.stderr)
 
     # 函数体内嵌套 `(defun inner ...)`（CAD 原生内嵌 DEFUN）：登记进 func_offsets
     # 使 resource_builder 为嵌套函数发射 DEFCODE（函数目录 + func-obj 槽）。
@@ -3574,7 +3590,8 @@ def cmd_compile(
                             if top_lambda_binds and not defun_forms else None,
                             top_lambda_offsets=_top_lambda_offsets,
                             module_reg_count=module_reg_count,
-                            funcobj_map=funcobj_map)
+                            funcobj_map=funcobj_map,
+                            func_nested_lambdas_raw=codegen._func_nested_lambdas)
     # 第二轮：用 patch 后的 seg0 重建 seg1（代码引用长度依赖 seg0 最终长度）。
     seg1 = resource.build(
         func_offsets,
