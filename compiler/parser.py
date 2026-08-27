@@ -71,9 +71,16 @@ class Parser:
             # 否则 `'(progn (defun ... (function (lambda ...)) ...))` 的 kwote
             # 使 to_const 失败，CAD 用单个 CONST 引用的 quoted 数据退化为运行时
             # BUILD_LIST 逐元素构建（@lisp_u @::install 的 `'(progn ...)` 实测）。
-            return QuotedExpr(
-                expr=self.parse_form(quoted=True), kwote=(not quoted)
-            )
+            #
+            # kwote 的 `(function (lambda ...))` 其 lambda **体是执行代码**（非
+            # 数据）：体里的嵌套 `(function ...)`（panel.lsp CALC-LAYOUT 的
+            # mapcar 内 vl-remove-if `(function(lambda (x) (= "--" (car x))))`）
+            # 也应是 kwote（CAD 各生成独立 `-lambda-`）。故 kwote 时 X 用
+            # quoted=False 解析（lambda 体执行上下文）；非 kwote（数据）时 X
+            # 用 quoted=True（`'(function (lambda ...))` 体是数据列表）。
+            _kw = not quoted
+            expr = self.parse_form(quoted=(not _kw))
+            return QuotedExpr(expr=expr, kwote=_kw)
         elif kind == 'SYMBOL':
             self.advance()
             return Symbol(name=val)
@@ -174,7 +181,15 @@ class Parser:
                 self.packages.set_current(pkg_name)
                 return InPackage(name=pkg_name)
             elif name in ('quote', 'function'):
-                expr = self.parse_form(quoted=True)
+                if name == 'quote':
+                    expr = self.parse_form(quoted=True)
+                else:
+                    # `(function X)`：kwote 上下文（外层非 quoted）时 X 的 lambda
+                    # 体是执行代码，体里嵌套 `(function ...)` 也应 kwote（各自
+                    # 独立 `-lambda-`，panel.lsp CALC-LAYOUT 实测）；引用上下文
+                    # （外层 quoted）时 X 是数据（FUNCTION 符号 + lambda 列表）。
+                    _kw = not quoted
+                    expr = self.parse_form(quoted=(not _kw))
                 self.expect('RPAREN')
                 # `(function X)` 在引用上下文内（`'(... (function (lambda ...))
                 # ...)`）是数据（FUNCTION 符号 + lambda 列表），非 kwote 调用。

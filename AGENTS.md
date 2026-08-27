@@ -203,16 +203,45 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 
 对 `../kernel/src/` 下全部 67 个 `.lsp` 逐个编译并与 CAD 真机（`(vlisp-compile 'st ...)`，AutoCAD 24.1s）产物逐字节比对。工作流：`python scripts/mcp_cad.py eval "(vlisp-compile 'st <in> <out>)"`（模式 `'st`，CAD 文档打开时才可编译；路径用正斜杠）。
 
-### 当前状态：63/67 byte-identical（4 DIFF）
+### 当前状态：62/67 byte-identical（5 DIFF）
 
 67/67 全部通过编译产物验证（CAD 加载无访问冲突）。逐文件状态用 `scripts/kernel_compare_http.py`（ours→compare）复核。
 
-**剩余 4 个 DIFF 根因**：
+> 注：2026-08-27 远程恢复 4 份被误覆盖的 golden（platform-api/ax-request/module/probe，
+> CAD 真机 2026-08-26 产物，见 036c63e）。此前对旧 golden 的 byte-identity 计数
+> （66/67）不适用于恢复后的 golden——这 4 份为**既有 codegen 差异**（编译产物未变，
+> 仅 golden 修正暴露），非本次改动引入。
 
-- **`sub-system/condition/nlp.lsp`（seg0,seg1，nsyms 已对齐）**：LET 结构差异——nlp 的 CAD 用 `PUSH_VALUE <var>; <e求值>; EVAL 1,7`（多绑定 + bare 变量），event-bus 用 `value; USUBR(1,var); EVAL 0`。`_emit_let`（codegen.py）需区分两种结构，待 CAD 真机逆向确认。
-- **`sub-system/config/dialog.lsp`（nsyms 202vs196，OURS 多 6）**：嵌套 defun（cb-search 等 DCL 回调）内 kwote 块插入位置——OURS kwote@46（组首）vs CAD@89（调用者 vl-remove-if-not 后）。kwote 首参 + 后续 if 参数时调用者锚点检测错位。
-- **`sub-system/ui/menu.lsp`（nsyms 227vs230，OURS 少 3）**：`vlax-for` 在 CAD 编译为 collect-init/next/release 内部 SUBR 枚举协议（ActiveX 集合迭代），OURS 当前按 list foreach 编译（**功能上对 ActiveX 对象也是错的**）。parser 已标记 `name='vlax-for'` 可另发字节码。协议：`SETQ_G collect-init`; loop `PUSH_G collect-next; INIT_ARGS; GET_LOCAL; FUNC collect-next; DUP; SETQ_G collect-next; JMP32_IFNOT; 体; JUMP`; 尾部 `GET_LOCAL; FUNC collect-release; POP`。
-- **`sub-system/ui/panel.lsp`（seg0,seg1）**：符号槽序边角。
+**剩余 5 个 DIFF 根因**：
+
+- **`platform-api.lsp` / `net/ax-request.lsp` / `net/module.lsp` / `net/probe.lsp`（seg0，nsyms/sym_slots 已对齐）**：恢复的 CAD 真机 golden 与当前编译产物存在既有 codegen 差异（如 platform-api seg0 短 66 字节）。未深入定位，待后续对拍。
+- **`sub-system/ui/panel.lsp`（seg0,seg1，nsyms 已对齐 266）**：顶层 `(if is-gcad (progn (defun C:% ...) (defun C:%% ...) (foreach ...)))` 模块代码——CAD 把 C:%/C:%% body 提升进 seg0，但**运行时绑定留在 if 守卫内**（`PUSH_VALUE is-gcad; JMP32_IFNOT; PUSH_G <func-obj>; SETQ_G C:%` + 命令注册 `USUBR(1, vl-ACAD-defun); PUSH_NIL; POP`）。当前 `_hoist_conditional_defuns` 把 defun 提升后**整个移出 if**，模块代码无条件注册 C:%/C:%%（守卫缺失 + 多余 `PUSH_G c; POP`）。修复需：hoist 保留绑定标记在 if 内、func-obj/vl 槽按 `_reg(i)` 公式预计算（b=39/38、c=14/12、vl=13）、跳过无条件注册——但绑定 USUBR 是 `_reg_emit` 的 4 字节格式（`35 <argc> <idx16>` 无 flags），经 `_offset_slots` 会被重编码为宽格式，需绕过。
+
+**已修复（2026-08-27）**：
+
+- **`sub-system/condition/nlp.lsp`**：LET 带裸变量结构（`PUSH_VALUE <bare-var>...; EVAL <n_bare>,7`）+ let body 非末 form 按值/尾上下文 + `USUBR(<n_form+1>, LET)` argc。详见「LET 原生编译」。
+- **`sub-system/config/dialog.lsp`**：progn 语句双 POP（progn 自 POP 后外层循环再 POP）、值上下文 progn 末 form 误 POP、尾 repeat 末 form 丢 DUP。详见「progn/repeat 栈平衡」。
+- **`sub-system/ui/menu.lsp`**：`vlax-for` ActiveX 枚举协议 + 局部槽序修正（详见「vlax-for 枚举协议」）。seg0+seg1+nsyms 全对齐 `tests/cad/kernel_golden/sub-system/ui/menu.fas`（`--encoding gbk` 编译比对）。同时恢复 `init/compat.lsp`、`net/reload.lsp` byte-identity（回退一处不必要的 kwote 插入位置改动 `_rev[: _j]`，恢复 `[: _j + 1]`）。
+
+### LET 原生编译（nlp.lsp golden 实测，2026-08-27）
+
+- **裸变量绑定**（`(let ((v e) bare1 bare2...) body...)`）：CAD 先把裸变量符号 `PUSH_VALUE <slot>` 推入（在绑定值之前），再对每个有值绑定 `value; USUBR(1, <var>)`，最后 `EVAL <n_bare>, 7`（argc = 裸变量数，CMD-MATCH-WEB 实测 `EVAL 2,7`）。无裸变量走 event-bus 结构 `value; USUBR(1, var); EVAL 0,7`。
+- **let body 值累积**：let body 的**非末 form** 也按值/尾上下文编译（`_emit_expr(_tail=True)`）——else-less if 补 PUSH_NIL、表达式不 POP、foreach/repeat 走尾协议（nlp cmd-ai-fallback 4 form 实测 forms 0-2 值均保留）。
+- **let 尾 USUBR argc**：let body 最后 form 为 if 时，end 后 `USUBR(<n_body_form+1>, LET)`（nlp 4 form → argc 5，event-bus 1 form → argc 2），由 `_emit_let` 经 `_in_let_tail` 传 argc。
+
+### progn/repeat 栈平衡（dialog.lsp golden 实测，2026-08-27）
+
+- **progn 语句双 POP**：语句上下文 progn 自 POP 末 form 值后，外层循环（progn/repeat/while/lambda 体/函数体）不再补 POP——排除元组补 `Progn`。
+- **值上下文 progn 不 POP**：`(set_tile ... (progn ... (if ... rd%)))` 的嵌套 progn 是实参（值被消费），末 form 值保留——progn 分支末 form POP 仅限 `_in_stmt_ctx or _module_mode`。
+- **尾 repeat 末 form**：同尾 while/foreach，用 `_emit_expr(_tail=True)`（dialog save-config `(repeat ... (setq i (1+ i)))` 实测 `DUP SETQ_G`）。
+
+### vlax-for 枚举协议（menu.lsp golden 实测，2026-08-27）
+
+- **parser**（parser.py:145）：`(vlax-for var collection body...)` → `ForeachNode(name='vlax-for')`。
+- **codegen**（`_emit_vlax_for_stub`，codegen.py）：`<coll> 求值 → FUNC 1 <collect-init>; NIL; PUSH_NIL; NIL → SET_LOCAL（iterator 状态）→ PUSH_G <var>; PUSH_NIL; INIT_ARGS 3（预载）→ loop: GET_LOCAL; FUNC 1 <collect-next>; NIL; PUSH_NIL; NIL; DUP; SETQ_G <var>; JMP32_IFNOT end; body(无 POP); JUMP loop; end: GET_LOCAL; FUNC 1 <collect-release>; NIL; PUSH_NIL; NIL; POP; CLEAR_ARGS 1`。collect 调用用 `FUNC 1` + `NIL; PUSH_NIL; NIL` 清理（同 `command`/`_al-bind-alist`），非 USUBR 的 `00 03`。尾上下文（kwote lambda 体末）同 list foreach 的 PUSH_NIL 占位 + 体首 POP。
+- **符号收集**（cad_symbols.py `_collect_byteorder` ForeachNode 分支）：vlax-for 额外注册 `collect-init → var → collect-next → body → collect-release`（跨函数共享单槽、小写）。
+- **资源段**（resource_builder.py）：collect-* 进 `_CASE_PRESERVE_SUBR_BLOCKS`，独立 `56 <name> 00 00` 块（同 `_al-bind-alist`/`kwote`/`ads-cmd`）。
+- **foreach 循环变量**（cad_symbols.py）：var 是**本函数 `/ 局部变量`** 时，即使与 `_unique_params`（它函数唯一参数）同名也在 var 位置独立注册（menu.lsp `category` = cuix-add-category 参数 + remove-pkg-menu `/ local` + 外层 foreach 变量；`_al-bind-alist` 绑定协议需本函数槽）。非本函数局部仍按 `_unique_params` 跳过（cache.lsp `subdir` 复用参数拥有者槽）。
 
 ### 已固化的通用规则（对拍多次确认，后续改动须遵循）
 

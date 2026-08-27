@@ -11,7 +11,17 @@ _VLISP_CASE_PRESERVE = {
     "VLR-Add", "VLR-Command-Reactor", "VLR-Mouse-Reactor", "VLR-Remove",
     "VLAX-FOR", "vlax-3d-point",
     "end", "showhtmlmodalwindow", "sort", "startapp",
+    # vlax-for 的 collect 枚举协议内部 SUBR（kernel ui/menu.lsp golden 实测小写）
+    "collect-init", "collect-next", "collect-release",
 }
+
+# 需独立 0x56 保留大小写块（`56 <name> 00 00`）的机制符号：`/ 局部变量`
+# 助手、kwote、command 调用目标，以及 vlax-for 的 collect 内部 SUBR
+# （menu.lsp golden 实测 `Vcollect-release`/`Vcollect-next`/`Vcollect-init`）。
+_CASE_PRESERVE_SUBR_BLOCKS = frozenset(
+    {"_al-bind-alist", "kwote", "ads-cmd", "collect-init", "collect-next", "collect-release"}
+)
+
 
 
 def resolve_encoding(enc: Optional[str]) -> str:
@@ -518,10 +528,11 @@ class ResourceBuilder:
                             _sym_buf = bytearray()
                         out += self._const_bytes(_bs[1])
                         _i += 1
-                    elif _bs == "_al-bind-alist" or _bs == "ads-cmd":
-                        # `/ 局部变量` 助手 / `command` 调用目标：保留大小写、
-                        # 独立 0x56 单符号块（net/wget CAD 实测
-                        # `56 _al-bind-alist` / `56 ads-cmd`）。
+                    elif _bs in _CASE_PRESERVE_SUBR_BLOCKS:
+                        # `/ 局部变量` 助手 / `command` 调用目标 / vlax-for 的
+                        # collect 内部 SUBR：保留大小写、独立 0x56 单符号块
+                        # （net/wget CAD 实测 `56 _al-bind-alist` / `56 ads-cmd`；
+                        # menu.lsp golden `56 collect-init` 等）。
                         if _sym_buf:
                             out += b"\x5b" + bytes(_sym_buf) + b"\x00"
                             _sym_buf = bytearray()
@@ -643,11 +654,11 @@ class ResourceBuilder:
                             fn_bytes = bytearray()
                         out += b"\x56" + self._enc("vl-ACAD-defun") + b"\x00\x00"
                         _vl_first_cmd = None
-                    if str(entry_val) in ("_al-bind-alist", "kwote", "ads-cmd"):
+                    if str(entry_val) in _CASE_PRESERVE_SUBR_BLOCKS:
                         # CAD 模块注册：`kwote` 机制符号保留大小写、独立 0x56
                         # 单符号块（setup.lsp CAD 实测 `5b ...MAPCAR 00 00
                         # 56 kwote 00 00 5b @::*URIS*...`）。与函数体符号区
-                        # （`_al-bind-alist`/`kwote` 同规则）一致。
+                        # （`_al-bind-alist`/`kwote`/collect-* 同规则）一致。
                         if fn_bytes:
                             out += b"\x5b" + bytes(fn_bytes) + b"\x00"
                             fn_bytes = bytearray()
@@ -724,9 +735,10 @@ class ResourceBuilder:
                         # `(defun inner ...)`（真实名字）仍需符号槽。
                         i += 1
                         continue
-                    if str(entry_val) in ("_al-bind-alist", "kwote", "ads-cmd"):
-                        # CAD `/ 局部变量` 助手与 kwote 机制符号：保留大小写、
-                        # 独立 0x56 单符号块（t11_localvars / i18n-cad 实测）。
+                    if str(entry_val) in _CASE_PRESERVE_SUBR_BLOCKS:
+                        # CAD `/ 局部变量` 助手与 kwote/collect 机制符号：保留
+                        # 大小写、独立 0x56 单符号块（t11_localvars / i18n-cad
+                        # / menu.lsp golden 实测）。
                         if symbol_bytes:
                             out += b"\x5b" + bytes(symbol_bytes) + b"\x00"
                             symbol_bytes = bytearray()

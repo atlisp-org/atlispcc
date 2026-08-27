@@ -130,18 +130,20 @@ def normalize_vla_name(name):
 
 
 def strip_docstring(body):
-    """CAD 忽略 defun 后开头的连续裸字符串（docstring）。
+    """CAD 丢弃 defun 体中语句位置的裸字符串（docstring/分节注释）。
 
-    `(defun f () "文档说明" ...)` 编译时丢弃该字符串（AutoLISP 惯例，
-    docstr.fas CAD 实测 strings 为空）。连续多个 docstring 全部剥离
-    （base-function CAD 实测 handle-keywords 双 docstring 均不注册）。
-    仅当它是函数体**开头**的独立字符串字面量时跳过，不影响
-    `(strcat "a" "b")` 等表达式内字符串。
+    开头的 docstring 与体中间的分节字符串编译时全部丢弃（不注册符号槽、
+    不发射 PUSH_G）：
+    - docstr.fas CAD 实测 strings 为空（开头 docstring）
+    - base-function CAD 实测 handle-keywords 双 docstring 均不注册
+    - dialog.lsp CAD 实测 @::edit-config 体中间 6 个分节字符串全部不注册
+    仅体末 form（返回值位置）的字符串保留。只影响 defun 体顶层的
+    裸 String，不影响 `(strcat "a" "b")` 等表达式内字符串。
     """
     body = list(body)
-    while len(body) > 1 and isinstance(body[0], String):
-        body = body[1:]
-    return body
+    if len(body) <= 1:
+        return body
+    return [x for i, x in enumerate(body) if i == len(body) - 1 or not isinstance(x, String)]
 
 
 def to_const(node):
@@ -465,9 +467,22 @@ class CadSymbolCollector:
                     _di += 1
         # 参数使用统计：argname -> 使用它的函数数（共享参数判定）
         arg_usage: dict = {}
+        # 嵌套 defun（函数体内 `(defun inner ...)`）的参数也计入——panel.lsp
+        # @::panel-dialog-core 内嵌 run-function 的参数 `func` 与顶层
+        # @::panel-after-exec 的参数 `func` 同名，CAD 共享同一符号槽
+        # （golden fg[163]），嵌套 defun 参数须让 func 进入 shared 合并。
+        def _count_nested(fnode):
+            for _e in fnode.body:
+                if isinstance(_e, Defun):
+                    for _a in _e.args + list(getattr(_e, "optional", [])) + (
+                        [getattr(_e, "rest")] if getattr(_e, "rest", None) else []
+                    ):
+                        arg_usage[_a] = arg_usage.get(_a, 0) + 1
+                    _count_nested(_e)
         for f in defuns:
             for a in f.args:
                 arg_usage[a] = arg_usage.get(a, 0) + 1
+            _count_nested(f)
         self.shared = {a for a, c in arg_usage.items() if c > 1}
         # 全部函数参数名（含唯一参数）：函数体收集时排除——参数由各函数 args
         # 循环注册（唯一参数在所属函数、共享参数在 _shared_last 处）。否则某函数
@@ -1791,8 +1806,6 @@ class CadSymbolCollector:
             # n2 `(+ y 1)` 的 + 在 setq 目标 Z 前），该块在 out 中整体被外层
             # 逆序——故按正向追加，外层逆序后即目标序（n2 `Z +`）。
             for _n, _f in _inner_refs:
-                if _n == "__kwote_end__":
-                    continue
                 if not self._seen(out, _n):
                     out.append((_n, _f))
             # 函数名最后（外层逆序后落在最前）
@@ -1854,6 +1867,27 @@ class CadSymbolCollector:
             # 体 SETQ_G <var>（循环变量先于体求值）→ 体各式。故符号引用序 =
             # list_expr → var → body（i18n-cad 实测 update-locale-all 组
             # [PKG, @::*PKG-IN-USE*, ...]：list 在 var 之前）。
+            if getattr(node, "name", None) == "vlax-for":
+                # vlax-for 的 collect 枚举协议（kernel ui/menu.lsp golden）：额外
+                # collect-init/next/release 三个内部 SUBR 符号，按字节码引用序
+                # 注册在函数体符号区（golden 符号流 `collect-release GROUP =
+                # @LISP STRCASE vla-get-Name collect-next G collect-init GROUPS`，
+                # 即 kept 正序 = list_expr → collect-init → var → collect-next →
+                # body → collect-release）。collect-* 为跨函数共享单槽（小写）。
+                out.append(("collect-init", False))
+                if node.var is not None:
+                    _v = normalize_vla_name(node.var.name)
+                    if (
+                        _v not in arg_names
+                        and _v not in getattr(self, "_unique_params", set()) - (cur_locals or set()) - (cur_locals or set())
+                        and not self._seen(out, _v)
+                    ):
+                        out.append((_v, False))
+                out.append(("collect-next", False))
+                for expr in node.body:
+                    self._collect_byteorder(expr, out, arg_names, in_quote)
+                out.append(("collect-release", False))
+                return
             if node.list_expr:
                 self._collect_byteorder(node.list_expr, out, arg_names, in_quote)
             if node.var is not None:
@@ -1864,21 +1898,31 @@ class CadSymbolCollector:
                 # foreach 循环变量（CAD 模块区 510 CMD + 函数体区共享参数槽并存）。
                 # 但 var 名与**唯一参数**（cache.lsp `subdir` = cache-store 参数
                 # + cache-clear-all foreach 变量）同名时不独立注册——CAD 复用
-                # 参数拥有者槽（fg[46]，参数组），foreach 处无独立槽。
+                # 参数拥有者槽（fg[46]，参数组），foreach 处无独立槽。例外：var
+                # 是**本函数 `/ 局部变量`**（menu.lsp `category` = cuix-add-category
+                # 参数 + remove-pkg-menu `/ local` + 外层 foreach 变量）时 CAD 仍在
+                # var 位置独立注册（golden 局部块 `ITEM ITEMS CATEGORY NEW-MENU`，
+                # `_al-bind-alist` 绑定协议需要本函数槽）。
                 _v = normalize_vla_name(node.var.name)
                 if (
                     _v not in arg_names
-                    and _v not in getattr(self, "_unique_params", set())
+                    and _v not in getattr(self, "_unique_params", set()) - (cur_locals or set()) - (cur_locals or set())
                     and not self._seen(out, _v)
                 ):
                     out.append((_v, False))
             for expr in node.body:
                 self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, RepeatNode):
-            for expr in node.body:
-                self._collect_byteorder(expr, out, arg_names, in_quote)
+            # CAD repeat 字节码：count 先求值存局部槽（`_emit_repeat_stub`
+            # `count; SET_LOCAL`），随后 body。符号引用序 = count → body
+            # （panel.lsp @::panel-dcl-config-buttons 的 repeat count
+            # `(- max-menus (length (vl-remove-if kwote ...)))` 符号
+            # `- LENGTH VL-REMOVE-IF kwote = X` 在 body 字符串前，golden 实测；
+            # 逆序注册后 body 字符串低槽）。
             if node.count:
                 self._collect_byteorder(node.count, out, arg_names, in_quote)
+            for expr in node.body:
+                self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, Cond):
             # CAD cond 字节码：测试体按源码序发出（各子句条件），结果体按源码
             # 倒序发出（末子句体最先）。符号引用序 = 测试正序 + 结果倒序
@@ -2199,10 +2243,10 @@ class CadSymbolCollector:
                 self._collect_forward(node.var, out, locals_)
         elif isinstance(node, RepeatNode):
             out.append(("repeat", False))
-            for expr in node.body:
-                self._collect_forward(expr, out, locals_)
             if node.count:
                 self._collect_forward(node.count, out, locals_)
+            for expr in node.body:
+                self._collect_forward(expr, out, locals_)
         elif isinstance(node, Cond):
             for clause in node.clauses:
                 for item in clause:

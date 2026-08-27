@@ -220,7 +220,12 @@ class CodeGenerator:
         # CAD 紧凑 stub 的 USUBR/FUNC：符号槽 ≤255 用 3 字节 `35 <argc> <idx8>`；
         # 符号槽 >255（大文件，atlisp_u 实测）用 5 字节 `35 <argc> <idx16> <flags>`
         # （CAD 大文件 seg0/module code 实测 idx 2537/1036）。按符号表规模统一选择。
-        self.wide_subr = stub_format and self.nsyms > 256
+        # 用 len(entries)（codegen 会追加嵌套 defun 参数、kwote lambda `-lambda-`
+        # 槽等）而非 codegen_nsyms：panel.lsp codegen_nsyms=251 但最终 fas_nsyms
+        # =266，若按 251 判 short 会截断 idx>255 的 USUBR（`+` → 0x1a=26），
+        # `_patch_usubr_idx` 无法恢复。len(entries)>256 保守判 wide 与 fas_nsyms
+        # 判定一致（fas_nsyms = len(entries)-module_reg+1 < len(entries)）。
+        self.wide_subr = stub_format and (self.nsyms > 256 or len(symtab.entries) > 256)
         self.local_slots: Dict[str, int] = {}
         self.next_slot = 0
         # 直接体并发循环深度（foreach/repeat 局部槽分配）：同一深度顺序循环
@@ -533,8 +538,13 @@ class CodeGenerator:
                 self._emit_stmt(buf, form)
                 # 中间 setq（SETQ_G 已消费栈顶）、中间 if（_emit_if 内部处理）、
                 # while/foreach/repeat（自带栈平衡）后均无 POP；仅普通表达式
-                # 追加 POP（规则同 generate_function 中间语句）。
-                if not isinstance(form, (IfNode, Setq, WhileNode, ForeachNode, RepeatNode, Cond, Defun)):
+                # 追加 POP（规则同 generate_function 中间语句）。中间 progn 自身
+                # 已 POP 末 form 值（语句上下文，见本分支末），不再补 POP
+                # （dialog.lsp DCL 嵌套 `(progn ... (dcl:end-cluster))` CAD 实测
+                # 仅 1 个 `0a`，此前多 1 个）。
+                if not isinstance(
+                    form, (IfNode, Setq, WhileNode, ForeachNode, RepeatNode, Cond, Defun, Progn)
+                ):
                     buf.emit(encode_op_noarg(POP))
             if node.forms:
                 self._in_tail_context = saved_tail
@@ -553,7 +563,17 @@ class CodeGenerator:
                 _selfbal = isinstance(_last, (Setq, WhileNode, ForeachNode, RepeatNode, Progn, Cond))
                 if isinstance(_last, IfNode) and self._in_stmt_ctx:
                     _selfbal = True
-                if not saved_tail and not _selfbal and not _last_const_stmt:
+                # 值上下文（`_in_stmt_ctx=False`、非模块代码，如函数实参的
+                # `(progn ...)`）末 form 值保留给外层消费者——不 POP（dialog.lsp
+                # `(set_tile ... (progn ... (if ... rd%)))` CAD 实测 else 分支
+                # `rd%` 值保留给 set_tile）。语句上下文与模块代码顶层语句
+                # （@lisp-env 顶层 `(progn ...)` 值被丢弃）仍 POP。
+                if (
+                    not saved_tail
+                    and (self._in_stmt_ctx or self._module_mode)
+                    and not _selfbal
+                    and not _last_const_stmt
+                ):
                     buf.emit(encode_op_noarg(POP))
             self._in_tail_context = saved_tail
 
@@ -735,31 +755,53 @@ class CodeGenerator:
         bindings = node.args[0]
         body = node.args[1:]
         if isinstance(bindings, ListExpr):
+            bound = []
+            bare = []
             for b in bindings.items:
                 if isinstance(b, Call) and b.args:
-                    v = b.name
-                    e = b.args[0]
+                    bound.append((b.name, b.args[0]))
                 elif isinstance(b, ListExpr) and len(b.items) > 1:
                     v = b.items[0].name if isinstance(b.items[0], Symbol) else str(b.items[0])
-                    e = b.items[1]
+                    bound.append((v, b.items[1]))
                 else:
                     v = b.name if isinstance(b, Symbol) else str(b)
-                    e = None
-                # CAD 原生 LET（minlet CAD 真机实测）：绑定值求值后 `USUBR(1,
-                # <绑定变量槽>)`——`(x (1+ a))` 的 USUBR(1,x槽)、event-bus
-                # `(entry (assoc ...))` 的 USUBR(1,entry槽)——非 `(list ...)`。
-                # `_patch_usubr_idx` 映射到 gvar 槽（操作数 = gvar-1）。
-                if e is not None:
+                    bare.append(v)
+            if bare:
+                # 带裸变量的 LET（nlp.lsp CAD golden）：**先**把全部裸变量符号
+                # `PUSH_VALUE <var>` 推入，再对每个有值绑定 `value; USUBR(1,
+                # <var>); NIL; PUSH_VALUE[0]`，最后 `EVAL <n_bare>, 7`（EVAL
+                # argc = 裸变量数；CMD-MATCH-WEB `(let ((lst-cmd <e>) expr
+                # pkg-to-ins)` 实测 `PUSH_VALUE expr; PUSH_VALUE pkg-to-ins;
+                # <e>; USUBR(1,lst-cmd); EVAL 2,7`）。
+                for v in bare:
+                    self._emit_push_value(buf, self.symtab.get_or_add(v))
+                for v, e in bound:
+                    # CAD 原生 LET（minlet CAD 真机实测）：绑定值求值后 `USUBR(1,
+                    # <绑定变量槽>)`——`(x (1+ a))` 的 USUBR(1,x槽)、event-bus
+                    # `(entry (assoc ...))` 的 USUBR(1,entry槽)——非 `(list ...)`。
+                    # `_patch_usubr_idx` 映射到 gvar 槽（操作数 = gvar-1）。
                     self._emit_expr(buf, e)
-                else:
-                    buf.emit(encode_op_noarg(PUSH_NIL))
-                v_idx = self.symtab.get_or_add(v)
-                self._emit_usubr(buf, 1, v_idx)
-                # CAD let 绑定构造后清理占位（minlet 实测 `USUBR; NIL;
-                # PUSH_VALUE[0]; EVAL`）——`_emit_subr_cleanup` 小文件输出
-                # `00 03`（NIL + PUSH_VALUE 0）。
-                self._emit_subr_cleanup(buf)
-        buf.emit(encode_eval(0, 7))
+                    v_idx = self.symtab.get_or_add(v)
+                    self._emit_usubr(buf, 1, v_idx)
+                    # CAD let 绑定构造后清理占位（minlet 实测 `USUBR; NIL;
+                    # PUSH_VALUE[0]; EVAL`）——`_emit_subr_cleanup` 小文件输出
+                    # `00 03`（NIL + PUSH_VALUE 0）。
+                    self._emit_subr_cleanup(buf)
+                buf.emit(encode_eval(len(bare), 7))
+            else:
+                for v, e in bound:
+                    # CAD 原生 LET（minlet CAD 真机实测）：绑定值求值后 `USUBR(1,
+                    # <绑定变量槽>)`——`(x (1+ a))` 的 USUBR(1,x槽)、event-bus
+                    # `(entry (assoc ...))` 的 USUBR(1,entry槽)——非 `(list ...)`。
+                    # `_patch_usubr_idx` 映射到 gvar 槽（操作数 = gvar-1）。
+                    self._emit_expr(buf, e)
+                    v_idx = self.symtab.get_or_add(v)
+                    self._emit_usubr(buf, 1, v_idx)
+                    # CAD let 绑定构造后清理占位（minlet 实测 `USUBR; NIL;
+                    # PUSH_VALUE[0]; EVAL`）——`_emit_subr_cleanup` 小文件输出
+                    # `00 03`（NIL + PUSH_VALUE 0）。
+                    self._emit_subr_cleanup(buf)
+                buf.emit(encode_eval(0, 7))
         _saved_let_tail = self._in_let_tail
         try:
             for _bi, form in enumerate(body):
@@ -767,15 +809,21 @@ class CodeGenerator:
                     # let 的 body 最后 form 是 let 的值（尾上下文）：if 分支 setq
                     # DUP 保留值（event-bus `(let ((entry ...)) (if entry (setq
                     # ...) (setq ...)))` CAD 实测 `DUP; SETQ_G`）；尾 if 的 end
-                    # 后 USUBR(2, LET)（见 `_emit_if` `_in_let_tail`）。仅尾 form
-                    # 设标志（非尾 if 不加——nlp 多 let 过度）。
-                    self._in_let_tail = True
+                    # 后 USUBR(<argc>, LET)（见 `_emit_if` `_in_let_tail`）。argc =
+                    # len(body)+1（nlp.lsp CAD golden：cmd-ai-fallback 4 个 body
+                    # form → `USUBR(5, LET)`，event-bus/1 form → `USUBR(2, LET)`）。
+                    self._in_let_tail = len(body) + 1
                     try:
                         self._emit_expr(buf, form, _tail=True)
                     finally:
                         self._in_let_tail = False
                 else:
-                    self._emit_stmt(buf, form)
+                    # 非末 form 也是 let 的值来源之一（CAD 累积在栈上，尾部
+                    # USUBR(argc, LET) 统一收集）：按**尾/值上下文**编译——else-less
+                    # if 补 PUSH_NIL 占位、表达式不 POP、foreach/repeat 走尾协议
+                    # （nlp.lsp cmd-ai-fallback 4 form let 实测 forms 0-2 值均保留）。
+                    with self._value_ctx():
+                        self._emit_expr(buf, form, _tail=True)
         finally:
             self._in_let_tail = _saved_let_tail
 
@@ -988,12 +1036,15 @@ class CodeGenerator:
             buf.patch_label(label_end, buf.pos())
             if _saved_let_tail:
                 # let body 尾 if 的 end（then JUMP 目标 + else fall-through 统一）：
-                # CAD 发射 `USUBR(2, LET)`（minlet/let3/let4 CAD 真机实测操作数
+                # CAD 发射 `USUBR(<argc>, LET)`（minlet/let3/let4 CAD 真机实测操作数
                 # = fg LET 槽 - 1：event-bus 21、let3 1；CAD then JUMP 也执行）。
-                # `_patch_usubr_idx` 映射到 gvar 槽。event-bus CAD 实测 USUBR 后
-                # `00 03`（NIL + PUSH_VALUE[0]）清理占位。
+                # argc = let body form 数 + 1（nlp.lsp cmd-ai-fallback 4 form →
+                # `USUBR(5, LET)`；event-bus 1 form → `USUBR(2, LET)`），由
+                # `_emit_let` 通过 `_in_let_tail` 传入。`_patch_usubr_idx` 映射
+                # 到 gvar 槽。event-bus CAD 实测 USUBR 后 `00 03`（NIL +
+                # PUSH_VALUE[0]）清理占位。
                 _let_idx = self.symtab.get_or_add("let")
-                self._emit_usubr(buf, 2, _let_idx)
+                self._emit_usubr(buf, int(_saved_let_tail), _let_idx)
                 self._emit_subr_cleanup(buf)
             self._in_let_tail = _saved_let_tail
             return
@@ -1060,7 +1111,7 @@ class CodeGenerator:
             # 实测体末无 POP）；中间 while 体非 setq 语句（如 `(princ n)`）
             # 返回值被 POP 丢弃（t04_while 实测）。
             if self.stub_format:
-                if isinstance(form, (Setq, WhileNode, IfNode, Cond)):
+                if isinstance(form, (Setq, WhileNode, IfNode, Cond, Progn)):
                     continue
                 if self._in_tail_context and last_in_body:
                     continue
@@ -1129,8 +1180,11 @@ class CodeGenerator:
         loop: GET_LOCAL; JMP32_IFNOT end; GET_LOCAL; CAR; SETQ_G <var>;
         GET_LOCAL; CDR; SET_LOCAL; body(无 POP); JUMP loop; end: CLEAR_ARGS 1``
         """
+        if node.name == "vlax-for":
+            self._emit_vlax_for_stub(buf, node)
+            return
         var_name = node.var.name if isinstance(node.var, Symbol) else "item"
-        slot = self._get_local_slot(f"__foreach_list__{self._loop_depth}")
+        slot = self._get_local_slot(f"__loop_list__{self._loop_depth}")
         v_idx = self.symtab.get_or_add(var_name)
 
         # 列表求值是 foreach 的输入（值上下文）：`_value_ctx` 清 `_in_stmt_ctx`，
@@ -1198,6 +1252,94 @@ class CodeGenerator:
         buf.add_patch(jmp_back + 1, label_loop, 4)
         buf.label(label_end)
         # 预载参数清理（CAD 实测：foreach 结果不被 POP，而用 CLEAR_ARGS 1）
+        buf.emit(encode_op_u16(CLEAR_ARGS, 1))
+
+    def _emit_vlax_for_stub(self, buf: BytecodeBuffer, node: ForeachNode):
+        """CAD stub 的 vlax-for ActiveX 集合枚举协议（kernel ui/menu.lsp
+        cuix-find-or-create-group CAD golden 实测）：
+
+        ``<coll> 求值 → FUNC 1 <collect-init>; NIL; PUSH_NIL; NIL → SET_LOCAL
+        （iterator 状态存 slot）→ PUSH_G <var>; PUSH_NIL; INIT_ARGS 3（预载）→
+        loop: GET_LOCAL; FUNC 1 <collect-next>; NIL; PUSH_NIL; NIL; DUP;
+        SETQ_G <var>; JMP32_IFNOT end; body(无 POP); JUMP loop;
+        end: GET_LOCAL; FUNC 1 <collect-release>; NIL; PUSH_NIL; NIL; POP;
+        CLEAR_ARGS 1``
+
+        collect-* 为跨函数共享单槽（小写，`_VLISP_CASE_PRESERVE`），cad_symbols
+        按 `collect-init → var → collect-next → body → collect-release` 字节码引用
+        序注册；codegen 用 `FUNC 1` 编码调用（同 `command`/`_al-bind-alist` 的
+        `NIL; PUSH_NIL; NIL` 清理，非 USUBR 的 `00 03`）。
+        """
+        var_name = node.var.name if isinstance(node.var, Symbol) else "item"
+        slot = self._get_local_slot(f"__loop_list__{self._loop_depth}")
+        v_idx = self.symtab.get_or_add(var_name)
+
+        # 集合求值是 vlax-for 的输入（值上下文，同 list foreach）
+        with self._value_ctx():
+            self._emit_expr(buf, node.list_expr or Symbol("nil"))
+        # collect-init：结果（iterator 状态）存 slot
+        idx_init = self.symtab.get_or_add("collect-init")
+        self._emit_func3(buf, 1, idx_init)
+        buf.emit(encode_op_noarg(0x00))  # NIL
+        buf.emit(encode_op_noarg(PUSH_NIL))
+        buf.emit(encode_op_noarg(0x00))  # NIL
+        buf.emit(encode_op_u16(SET_LOCAL_16, slot))
+        # CAD 预载：PUSH_G <var>; PUSH_NIL; INIT_ARGS 3
+        buf.emit(encode_op_u16(PUSH_G, v_idx))
+        buf.emit(encode_op_noarg(PUSH_NIL))
+        buf.emit(encode_op_u16(INIT_ARGS, 3))
+
+        label_loop = f"_vlax_for_stub_loop_{buf.pos()}"
+        label_end = f"_vlax_for_stub_end_{buf.pos()}"
+        if self._in_tail_context:
+            # 尾 vlax-for（kwote lambda 体末，make-menu-cuix）：同 list foreach
+            # 的 PUSH_NIL 占位 + 体首 POP 协议。
+            buf.emit(encode_op_noarg(PUSH_NIL))
+        buf.label(label_loop)
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        idx_next = self.symtab.get_or_add("collect-next")
+        self._emit_func3(buf, 1, idx_next)
+        buf.emit(encode_op_noarg(0x00))  # NIL
+        buf.emit(encode_op_noarg(PUSH_NIL))
+        buf.emit(encode_op_noarg(0x00))  # NIL
+        buf.emit(encode_op_noarg(DUP))
+        buf.emit(encode_op_u16(SETQ_G, v_idx))
+        jmp_pos = buf.pos()
+        buf.emit(encode_op_s32(JMP32_IFNOT, 0))
+        buf.add_patch(jmp_pos + 1, label_end, 4)
+
+        if self._in_tail_context:
+            buf.emit(encode_op_noarg(POP))
+
+        self._loop_depth += 1
+        for i, form in enumerate(node.body):
+            if self._in_tail_context and i == len(node.body) - 1:
+                # 尾 vlax-for 体最后语句 = vlax-for 的"值"（值上下文）
+                self._emit_expr(buf, form)
+            else:
+                self._emit_stmt(buf, form)
+                if (
+                    not self._in_tail_context
+                    and not isinstance(
+                        form,
+                        (Setq, IfNode, WhileNode, ForeachNode, RepeatNode, Cond, Progn),
+                    )
+                ):
+                    buf.emit(encode_op_noarg(POP))
+        self._loop_depth -= 1
+
+        jmp_back = buf.pos()
+        buf.emit(encode_op_s32(JUMP, 0))
+        buf.add_patch(jmp_back + 1, label_loop, 4)
+        buf.label(label_end)
+        # 尾部清理：collect-release 释放 iterator，POP 丢弃结果，CLEAR_ARGS 1
+        idx_release = self.symtab.get_or_add("collect-release")
+        buf.emit(encode_op_u16(GET_LOCAL_16, slot))
+        self._emit_func3(buf, 1, idx_release)
+        buf.emit(encode_op_noarg(0x00))  # NIL
+        buf.emit(encode_op_noarg(PUSH_NIL))
+        buf.emit(encode_op_noarg(0x00))  # NIL
+        buf.emit(encode_op_noarg(POP))
         buf.emit(encode_op_u16(CLEAR_ARGS, 1))
 
     def _emit_short_circuit(self, buf: BytecodeBuffer, op_name: str, args: List[Node]):
@@ -1389,7 +1531,7 @@ class CodeGenerator:
         GET_LOCAL; DEC; SET_LOCAL; body(无 POP); JUMP loop; end``
         无预载（不像 foreach），循环结束栈平衡，无需 CLEAR_ARGS。
         """
-        slot = self._get_local_slot(f"__repeat__{self._loop_depth}")
+        slot = self._get_local_slot(f"__loop_list__{self._loop_depth}")
         self._emit_expr(buf, count_expr)
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
@@ -1416,12 +1558,23 @@ class CodeGenerator:
 
         self._loop_depth += 1
         for i, form in enumerate(body):
-            self._emit_stmt(buf, form)
-            # CAD stub：多语句体中间语句值被 POP 丢弃（anti-crack `(repeat 10
-            # (prompt ...) (prompt "\n"))` 实测 `USUBR; POP`）；最后语句是 repeat
-            # 的"值"不 POP。setq 已消费栈顶、if/循环自平衡不 POP。
-            if i < len(body) - 1 and not isinstance(
-                form, (Setq, WhileNode, IfNode, Cond, ForeachNode, RepeatNode)
+            _last = i == len(body) - 1
+            if self._in_tail_context and _last:
+                # 尾 repeat 的最后体语句是 repeat 的"值"（同尾 while/foreach 的
+                # 尾协议）：尾上下文发射（setq 补 DUP 保留值，dialog save-config
+                # `(repeat ... (setq i (1+ i)))` CAD 实测 `DUP SETQ_G`）。中间
+                # 语句仍语句上下文（调用值 POP 丢弃）。
+                self._emit_expr(buf, form, _tail=True)
+            else:
+                self._emit_stmt(buf, form)
+            # CAD stub：体语句值被 POP 丢弃。尾 repeat（函数最后语句，值保留）
+            # 最后语句不 POP（t17 实测 `USUBR; PUSH_VALUE`）；非尾 repeat（值被
+            # 外层丢弃）所有语句 POP（panel-dcl-column repeat 体 write-line 后
+            # `USUBR; POP` golden 实测）。setq 已消费栈顶、if/循环自平衡不 POP。
+            if _last and self._in_tail_context:
+                continue
+            if not isinstance(
+                form, (Setq, WhileNode, IfNode, Cond, ForeachNode, RepeatNode, Progn)
             ):
                 buf.emit(encode_op_noarg(POP))
         self._loop_depth -= 1
@@ -1597,9 +1750,14 @@ class CodeGenerator:
         kwote_idx = self.symtab.get_or_add("kwote")
         buf.emit(encode_op_u16(PUSH_G, lam_idx))
         self._emit_func3(buf, 1, kwote_idx)
-        buf.emit(encode_op_noarg(0x00))
-        buf.emit(encode_op_noarg(PUSH_NIL))
-        buf.emit(encode_op_noarg(0x00))
+        # non-wide（3 字节 FUNC）：kwote 调用后 `00 01 00` 清理（i18n CAD
+        # 实测）。wide（5/6 字节 FUNC flags=1）已内联清理，不再补 `00 01 00`
+        # （panel.lsp kwote lambda 注册 golden 实测 `FUNC[1,203,1,0]` 后直接
+        # 下一指令）。
+        if not self.wide_subr:
+            buf.emit(encode_op_noarg(0x00))
+            buf.emit(encode_op_noarg(PUSH_NIL))
+            buf.emit(encode_op_noarg(0x00))
 
     def _emit_nested_lambda(self, buf: BytecodeBuffer, node: LambdaNode) -> int:
         """发射内嵌 `-lambda-` DEFUN（CAD kwote/立即调用共用）。
@@ -1659,7 +1817,7 @@ class CodeGenerator:
         body = node.body
         for expr in body[:-1]:
             self._emit_stmt(buf, expr)
-            if not isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, IfNode, Cond, Defun)):
+            if not isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, IfNode, Cond, Defun, Progn)):
                 buf.emit(encode_op_noarg(POP))
         if body:
             self._emit_expr(buf, body[-1], _tail=True)
@@ -1823,12 +1981,11 @@ class CodeGenerator:
         self._emit_init_args(buf, all_args)
         if self.stub_format and node.locals:
             self._emit_al_bind_alist(buf, node)
-        body = node.body
-        while len(body) > 1 and isinstance(body[0], String):
-            body = body[1:]
+        from compiler.cad_symbols import strip_docstring
+        body = strip_docstring(node.body)
         for expr in body[:-1]:
             self._emit_stmt(buf, expr)
-            if not self.stub_format or isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, Cond, Defun)):
+            if not self.stub_format or isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, Cond, Defun, Progn)):
                 pass
             elif isinstance(expr, IfNode):
                 pass
@@ -1945,14 +2102,11 @@ class CodeGenerator:
         for name in set(self.local_slots.keys()) - set(arity_bound):
             pass
 
-        # CAD 忽略 defun 后开头的连续裸字符串（docstring，AutoLISP 惯例）：
-        # `(defun f () "文档说明" body...)` 编译时不生成该字符串
-        # （docstr.fas CAD 实测 strings 为空）。连续多个 docstring 全部跳过
-        # （base-function CAD 实测 handle-keywords 双 docstring 均不注册），
-        # 不影响 `(strcat "a" "b")` 等表达式内字符串。
-        body = func.body
-        while len(body) > 1 and isinstance(body[0], String):
-            body = body[1:]
+        # CAD 丢弃 defun 体中语句位置的裸字符串（docstring/分节注释，见
+        # cad_symbols.strip_docstring 的 CAD 实测）：仅体末 form（返回值）
+        # 的字符串保留，不影响 `(strcat "a" "b")` 等表达式内字符串。
+        from compiler.cad_symbols import strip_docstring
+        body = strip_docstring(func.body)
 
         for expr in body[:-1]:
             self._emit_stmt(buf, expr)
@@ -1965,7 +2119,7 @@ class CodeGenerator:
             # 普通表达式时保留值，追加 POP 丢弃（i18n-cad update-locale 实测
             # 内层 if-then @::load-module 调用后 `POP`）。POP 由 _emit_if 在
             # then 分支末尾（JUMP 前）内部处理，此处对 if 一律跳过，避免二次 POP。
-            if not self.stub_format or isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, Cond, Defun)):
+            if not self.stub_format or isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, Cond, Defun, Progn)):
                 pass
             elif isinstance(expr, IfNode):
                 pass
