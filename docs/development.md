@@ -228,7 +228,7 @@ CAD 真机 add/mul、square/sum-squares、f1/f2/f3、重名冲突场景全部可
 ./scripts/run_tests.sh         # 一键全量检查（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）
 ./scripts/run_tests.sh --cad   # 附加 CAD 真机验证（需 CAD 连接）
 python scripts/cad_verify.py   # CAD 真机验证（逐个编译 t01-t24+i18n 加载断言，25 项）
-python -m pytest               # 运行所有测试（348 用例 + 1 skip 占位）
+python -m pytest               # 运行所有测试（380 用例：378 passed + 2 skipped）
 python -m pytest tests/ -v     # 详细输出
 python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 ```
@@ -238,13 +238,15 @@ python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 - `test_lexer.py` — 词法分析（11 用例：转义、注释、UTF-8、dotted）
 - `test_symbol_table.py` — 符号表/作用域（10 用例）
 - `test_analyzer.py` — 编译分析/尾递归（9 用例）
-- `test_cli.py` — CLI 路径（28 用例：compile/-O/--analyze/--report/validate/link/vlx/info/analyze/dispatch + validate 补强规则 + 源码编码检测 + 顶层 progn/条件 defun/atlisp_u 综合包编译）
+- `test_cli.py` — CLI 路径（31 用例：compile/-O/--analyze/--report/validate/link/vlx/info/analyze/dispatch + validate 补强规则 + 源码编码检测 + 顶层 progn/条件 defun/atlisp_u 综合包编译）
 - `test_compile_decompile.py` — 编译-反编译往返（74 用例，含复杂 LSP O2/O3 往返、16 个 `tests/compile_src/` fixture 系列 roundtrip、i18n 混合模式、§3.5d/e 折叠回归、§10.4 golden 参数名/循环结构回归、C4 DCL 对话框）
-- `test_compiler_output.py` — FAS 输出正确性（50 用例，含 4 对 CAD golden 逐字节比对 + 16 个 `tests/compile_src/` 结构断言 + i18n 拆分件 byte-identity 回归）
+- `test_compiler_output.py` — FAS 输出正确性（70 用例，含 4 对 CAD golden 逐字节比对 + 16 个 `tests/compile_src/` 结构断言 + i18n 拆分件 byte-identity 回归）
+- `test_fas_verify.py` — FAS 产物校验/加载（6 用例）
+- `test_large_file.py` — 大文件/宽格式（10 用例，含 >256 符号 USUBR/FUNC 宽格式）
 - `test_optimizer.py` — 所有优化 pass（32 用例，含循环携带变量回归）
 - `test_linker.py` — 多文件链接（13 用例，含重名冲突警告 + 3 份 CAD golden byte-identity）
-- `test_assembler.py` — 反汇编/汇编往返（8 用例）
-- `test_disasm.py` — 反汇编健壮性（9 用例，含未处理操作码降级）
+- `test_assembler.py` — 反汇编/汇编往返（11 用例）
+- `test_disasm.py` — 反汇编健壮性（10 用例，含未处理操作码降级）
 - `test_resource_stream.py` — 资源码解析/资源段构建（25 用例：符号/字符串块、GVARINIT、DEFCODE、build_mvar_tables、资源码 vs 操作码区分）
 - `test_packages.py` — CL 风格包系统（4 用例）
 - `test_vlx_builder.py` — VLX 容器（3 用例）
@@ -277,8 +279,10 @@ FAS4 输出格式与 AutoCAD 编译器一致：
 - `_emit_nested_lambda` 发内嵌 `-lambda-` DEFUN（`JUMP <label:4>; 14 argc argc argc 00;
   体; CLEAR_ARGS; 16; <label>`），随后 `PUSH_G <lam_idx>; FUNC3 1 <kwote>; NIL;
   PUSH_NIL; NIL`。每个内嵌 `-lambda-` 独立符号槽（t3 槽 18、t4 槽 17、t5 槽 16）。
-- 资源段：每个内嵌 lambda 独立 DEFCODE，在 GVARINIT(0, nsyms) 前置发射、按 seg0
-  偏移逆序；`-lambda-` 保留小写、不进 `symtab.entries`（仅 DEFCODE 区注册）——
+- 资源段：每个内嵌 lambda 独立 DEFCODE，在 GVARINIT(0, nsyms) 前置发射、按
+  **codegen 发射序逆序**（`_fnl_raw` 序；兄弟 lambda 发射序 = offset 序，逆序 ==
+  offset 逆序；嵌套 kwote lambda 用发射序，panel.lsp 实测）；`-lambda-` 保留小写、
+  不进 `symtab.entries`（仅 DEFCODE 区注册）——
   fas_nsyms 比 codegen_nsyms 大 1，seg0 引用 `gvar 槽 - 2`（`_patch_usubr_idx`
   的 offset 修正）。
 - 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件，v0.1.22+，setq-lambda.lsp
@@ -302,6 +306,21 @@ CLEAR_ARGS = argc + locals。
 注册段得到 `{符号名: gvar槽}` 映射，`_offset_slots` 二次生成模块代码时按实际
 槽位重映射 USUBR/PUSH_G/FUNC（`symtab_idx+1` 不再等于实际 gvar 槽）。
 
+**`_offset_slots` fallback 编址**（v0.1.30+，`first_cmd_slot` 判定）：
+- SYMBOL/STRING 表外符号 fallback = `symtab_idx + 1 + n_cmds`（vl-ACAD-defun 插入
+  使模块注册其后的符号 gvar 槽整体 +1，atlisp_u `(set 'e2o ...)` 实测）。
+- **CONST（引用字面量）**：仅当 const 注册在首个 `c:` 命令槽之后（`idx >
+  first_cmd_slot`）才 `+n_cmds`——menu/voice const 在 vl-ACAD-defun 之后加
+  （`idx+1+n_cmds`）；panel foreach 组 const（`'("1" "AI" ...)`、`'(princ)`）在
+  C:% 之前不加（`idx+1`），否则错位 1。
+
+**`_patch_usubr_idx` 双注册分支守卫**（v0.1.30+）：模块区 + 函数体区双注册顶层
+变量（net/probe `@::*network-failure-count*`）用 `_body_slot = _rs - module_reg_count
+- 1` 编址；该公式须满足 `0 <= _body_slot < nsyms`，否则落到 `_res_offset` 分支
+（`_rs - _res_offset`）。BYTELEN 这类 `/ local` 在多个函数体区各注册一次、非模块区
+双注册（panel `351-35-1=315 ≥ nsyms`）走 `_res_offset`（`351-100=251` → 操作数 250），
+旧 `nsyms-1` fallback 错位 15。
+
 反编译器同时支持两种布局：
 - **自包含格式**（`tests/cad/i18n-cad.fas`、`tests/cad/i18n.fas`）：seg0 含完整函数体 + END_DEFUN，函数目录来自 mvar 表重建
 - **紧凑 stub 格式**（AutoCAD 编译器输出，`tests/cad/*_cad.fas` t-series golden）：seg0 无 END_DEFUN，符号按资源注册顺序（`symbol_slots`）直接编址
@@ -318,9 +337,11 @@ CLEAR_ARGS = argc + locals。
 `compiler/cli.py` 的 `cmd_compile` 完整流程：
 
 0. **源码改写**（@lisp 综合包支持，v0.1.21+）：`_flatten_top_level_forms`（顶层
-   `(progn ...)` 展开）、`_lower_nested_defuns`（条件/嵌套 defun → `(setq f
-   '(lambda ...))`）、`_rewrite_top_lambda_binds`（纯顶层 lambda → `-lambda-`
-   SUBR）、`_lower_multi_kwote`（多 kwote → 引用数据）、`_lower_immediate_lambda`
+   `(progn ...)` 展开）、`_hoist_conditional_defuns`（条件/嵌套 defun → 提升为
+   顶层独立函数，if 内留 `CondDefunBind` 绑定标记，见「条件 defun 绑定」）、
+   `_lower_nested_defuns`（函数体内嵌套 defun → 原生内嵌 DEFUN）、
+   `_rewrite_top_lambda_binds`（纯顶层 lambda → `-lambda-` SUBR）、
+   `_lower_multi_kwote`（多 kwote → 引用数据）、`_lower_immediate_lambda`
 1. **符号注册**：`derive_symbol_names`（`compiler/cad_symbols.py`）按 CAD 顺序收集符号，注册到 `SymbolTable`
 2. **codegen**：`CodeGenerator(stub_format=True)` 生成 seg0 函数字节码（含 CLEAR_ARGS `19 <argc> 00`）；nsyms>256 时 `wide_subr=True`（5/6 字节宽格式）
 3. **顶层表达式**：`_build_cad_module_code` 生成 CAD 风格模块代码（setq 用 `PUSH_G 值+1; DUP; SETQ_G 变量+1`，非 setq 用 codegen + 槽偏移 `_offset_slots`）
@@ -335,6 +356,35 @@ CLEAR_ARGS = argc + locals。
 - `(in-package :@)` → `PUSH_VALUE <pkg槽>; FUNC_REF in-package`
 - 函数注册尾 `JUMP + PUSH_G <b>; SETQ_G <c>`（b = `2n+1+top_level_count-i`，c = 函数符号槽+1）
 - **post-form 分组**：最后一个 defun 之后的顶层语句排到函数注册尾之后（`n_post_forms`）
+- **`c:` 命令混合模式**：模块注册段插入 `56 vl-ACAD-defun 00 00` 块，命令注册用
+  CAD 24 字节模式 `JUMP; PUSH_G b; SETQ_G c; PUSH_G c; USUBR(1, <vl槽>); PUSH_NIL;
+  POP; PUSH_G c; POP`
+
+#### 条件 defun 绑定（`(if c (progn (defun f ...) ...))`，v0.1.30+，panel.lsp 实测）
+
+顶层 `(if is-gcad (progn (defun C:% ...) (defun C:%% ...) (foreach ...)))`：
+
+- **`_hoist_conditional_defuns`**（cli.py）：defun 体提升为顶层独立函数（进 seg0 +
+  DEFCODE 注册，运行时被模块加载器预定义），if 内以 `CondDefunBind(name)` 标记
+  替换（`compiler/ast_nodes.py`）。**运行时绑定留在 if 守卫内**，非无条件注册。
+- **模块代码 `_stmt_bytes`**：检测 then 分支含 `CondDefunBind` 时手动组装 if：
+  `PUSH_VALUE <cond>; JMP32_IFNOT <else>; JUMP +0; [每个绑定: PUSH_G <func-obj>;
+  SETQ_G <sym>; PUSH_G <sym>; USUBR(1, vl-ACAD-defun) 4字节; PUSH_NIL; POP];
+  [foreach]; JUMP +1; PUSH_NIL`。func-obj/b/c/vl 槽按 `_reg(i)` 公式预计算
+  （panel C:% b=39/c=14、C:%% b=38/c=12、vl=13）。绑定字节已是最终 gvar 槽，
+  **不再经 `_offset_slots`**；cond/foreach/else 单独 `_offset_slots` 后拼接、
+  手动 patch JMP32_IFNOT/JUMP 偏移。
+- **跳过无条件注册**：`_cond_defun_names`（扫描 `other_forms` 的标记）并入 `_skip`，
+  TAIL `_reg_emit` 跳过提升函数（b/c/vl 槽仍按公式保留给其他函数）。
+- **`-lambda-` DEFCODE 顺序 = 全局发射序逆序**（cli.py `_lambda_batches`）：纯 kwote
+  文件按函数逆序 + 各函数 `reversed(_fnl_raw)`（`_fnl_raw` = codegen `_nested_lambdas`
+  发射序）。@::panel-calc-layout 3 个 kwote lambda 发射序 `[inner, outer, bt-man]`
+  → DEFCODE `[bt-man, outer, inner]`。log 兄弟 lambda 发射序 = offset 序，逆序 ==
+  offset 逆序，二者一致；**嵌套 kwote lambda** offset 序 ≠ 发射序，须用发射序。
+  含立即 lambda 的文件（safe-eval，`nested_lambda_order` 置位）保持源码序覆盖。
+- **前置 DEFCODE 父-子链修正允许 `-lambda-` 父**（resource_builder.py `nd_offsets`
+  + cli.py `_pre_all`）：外层 kwote lambda（outer 体内嵌 inner）须父在前，否则
+  offset 降序错位。此前 `_is_lambda_key` 跳过 lambda 父，仅真实嵌套 defun 参与。
 
 ## 调试与验证
 

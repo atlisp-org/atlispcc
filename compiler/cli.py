@@ -94,11 +94,17 @@ def _hoist_conditional_defuns(forms):
     """
     from compiler.ast_nodes import IfNode as _If, Progn as _Prog
 
+    from compiler.ast_nodes import CondDefunBind as _CDB
+
     def _extract(expr, out):
-        """从表达式子树提取 defun 提升到 out，返回（剩余表达式 or None）。"""
+        """从表达式子树提取 defun 提升到 out，返回（剩余表达式 or None）。
+
+        提升后 defun 在 if 内用 `CondDefunBind` 标记替换（运行时绑定留
+        if 守卫内，CAD panel.lsp 实测），defun 体本身无条件编译进 seg0。
+        """
         if isinstance(expr, Defun):
             out.append(expr)
-            return None
+            return _CDB(name=expr.name)
         if isinstance(expr, _Prog):
             remaining = []
             for f in expr.forms:
@@ -1410,6 +1416,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                             and module_reg_count is not None
                             and _sym is not None
                             and _res_symbol_slots.count(str(_sym)) > 1
+                            and 0 <= (_rs - module_reg_count - 1) < nsyms
                         ):
                             # 顶层变量在函数体引用（net/probe `@::*network-failure-count*`）：
                             # 符号同时注册于模块区（低位）与函数体区（高位 ≥ nsyms），
@@ -1421,11 +1428,11 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                             # 纯函数体符号（scheduler kwote lambda 捕获外层参数
                             # `name` 单注册 symbol_slots[93]）走下方 `_res_offset`
                             # 编址（93 - 23 = fg 70 → 操作数 69，CAD 实测）。
+                            # 公式给出无效槽（≥ nsyms，如 panel.lsp BYTELEN 为
+                            # /local 在 3 个函数体区各注册一次、非模块区双注册）
+                            # 时落到 `_res_offset` 分支，否则 `nsyms-1` 错位 15。
                             _body_slot = _rs - module_reg_count - 1
-                            if 0 <= _body_slot < nsyms:
-                                new_idx = _body_slot - 1 - offset
-                            else:
-                                new_idx = nsyms - 1 - offset
+                            new_idx = _body_slot - 1 - offset
                         else:
                             # 纯函数文件（无顶层表达式）表外符号：资源 symbol_slots
                             # 索引与 gvar 槽差固定偏移 `_res_offset`（= 末 fg 符号
@@ -1565,6 +1572,28 @@ def _build_cad_module_code(
 
     from compiler.codegen import CodeGenerator, BytecodeBuffer
 
+    # 提升的条件 defun（`(if c (progn (defun f ...) ...))`）：defun 体已在顶层，
+    # 运行时绑定留 if 守卫内（`_stmt_bytes` 的 CondDefunBind 分支发射），此处
+    # 跳过它们的无条件函数注册（否则多余 `PUSH_G c; POP`，panel.lsp 实测）。
+    from compiler.ast_nodes import CondDefunBind as _CDB_scan, Progn as _CDB_prog
+
+    def _scan_cond_binds(node):
+        _names = set()
+        if isinstance(node, _CDB_scan):
+            _names.add(node.name)
+        elif isinstance(node, Progn):
+            for _f in node.forms:
+                _names |= _scan_cond_binds(_f)
+        elif isinstance(node, IfNode):
+            for _p in (node.cond, node.then, node.else_expr):
+                if _p is not None:
+                    _names |= _scan_cond_binds(_p)
+        return _names
+
+    _cond_defun_names = set()
+    for _of in other_forms:
+        _cond_defun_names |= _scan_cond_binds(_of)
+
     # c: 命令混合模式：vl-ACAD-defun 在模块注册段占一个符号（+1），使占位符/
     # b 槽/C 槽相对普通混合模式全局 +1（large_synthetic CAD 实测 placeholder
     # 147、reg0 b=277、c=146）。
@@ -1609,6 +1638,15 @@ def _build_cad_module_code(
         cg._module_code_ctx = True
         handled = False
 
+        # 首个 c: 命令的符号槽（vl-ACAD-defun 插入点前/后判定用）。const 引用
+        # 是否 +n_cmds 移位取决于其注册在首个命令之前/之后（menu const 在后、
+        # panel foreach 组 const 在前）。
+        _fc_slot = None
+        for _fn in (func_names or ()):
+            if str(_fn).lower().startswith("c:"):
+                _fc_slot = symtab.name_to_idx.get(_fn)
+                break
+
         def _slot_gv(idx):
             """symtab idx → 实际 gvar 槽（gvar_map 可用时）；否则 idx+1+n_cmds。"""
             if _gvar and _symtab is not None and 0 <= idx < len(_symtab.entries):
@@ -1618,6 +1656,86 @@ def _build_cad_module_code(
                     if _s is not None:
                         return _s
             return idx + 1 + n_cmds
+
+        # 顶层 if 内提升的条件 defun（panel.lsp `(if is-gcad (progn (defun C:% ...)
+        # (defun C:%% ...) (foreach ...)))` CAD 实测）：defun 体已提升进 seg0，
+        # 运行时绑定留在 if 守卫内——``PUSH_VALUE <cond>; JMP32_IFNOT <else>;
+        # JUMP +0; PUSH_G <func-obj>; SETQ_G <sym>; PUSH_G <sym>; USUBR(1,
+        # vl-ACAD-defun); PUSH_NIL; POP; ...``。手动组装 if（绑定字节已是最终
+        # gvar 槽，不再经 _offset_slots；cond/其余 then/else 走 codegen + offset）。
+        from compiler.ast_nodes import CondDefunBind as _CDB2
+
+        def _cond_binds_and_rest(node):
+            """剥 Progn 收集 CondDefunBind 标记与剩余 then 语句。"""
+            if isinstance(node, Progn):
+                _ms = [f for f in node.forms if isinstance(f, _CDB2)]
+                if _ms:
+                    return _ms, [f for f in node.forms if not isinstance(f, _CDB2)]
+                return None, None
+            if isinstance(node, _CDB2):
+                return [node], []
+            return None, None
+
+        if isinstance(form, IfNode) and n_funcs > 0:
+            _markers, _rest_forms = _cond_binds_and_rest(form.then)
+            if _markers is not None:
+                # 条件 defun 的 func-obj/b/c 槽：与 `_reg` 同公式。
+                _fc = None
+                for _fn in (func_names or ()):
+                    if str(_fn).lower().startswith("c:"):
+                        _fc = symtab.name_to_idx.get(_fn)
+                        break
+                _vl = (_fc + 1) if _fc is not None else None
+                _cb = bytearray()
+                _fb = BytecodeBuffer()
+                cg._emit_expr(_fb, form.cond or Symbol("nil"), _tail=True)
+                _fb.resolve()
+                _cb += _offset_slots(bytes(_fb.data), len(symtab.entries), gvar_map=_gvar,
+                                     symtab=_symtab, real_map=real_map, n_cmds=n_cmds,
+                                     tl_funcobj_slot=tl_funcobj_slot, first_cmd_slot=_fc_slot)
+                _jmpnot_pos = len(_cb)
+                _cb += b"\x67\x00\x00\x00\x00"  # JMP32_IFNOT 占位
+                for _m in _markers:
+                    _i = func_names.index(_m.name) if _m.name in func_names else -1
+                    if _i < 0:
+                        continue
+                    _b = 2 * n_funcs + 1 + top_level_count + n_cmds + _tl_lam_count - _i
+                    if _tl_lam_count and _i >= n_pre:
+                        _b -= 1
+                    _fs = symtab.name_to_idx.get(func_names[_i])
+                    _c = (_fs + 1) if _fs is not None else (n_funcs - _i)
+                    if _fs is not None and _fc is not None and _fs >= _fc:
+                        _c += 1
+                    _cb += b"\x57\x00\x00\x00\x00"  # JUMP +0
+                    _cb += bytes([0x09]) + struct.pack("<H", _b)  # PUSH_G func-obj
+                    _cb += bytes([0x06]) + struct.pack("<H", _c)  # SETQ_G sym
+                    _cb += bytes([0x09]) + struct.pack("<H", _c)  # PUSH_G sym
+                    if _vl is not None:
+                        _cb += bytes([0x35, 0x01]) + struct.pack("<H", _vl)  # USUBR(1, vl-ACAD-defun)
+                        _cb += bytes([0x01, 0x0a])  # PUSH_NIL; POP
+                for _rf in _rest_forms:
+                    _fb2 = BytecodeBuffer()
+                    cg._emit_expr(_fb2, _rf, _tail=True)
+                    _fb2.resolve()
+                    _cb += _offset_slots(bytes(_fb2.data), len(symtab.entries), gvar_map=_gvar,
+                                         symtab=_symtab, real_map=real_map, n_cmds=n_cmds,
+                                         tl_funcobj_slot=tl_funcobj_slot, first_cmd_slot=_fc_slot)
+                _jmp_pos = len(_cb)
+                _cb += b"\x57\x00\x00\x00\x00"  # JUMP <end>
+                _else_pos = len(_cb)
+                if form.else_expr:
+                    _fb3 = BytecodeBuffer()
+                    cg._emit_expr(_fb3, form.else_expr, _tail=False)
+                    _fb3.resolve()
+                    _cb += _offset_slots(bytes(_fb3.data), len(symtab.entries), gvar_map=_gvar,
+                                         symtab=_symtab, real_map=real_map, n_cmds=n_cmds,
+                                         tl_funcobj_slot=tl_funcobj_slot, first_cmd_slot=_fc_slot)
+                else:
+                    _cb += b"\x01"  # PUSH_NIL（无 else）
+                _end_pos = len(_cb)
+                struct.pack_into("<i", _cb, _jmpnot_pos + 1, _else_pos - (_jmpnot_pos + 5))
+                struct.pack_into("<i", _cb, _jmp_pos + 1, _end_pos - (_jmp_pos + 5))
+                return bytes(_cb)
 
         if isinstance(form, Setq):
             # 多对 setq：CAD 输出全部 pair。中间 pair 用
@@ -1858,7 +1976,7 @@ def _build_cad_module_code(
             if _setq_off is not None:
                 bc = bc[:_setq_off] + b"\x0b" + bc[_setq_off:]
         return _offset_slots(bc, len(symtab.entries), gvar_map=_gvar, symtab=_symtab, real_map=real_map,
-                             n_cmds=n_cmds, tl_funcobj_slot=tl_funcobj_slot)
+                             n_cmds=n_cmds, tl_funcobj_slot=tl_funcobj_slot, first_cmd_slot=_fc_slot)
 
     def _emit_stmts(forms, last_no_pop: bool):
         """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。
@@ -1953,7 +2071,7 @@ def _build_cad_module_code(
             out += bytes([0x06]) + struct.pack("<H", c)  # SETQ_G c
             return c
 
-        _skip = skip_funcs or set()
+        _skip = (skip_funcs or set()) | _cond_defun_names
         # 首个 defun 与最后一个 defun 之间的顶层语句（含 setq-lambda 绑定）。
         # mid 语句为**别名 set**（`(set 'cl::xxx cl::xxx)`，cl-functions 的
         # #-sbcl + progn 展开模式）时，CAD 把每条 mid 语句与对应函数的注册
@@ -2087,7 +2205,8 @@ def _is_empty_quote(node) -> bool:
 
 
 def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: Optional[dict] = None,
-                  n_cmds: int = 0, tl_funcobj_slot: Optional[int] = None) -> bytes:
+                  n_cmds: int = 0, tl_funcobj_slot: Optional[int] = None,
+                  first_cmd_slot: Optional[int] = None) -> bytes:
     """把字节码中的符号槽引用 +1（CAD 模块代码用 gvar 槽 = 符号槽+1）。
 
     处理 PUSH_G(0x09)/PUSH_VALUE(0x03)/SETQ_G(0x06)/USUBR(0x35) 的符号槽。
@@ -2126,6 +2245,19 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
                 return real_map.get(_real_fmt(float(_v)))
         return None
 
+    def _fb(idx):
+        """fallback gvar 槽：CONST（引用字面量）的 vl-ACAD-defun 移位（+n_cmds）
+        仅当 const 注册在首个 c: 命令之后（menu/voice const 在 vl-ACAD-defun
+        之后 → +n_cmds；panel `'("1" "AI" ...)` 在 foreach 组、位于 C:% 之前 →
+        不加）；SYMBOL/STRING 表外符号仍 +n_cmds（atlisp_u `(set 'e2o ...)`
+        实测）。"""
+        if symtab is not None and 0 <= idx < len(symtab.entries):
+            if symtab.entries[idx][0] == "CONST":
+                if first_cmd_slot is not None and idx > first_cmd_slot:
+                    return idx + 1 + n_cmds
+                return idx + 1
+        return idx + 1 + n_cmds
+
     out = bytearray()
     for inst in insts:
         name = inst.op_name
@@ -2135,13 +2267,13 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
             if slot is not None:
                 out += _subr_bytes(0x35, inst.operands[0], slot, flags=3, wide=wide)
             else:
-                out += _subr_bytes(0x35, inst.operands[0], inst.operands[1] + 1 + n_cmds, flags=3, wide=wide)
+                out += _subr_bytes(0x35, inst.operands[0], _fb(inst.operands[1]), flags=3, wide=wide)
         elif name == "FUNC" and len(inst.operands) >= 2:
             slot = _slot_for(inst.operands[1])
             if slot is not None:
                 out += _subr_bytes(0x51, inst.operands[0], slot, flags=1, wide=wide)
             else:
-                out += _subr_bytes(0x51, inst.operands[0], inst.operands[1] + 1 + n_cmds, flags=1, wide=wide)
+                out += _subr_bytes(0x51, inst.operands[0], _fb(inst.operands[1]), flags=1, wide=wide)
         elif name in ("PUSH_G", "SETQ_G", "PUSH_G_ALT") and len(inst.operands) >= 1:
             slot = _slot_for(inst.operands[0])
             if slot is not None:
@@ -2159,7 +2291,7 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
                 # (lambda (x) ...)) ...))` CAD 实测 PUSH_G 29。
                 out += bytes([raw[0]]) + struct.pack("<H", tl_funcobj_slot)
             else:
-                out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1 + n_cmds)
+                out += bytes([raw[0]]) + struct.pack("<H", _fb(inst.operands[0]))
         elif name == "PUSH_VALUE":
             # stub：PUSH_VALUE[0] 单字节 03；idx>0 为 3 字节。
             if len(inst.operands) == 1 and inst.operands[0] == 0 and inst.size == 1:
@@ -2169,7 +2301,7 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
                 if slot is not None:
                     out += bytes([raw[0]]) + struct.pack("<H", slot)
                 else:
-                    out += bytes([raw[0]]) + struct.pack("<H", inst.operands[0] + 1 + n_cmds)
+                    out += bytes([raw[0]]) + struct.pack("<H", _fb(inst.operands[0]))
             else:
                 out += raw
         else:
@@ -2918,6 +3050,23 @@ def cmd_compile(
             # `PUSH_VALUE :C; (:use ...); (:export ...); USUBR 3, DEFPACKAGE`），
             # 此处跳过占位生成。
             continue
+        # 顶层 if 内提升的条件 defun（`CondDefunBind` 标记）：由
+        # _build_cad_module_code 的 `_stmt_bytes` 特判发射（绑定留 if 守卫内），
+        # 此处跳过（marker 无法经 codegen 编译；top_level_code 仅无 other_forms
+        # 时被使用，panel.lsp 混合文件不走此代码）。
+        from compiler.ast_nodes import CondDefunBind as _CDB_skip, Progn as _CDB_skip_prog
+
+        def _has_cond_bind(node):
+            if isinstance(node, _CDB_skip):
+                return True
+            if isinstance(node, _CDB_skip_prog):
+                return any(_has_cond_bind(f) for f in node.forms)
+            if isinstance(node, IfNode):
+                return any(_has_cond_bind(p) for p in (node.cond, node.then, node.else_expr) if p is not None)
+            return False
+
+        if _has_cond_bind(form):
+            continue
         # 顶层 `(set/setq 'sym (lambda ...))`（纯顶层文件）：由
         # _build_cad_module_code 按 top_lambda_slots 特判发射 `-lambda-` 绑定，
         # 这里跳过（避免 codegen _emit_kwote 注册多余 `-LAMBDA-` 槽）。
@@ -3090,18 +3239,25 @@ def cmd_compile(
         _dfn = normalize_vla_name(_df.name)
         _src_lam_args[_dfn.upper()] = [list(la) for la in _collect_kwote_lambda_args(_df)]
         _has_imm[_dfn.upper()] = _has_immediate_lambda(_df)
+    # 内嵌 `-lambda-` DEFCODE 顺序（nested_list → lam_offsets 键顺序）：
+    # - 含立即 lambda（`((lambda ...) args)`）且单函数 ≥2 的函数按**源码序**
+    #   （safe-eval fn/ok-tail/clause/b 实测），其余函数按 offset 逆序，
+    #   func_offsets 源码序拼接、不全局排序（`nested_lambda_order` 置位）。
+    # - 纯 kwote 函数（无立即 lambda）：DEFCODE = **全局发射序逆序**
+    #   （`_fnl_raw` = codegen 内嵌 `-lambda-` 发射序）。@::panel-calc-layout
+    #   3 个 kwote lambda 发射序 [inner@88, outer@69, bt-man@180] → DEFCODE
+    #   [bt-man@180, outer@69, inner@88] = [2961, 2850, 2869] CAD 实测。log 的
+    #   兄弟 lambda 发射序 = offset 序，发射序逆序 == offset 逆序，二者一致；
+    #   嵌套 kwote lambda（inner 嵌 outer 体）offset 序 ≠ 发射序，须用发射序。
+    _lambda_batches = []
+    _has_imm_any = False
     for name, off in list(func_offsets.items()):
         _fnl_raw = list(codegen._func_nested_lambdas.get(name, []))
         if not _fnl_raw:
             continue
         _fnl = sorted(_fnl_raw)  # seg0 序（参数绑定按 seg0 DEFUN 序解析）
         nested_lambda_args[name.upper()] = [list(a) for _, _, a, _ in _fnl]
-        # DEFCODE 目录键顺序（nested_list → lam_offsets 键顺序）：含立即 lambda
-        # 且**单函数内 ≥2 个 lambda** 的函数按**源码序**（safe-eval fn/ok-tail/
-        # clause/b = [fn, ok-tail, clause, b] 实测）；纯 kwote 函数（log，延迟
-        # 发射）按 **offset 逆序**（a-b 先、f 后，CAD log 实测）。跨函数的
-        # lambda（audit/browse 每函数 1 个）key 顺序即自身 offset 序。
-        _ordered = sorted(_fnl_raw, reverse=True)  # offset 逆序（纯 kwote DEFCODE 序）
+        _ordered = None
         if _has_imm.get(name.upper()) and len(_fnl_raw) >= 2:
             _total = len(_fnl_raw)
             _src_pos = {}
@@ -3111,6 +3267,7 @@ def cmd_compile(
                         _src_pos[_t[3]] = _pos
                         break
             if len(_src_pos) == _total:
+                _has_imm_any = True
                 for _lam_idx, _pos in _src_pos.items():
                     nested_lambda_order[_lam_idx] = _total - 1 - _pos
                 # nested_list 按**源码序正序**（DEFCODE item 顺序 = 源码序）。
@@ -3121,21 +3278,22 @@ def cmd_compile(
                             _by_src[_sa[0]] = _t
                             break
                 _ordered = [_by_src[list(sa)[0]] for sa in _src_lam_args.get(name.upper(), [])]
-        for rel_start, rel_end, _, _ in _ordered:
-            n_start = off + rel_start
-            n_end = off + rel_end
-            nested_list.append((n_start, n_end))
+        _lambda_batches.append((off, _fnl_raw, _ordered))
+    if _has_imm_any:
+        # 含立即 lambda 的文件：func_offsets 源码序拼接，逐函数
+        # `_ordered`（立即 → 源码序；纯 kwote → offset 逆序）。
+        for off, _fnl_raw, _ordered in _lambda_batches:
+            _b = _ordered if _ordered is not None else sorted(_fnl_raw, reverse=True)
+            for rel_start, rel_end, _, _ in _b:
+                nested_list.append((off + rel_start, off + rel_end))
+    else:
+        # 纯 kwote 文件：全局发射序逆序（函数逆序 + 各函数发射逆序）。
+        for off, _fnl_raw, _ordered in reversed(_lambda_batches):
+            for rel_start, rel_end, _, _ in reversed(_fnl_raw):
+                nested_list.append((off + rel_start, off + rel_end))
     for i, (n_start, n_end) in enumerate(nested_list):
         func_offsets[f"-lambda-#{i + 1}" if i else "-lambda-"] = n_start
         nested_ends[n_start] = n_end
-    # 无源码序覆盖（纯 kwote 文件，log/browse）时 nested_list 全局按 offset
-    # 逆序（CAD DEFCODE 逆序发射；跨函数拼接默认函数序递增，须全局排序）。
-    # 含立即 lambda 覆盖的文件（safe-eval）nested_list 已按源码序，不排序。
-    if not nested_lambda_order and len(nested_list) > 1:
-        nested_list.sort(key=lambda x: x[0], reverse=True)
-        # 重写 func_offsets 键顺序
-        for i, (n_start, n_end) in enumerate(nested_list):
-            func_offsets[f"-lambda-#{i + 1}" if i else "-lambda-"] = n_start
 
     # 函数体内嵌套 `(defun inner ...)`（CAD 原生内嵌 DEFUN）：登记进 func_offsets
     # 使 resource_builder 为嵌套函数发射 DEFCODE（函数目录 + func-obj 槽）。
@@ -3214,9 +3372,11 @@ def cmd_compile(
             )}
             _pre_all.sort(key=lambda x: _key_order.get(x[1], 10**9))
         else:
-            # 父-子链修正（同 resource_builder，仅真实嵌套 defun）
+            # 父-子链修正（同 resource_builder，含 `-lambda-` 父——嵌套 kwote
+            # lambda panel @::panel-calc-layout 外层@2850 含内层@2869 须父在前，
+            # 否则 func-obj 槽错位，PUSH_G 交换）。
             for _pi, (_poff, _pname) in enumerate(list(_pre_all)):
-                if str(_pname) == "-lambda-" or str(_pname).startswith("-lambda-#"):
+                if (str(_pname) == "-lambda-" or str(_pname).startswith("-lambda-#")) and not nested_ends.get(_poff):
                     continue
                 _children = [
                     j for j in range(len(_pre_all))

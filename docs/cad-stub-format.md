@@ -345,6 +345,34 @@ GVARINIT(函数数+2, 函数数) + 1c (INIT_DONE)
   顶层表达式的符号引用用 **gvar 槽 = 符号槽 + 1**；简单 `setq 变量 "字符串"` →
   `PUSH_G <值槽+1>; DUP; SETQ_G <变量槽+1>`。
 
+- **`c:` 命令**（`build_command_module_code`/`_build_cad_module_code`）：模块注册段
+  插入 `56 vl-ACAD-defun 00 00` 块（占 1 槽），命令注册用 CAD 24 字节模式
+  `JUMP +0; PUSH_G <b>; SETQ_G <c>; PUSH_G <c>; USUBR(1, <vl槽>); PUSH_NIL; POP;
+  PUSH_G <c>; POP`（末尾命令无最后 `POP`）。
+
+- **条件 defun 绑定**（`(if is-gcad (progn (defun C:% ...) (defun C:%% ...)
+  (foreach ...)))`，v0.1.30+，panel.lsp 实测）：defun 体提升进 seg0（运行时由模块
+  加载器预定义），**运行时绑定留在 if 守卫内**——模块代码手动组装 if：
+  ```
+  PUSH_VALUE <is-gcad>          # 条件
+  JMP32_IFNOT <else>            # 假 → 跳到末尾 PUSH_NIL
+  JUMP +0                       # then 分支
+  <每个提升 defun>:
+    09 <func-obj槽> 00          # PUSH_G func-obj
+    06 <sym槽> 00               # SETQ_G <sym>
+    09 <sym槽> 00               # PUSH_G <sym>
+    35 01 <vl槽>                # USUBR(1, vl-ACAD-defun) 4 字节（无 flags）
+    01 0a                       # PUSH_NIL; POP
+  <其余 then 语句（foreach 等）>
+  57 01 00 00 00                # JUMP +1（跳过 else）
+  <else>: 01                    # PUSH_NIL（无 else 的 if 值占位）
+  16                            # END_DEFUN
+  ```
+  绑定字节的 func-obj/b/c/vl 槽按 `_reg(i)` 公式预计算（panel C:% b=39/c=14、
+  C:%% b=38/c=12、vl=13），已是最终 gvar 槽，**不再经 `_offset_slots` 重映射**；
+  条件/其余语句/else 单独 codegen + `_offset_slots` 后拼接，JMP32_IFNOT/JUMP 偏移
+  手动 patch。
+
 ### 3.6 nsyms
 
 ```
@@ -417,6 +445,12 @@ for i in 0..len(data)-1:
 > 链接输出与 `tests/cad/link/*_cad.fas` 3 份 golden 逐字节一致。CAD 真机
 > **25 项**全过（`scripts/cad_verify.py`：t01-t24 + i18n，含 foreach/repeat/
 > 变参/kwote/vla-/command/*error*）。
+>
+> **@lisp kernel 全量对拍（v0.1.30，2026-08-27）**：`../kernel/src/` 下全部 **67 个
+> `.lsp`** 与 AutoCAD 24.1s 真机产物（`(vlisp-compile 'st ...)`）逐字节一致
+> （seg0 + seg1 + nsyms，DIFF=0）。含条件 defun 绑定（§3.5）、LET 原生、vlax-for
+> 枚举、嵌套 defun、`&optional`/`&rest` 变参等复杂结构。状态用
+> `scripts/kernel_compare_http.py`（ours→compare）复核。
 
 > 早期历史：四类编译产物（seg0 + seg1 + total_size）与 AutoCAD **逐字节一致**，
 > CAD 运行结果全部正确：纯函数（t1-t11）、多个纯函数（m1/m2）、无函数纯顶层

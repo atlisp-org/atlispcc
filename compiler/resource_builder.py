@@ -804,8 +804,12 @@ class ResourceBuilder:
                 # 父-子链修正：父函数（span 包含其它前置函数的 DEFUN 起始）排到其
                 # 子函数之前（n5 MID@10 含 INNER@20 → MID 先；safe-eval 宿主 137 含
                 # 3 个 `-lambda-` → 137 先、lambda 降序）。子函数间保持降序。
+                # **`-lambda-` 父函数同样参与**：嵌套 kwote lambda（panel
+                # @::panel-calc-layout 外层 lambda@2850 体内嵌内层 lambda@2869）
+                # 须父在前（CAD 实测 [bt-man@2961, outer@2850, inner@2869]），
+                # 否则 offset 降序 [2961, 2869, 2850] 错位。
                 for _pi, (_poff, _pname) in enumerate(list(nd_offsets)):
-                    if ResourceBuilder._is_lambda_key(_pname):
+                    if ResourceBuilder._is_lambda_key(_pname) and not nested_ends.get(_poff):
                         continue
                     _children = [
                         j for j in range(len(nd_offsets))

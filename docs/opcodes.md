@@ -586,6 +586,11 @@ JUMP func_entry
 - **大文件宽格式**（v0.1.19+，nsyms>256）：5 字节 `USUBR`（`35 <argc> <idx16> <flags=3>`）
   与 6 字节 `FUNC`（`51 <argc> <idx16> <flags=1> 00`）——`encode_usubr`/`encode_func`，
   flags 内联原 `00 03` 清理（atlisp_u.lsp 502 函数实测）
+- **@lisp kernel 全量对拍**（v0.1.30，2026-08-27）：`../kernel/src/` 67 个 `.lsp` 与
+  CAD 真机产物**逐字节一致**（seg0 + seg1 + nsyms，DIFF=0）——含条件 defun 绑定
+  （模块代码 if 守卫内 `PUSH_G <func-obj>; SETQ_G <sym>; USUBR(1, vl-ACAD-defun);
+  PUSH_NIL; POP`，`35` 4 字节格式）、`-lambda-` DEFCODE 发射序逆序、嵌套 kwote
+  lambda 父-子链修正等（见 [cad-stub-format.md §3.5](cad-stub-format.md)）
 
 **GET_LOCAL 二义性**：`0x05`（短）与 `0x5c`（宽）均为局部变量读取，但操作数宽度不同；
 `0x5c` 的规范名称为 `GET_LOCAL_WIDE`（与 `0x05` 的 `GET_LOCAL` 区分），汇编 `GET_LOCAL_WIDE N`

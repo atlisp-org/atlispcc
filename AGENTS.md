@@ -203,25 +203,31 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 
 对 `../kernel/src/` 下全部 67 个 `.lsp` 逐个编译并与 CAD 真机（`(vlisp-compile 'st ...)`，AutoCAD 24.1s）产物逐字节比对。工作流：`python scripts/mcp_cad.py eval "(vlisp-compile 'st <in> <out>)"`（模式 `'st`，CAD 文档打开时才可编译；路径用正斜杠）。
 
-### 当前状态：62/67 byte-identical（5 DIFF）
+### 当前状态：67/67 byte-identical（全部一致）
 
-67/67 全部通过编译产物验证（CAD 加载无访问冲突）。逐文件状态用 `scripts/kernel_compare_http.py`（ours→compare）复核。
+67/67 全部通过编译产物验证（CAD 加载无访问冲突）+ 逐字节比对（seg0+seg1+nsyms）。
+逐文件状态用 `scripts/kernel_compare_http.py`（ours→compare）复核。
 
 > 注：2026-08-27 远程恢复 4 份被误覆盖的 golden（platform-api/ax-request/module/probe，
-> CAD 真机 2026-08-26 产物，见 036c63e）。此前对旧 golden 的 byte-identity 计数
-> （66/67）不适用于恢复后的 golden——这 4 份为**既有 codegen 差异**（编译产物未变，
-> 仅 golden 修正暴露），非本次改动引入。
-
-**剩余 5 个 DIFF 根因**：
-
-- **`platform-api.lsp` / `net/ax-request.lsp` / `net/module.lsp` / `net/probe.lsp`（seg0，nsyms/sym_slots 已对齐）**：恢复的 CAD 真机 golden 与当前编译产物存在既有 codegen 差异（如 platform-api seg0 短 66 字节）。未深入定位，待后续对拍。
-- **`sub-system/ui/panel.lsp`（seg0,seg1，nsyms 已对齐 266）**：顶层 `(if is-gcad (progn (defun C:% ...) (defun C:%% ...) (foreach ...)))` 模块代码——CAD 把 C:%/C:%% body 提升进 seg0，但**运行时绑定留在 if 守卫内**（`PUSH_VALUE is-gcad; JMP32_IFNOT; PUSH_G <func-obj>; SETQ_G C:%` + 命令注册 `USUBR(1, vl-ACAD-defun); PUSH_NIL; POP`）。当前 `_hoist_conditional_defuns` 把 defun 提升后**整个移出 if**，模块代码无条件注册 C:%/C:%%（守卫缺失 + 多余 `PUSH_G c; POP`）。修复需：hoist 保留绑定标记在 if 内、func-obj/vl 槽按 `_reg(i)` 公式预计算（b=39/38、c=14/12、vl=13）、跳过无条件注册——但绑定 USUBR 是 `_reg_emit` 的 4 字节格式（`35 <argc> <idx16>` 无 flags），经 `_offset_slots` 会被重编码为宽格式，需绕过。
+> CAD 真机 2026-08-26 产物，见 036c63e）。
 
 **已修复（2026-08-27）**：
 
+- **`sub-system/ui/panel.lsp`**：顶层 `(if is-gcad (progn (defun C:% ...) (defun C:%% ...) (foreach ...)))` 条件 defun 模块代码 + `-lambda-` DEFCODE 顺序 + const 编址。详见「条件 defun 绑定（panel.lsp）」。
 - **`sub-system/condition/nlp.lsp`**：LET 带裸变量结构（`PUSH_VALUE <bare-var>...; EVAL <n_bare>,7`）+ let body 非末 form 按值/尾上下文 + `USUBR(<n_form+1>, LET)` argc。详见「LET 原生编译」。
 - **`sub-system/config/dialog.lsp`**：progn 语句双 POP（progn 自 POP 后外层循环再 POP）、值上下文 progn 末 form 误 POP、尾 repeat 末 form 丢 DUP。详见「progn/repeat 栈平衡」。
 - **`sub-system/ui/menu.lsp`**：`vlax-for` ActiveX 枚举协议 + 局部槽序修正（详见「vlax-for 枚举协议」）。seg0+seg1+nsyms 全对齐 `tests/cad/kernel_golden/sub-system/ui/menu.fas`（`--encoding gbk` 编译比对）。同时恢复 `init/compat.lsp`、`net/reload.lsp` byte-identity（回退一处不必要的 kwote 插入位置改动 `_rev[: _j]`，恢复 `[: _j + 1]`）。
+
+### 条件 defun 绑定（panel.lsp golden 实测，2026-08-27）
+
+顶层 `(if is-gcad (progn (defun C:% ...) (defun C:%% ...) (foreach ...)))`：
+- **`_hoist_conditional_defuns`**（cli.py）：defun 体提升为顶层独立函数（进 seg0 + DEFCODE），if 内以 `CondDefunBind(name)` 标记替换（ast_nodes.py 新增节点）——运行时绑定留在 if 守卫内，非无条件注册。
+- **模块代码 `_stmt_bytes`**：检测 then 分支含 `CondDefunBind` 时手动组装 if：`PUSH_VALUE <cond>; JMP32_IFNOT <else>; JUMP +0; [每个绑定: PUSH_G <func-obj>; SETQ_G <sym>; PUSH_G <sym>; USUBR(1, vl-ACAD-defun) 4字节; PUSH_NIL; POP]; [foreach]; JUMP +1; PUSH_NIL`。func-obj/b/c/vl 槽按 `_reg(i)` 公式预计算（panel C:% b=39/c=14、C:%% b=38/c=12、vl=13）。绑定字节已是最终 gvar 槽，**不再经 `_offset_slots`**；cond/foreach 单独 `_offset_slots` 后拼接、手动 patch JMP32_IFNOT/JUMP 偏移。
+- **跳过无条件注册**：`_cond_defun_names`（扫描 other_forms 的标记）并入 `_skip`，TAIL `_reg_emit` 跳过 C:%/C:%%（b/c/vl 槽仍按公式保留给其他函数）。
+- **`-lambda-` DEFCODE 顺序 = 全局发射序逆序**（cli.py `_lambda_batches`）：纯 kwote 文件按函数逆序 + 各函数 `reversed(_fnl_raw)`（`_fnl_raw` = codegen `_nested_lambdas` 发射序）。@::panel-calc-layout 3 个 kwote lambda 发射序 [inner@88, outer@69, bt-man@180] → DEFCODE [bt-man, outer, inner] = [2961, 2850, 2869]。log 兄弟 lambda 发射序 = offset 序，逆序 == offset 逆序，二者一致；嵌套 kwote lambda offset 序 ≠ 发射序，须用发射序。含立即 lambda 的文件（safe-eval，`nested_lambda_order` 置位）保持 func_offsets 源码序 + 源码序覆盖。
+- **前置 DEFCODE 父-子链修正允许 `-lambda-` 父**（resource_builder.py + cli.py `_pre_all`）：外层 kwote lambda（@::panel-calc-layout outer@2850 体内嵌 inner@2869）须父在前，否则 offset 降序 [2961, 2869, 2850] 错位。此前 `_is_lambda_key` 跳过 lambda 父，仅真实嵌套 defun 参与。
+- **`_offset_slots` const 编址**：CONST fallback `idx+1`，仅当 const 注册在首个 c: 命令槽之后（`first_cmd_slot` 传入）才 +n_cmds——panel foreach 组 const（`'("1" "AI"...)`、`'(princ)`）在 C:% 之前不加（gvar 槽 = idx+1）；menu/voice const 在 vl-ACAD-defun 之后加（idx+1+n_cmds）。
+- **`_patch_usubr_idx` 双注册分支守卫**：`_rs - module_reg_count - 1` 须 `0 <= _body_slot < nsyms`，否则落到 `_res_offset` 分支——BYTELEN（/local 在 3 个函数体区各注册一次、非模块区双注册）`351-35-1=315 ≥ nsyms` → 用 `_rs - _res_offset` 编址（351-100=251 → 操作数 250），旧 `nsyms-1` 错位 15。
 
 ### LET 原生编译（nlp.lsp golden 实测，2026-08-27）
 

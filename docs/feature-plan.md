@@ -1,6 +1,7 @@
 # 功能完善开发计划（Feature-Completion Plan）
 
-状态：2026-08-12，P0 核心语言特性全部落地（v0.1.22，348 tests 基线）。
+状态：2026-08-28，P0 核心语言特性全部落地（v0.1.30，380 tests 基线；
+@lisp kernel 67/67 byte-identical 全部一致）。
 
 本计划聚焦 **AutoLISP 语言特性支持** 的补齐与验证。以分阶段（P0/P1/P2）+ 验收
 标准组织；每项标注：目标、验收、结论（验证时填充）。
@@ -132,8 +133,9 @@ seg0 正确（if 值留栈 → SETQ_G），反编译却渲染为 `(if c e1 e2)` 
 - [x] A3 eval 单向通过（含 cosmetic 备注）。
 - [x] A4 apply/funcall 全变体单向通过。
 - [x] A5 多语句位置正常路径通过；新增 A5-1 / A5-2 两个缺陷登记（均已修复）。
-- [x] 全量 pytest 348 passed / 1 skipped（v0.1.22）。
+- [x] 全量 pytest 380 passed / 2 skipped（v0.1.30）。
 - [x] `scripts/run_tests.sh` 全绿（py_compile + pytest + disasm→asm 往返 + byte-identity）。
+- [x] @lisp kernel 67/67 byte-identical（seg0 + seg1 + nsyms，DIFF=0）。
 
 ---
 

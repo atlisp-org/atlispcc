@@ -138,7 +138,8 @@ UTF-8 逐字符推进天然支持（非 ASCII 落入 SYMBOL 分支）。
 | 改写 | 函数 | 作用 |
 |---|---|---|
 | 顶层 `(progn ...)` 展开 | `_flatten_top_level_forms` | @lisp 包整体包裹模式展开为顶层 form |
-| 条件/嵌套 defun 降级 | `_lower_nested_defuns` | `(if c (defun f ...))`、函数体内局部辅助函数 → `(setq f '(lambda ...))` 数据赋值（等价 defun-q，保留"条件定义"语义） |
+| 条件 defun 提升 | `_hoist_conditional_defuns` | 顶层 `(if c (progn (defun f ...) ...))` 的 defun 体提升为独立函数（进 seg0 + DEFCODE），if 内留 `CondDefunBind` 绑定标记——运行时绑定留在 if 守卫内（panel.lsp 实测，非无条件注册），模块代码发射 `PUSH_G <func-obj>; SETQ_G <sym>; USUBR(1, vl-ACAD-defun); PUSH_NIL; POP` |
+| 嵌套 defun 原生内嵌 | `_emit_nested_defun`（codegen） | 函数体内局部辅助函数 `(defun g () ...)` → CAD 原生内嵌 DEFUN（`JUMP; DEFUN g; ...; END_DEFUN; PUSH_G <g-obj>; SETQ_G g`），n1-n6 实测 byte-identity |
 | 顶层 lambda 绑定 | `_rewrite_top_lambda_binds` | 纯顶层文件 `(set/setq 'sym (lambda ...))` → CAD 内嵌 `-lambda-` SUBR（seg0 完整 compact stub：`14 <argc>x3 00` + GET_LOCAL + INIT_ARGS + 体 + CLEAR_ARGS + END_DEFUN；函数间 `16` 分隔、最后无 END；USUBR 5 字节宽格式），模块代码 setq 协议 `JUMP 0; PUSH_G <-lambda-槽+1>; DUP; SETQ_G <sym>`；资源段：第一区 → 函数目录 → 第二区（体符号+参数+调用名，跨 lambda 去重）→ fg 表 GVARINIT → 多 DEFCODE → `-lambda-` 超表槽（setq-lambda.lsp byte-identity） |
 | 多 kwote 降级 | `_lower_multi_kwote` | 多个 `(function (lambda ...))`（>1）→ 引用数据 `'(lambda ...)`（apply/mapcar 回调等价） |
 | 立即 lambda 调用 | `_lower_immediate_lambda` | `((lambda ...) args)` → `(apply '(lambda ...) (list ...))` |

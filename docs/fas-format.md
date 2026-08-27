@@ -278,9 +278,12 @@ DEFCODE 把 `(module, start, name)` 三元组注册进函数目录；seg0 偏移
   `32 <start> 32 <end> 2a ... 39 <count> 00`，从末尾逆序。
 
 > **kwote 内嵌 `-lambda-`**（`(function (lambda ...))` / 立即应用机制，v0.1.18+）：
-> 每个内嵌 lambda 独立 DEFCODE，在 GVARINIT(0, nsyms) 前置发射、按 seg0 偏移
-> **逆序**（CAD 实测：先发射的 lambda 被 GVARINIT 后弹出，分配更高槽——t3 槽 18、
-> t4 槽 17、t5 槽 16，nsyms=19）。字节：`5c 00 00 32 <off> 5b -lambda- 00 00 3a`。
+> 每个内嵌 lambda 独立 DEFCODE，在 GVARINIT(0, nsyms) 前置发射、按 **codegen
+> 发射序逆序**（v0.1.30+：`_fnl_raw` 序；兄弟 lambda 发射序 = offset 序，逆序 ==
+> offset 逆序——t3 槽 18、t4 槽 17、t5 槽 16，nsyms=19；**嵌套 kwote lambda**
+> offset 序 ≠ 发射序，须用发射序，panel.lsp @::panel-calc-layout 实测
+> [bt-man, outer, inner]，外层含内层须父在前）。字节：`5c 00 00 32 <off>
+> 5b -lambda- 00 00 3a`。
 > 宿主函数代码引用 end 用下一个**非内嵌**函数起始，内嵌项 end 用自身结束偏移
 > （nested_ends）。`-lambda-` 不进 `symtab.entries`（无普通符号槽），仅 DEFCODE
 > 区注册——故 fas_nsyms 比 codegen_nsyms 大 1，seg0 引用须 `gvar 槽 - 2`

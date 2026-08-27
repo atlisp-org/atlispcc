@@ -1,12 +1,38 @@
 # atlispcc 项目进度报告
 
-> 生成日期：2026-08-16
-> 分支：main · 最新提交 `5802d5f`（新进展）
+> 生成日期：2026-08-28
+> 分支：main
 > 本文档为滚动进度报告；历史周期记录保留于下方，最新周期见第 0 节。
 
 ---
 
-## 0. 本周期（2026-08-16，v0.1.22+）摘要
+## 0. 本周期（2026-08-27，v0.1.30）摘要
+
+| 指标 | 数值 |
+|------|------|
+| 测试用例 | **380 用例**（378 passed + 2 skipped） |
+| kernel 编译 | **67/67 全部可编译** |
+| kernel byte-identity | **67/67 逐字节一致**（seg0 + seg1 + nsyms，DIFF=0） |
+| CAD 真机编译 | AutoCAD 24.1s `(vlisp-compile 'st ...)` 逐文件对比 |
+
+### 本周期成果
+
+1. **@lisp kernel 全量 byte-identity 达成（67/67）**：
+   - 修复最后一个 DIFF `sub-system/ui/panel.lsp`：顶层
+     `(if is-gcad (progn (defun C:% ...) (defun C:%% ...) (foreach ...)))`
+     条件 defun **运行时绑定留在 if 守卫内**（`CondDefunBind` 标记 + 模块代码
+     手动组装），此前无条件注册（守卫缺失 + 多余 `PUSH_G c; POP`）。
+   - 关联修复：`-lambda-` DEFCODE 按 **codegen 发射序逆序**（嵌套 kwote lambda
+     用发射序非 offset 序，前置 DEFCODE 父-子链允许 `-lambda-` 父）；`_offset_slots`
+     const fallback 按 `first_cmd_slot` 判定 `+n_cmds`（panel 在命令前不加、
+     menu/voice 在命令后加）；`_patch_usubr_idx` 双注册分支守卫
+     （`0 <= _body_slot < nsyms` 否则落 `_res_offset`，BYTELEN 类 /local 错位 15）。
+   - 详见 AGENTS.md「条件 defun 绑定（panel.lsp）」。
+2. **版本**：v0.1.29 → v0.1.30（patch）。
+
+---
+
+## 0.1 本周期（2026-08-16，v0.1.22+）摘要
 
 | 指标 | 数值 |
 |------|------|
@@ -17,12 +43,11 @@
 
 ### 本周期成果
 
-1. **kernel 逐文件编译对拍 CAD 真机**（新增）：
-   - 全部 67 个 `../kernel/src/*.lsp` 用 atlispcc 编译（O0）成功。
-   - 通过 MCP 在 CAD 逐个 `(vlisp-compile 'st ...)` 编译生成 67 份 golden，
-     逐字节比对 nsyms/seg0/resource_items。
-   - **9 个 byte-identical**；58 个 DIFF（多数 nsyms ±1 符号槽序差异，少数
-     大差异如 setup 228→166、config-dialog 160→196、package-version 117→124）。
+1. **kernel 逐文件编译对拍 CAD 真机**（新增）：全部 67 个 `../kernel/src/*.lsp`
+   用 atlispcc 编译（O0）成功；MCP 在 CAD 逐个 `(vlisp-compile 'st ...)` 编译生成
+   67 份 golden，逐字节比对 nsyms/seg0/resource_items。**9 个 byte-identical**；
+   58 个 DIFF（多数 nsyms ±1 符号槽序差异，少数大差异如 setup 228→166、
+   config-dialog 160→196、package-version 117→124）。
 2. **编译修复**：
    - `net/reload.lsp` KeyError：嵌套 `-lambda-` 内引用外层函数参数时走单函数
      参数读取分支 `self.local_slots[name]` 越界（`codegen.py` 条件改为

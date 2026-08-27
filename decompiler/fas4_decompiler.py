@@ -810,11 +810,12 @@ class LispGenerator:
         self.symbol_slots = self.fas.symbol_slots or self._build_symbol_slots()
         self.is_stub_format = self._detect_stub_format()
         self.gvar_table: List[Any] = []
+        self.module_gvar_table: List[Any] = []
         if self.is_stub_format:
             try:
                 from core.fas_core import build_mvar_tables
 
-                _, self.gvar_table = build_mvar_tables(self.fas.sec2_data, self.fas.nsyms)
+                self.module_gvar_table, self.gvar_table = build_mvar_tables(self.fas.sec2_data, self.fas.nsyms)
             except Exception:
                 self.gvar_table = []
         if self.is_stub_format:
@@ -822,6 +823,68 @@ class LispGenerator:
         self._stub_is_multi_func = self.is_stub_format and (
             len(self.function_names_by_offset) > 1 or len(self.function_names_by_index) > 1
         )
+
+    def _module_gvar_symbol(self, idx: int) -> Optional[str]:
+        """seg1 模块代码操作数按模块 gvar 表（rg）解析（stub 格式）。
+
+        CAD 模块代码（seg1 尾部）的操作数引用模块注册 gvar 槽（rg 表），与
+        seg0 函数字节码的 fg 表不同。rg 槽缺失（如命令函数符号，仅经 DEFCODE
+        注册）时回退 symbol_slots。
+        """
+        if self.is_stub_format and 0 <= idx < len(self.module_gvar_table):
+            value = self.module_gvar_table[idx]
+            text = self._extract_symbol_text(value)
+            if text:
+                return text
+        return self._gvar_symbol(idx)
+
+    def _detect_conditional_defun_bindings(self) -> Optional[Dict[str, Any]]:
+        """检测 seg1 模块代码中的条件 defun 绑定（panel.lsp 实测）。
+
+        结构：``PUSH_VALUE <cond>; JMP32_IFNOT; JUMP +0;
+        [PUSH_G <func-obj>; SETQ_G <sym>; PUSH_G <sym>; FUNC_REF <vl-ACAD-defun>;
+        POP]（JUMP +0 分隔）...``。返回 ``{cond, setq_ops, vl}``。
+        """
+        ri = self.fas.resource_items
+        for i in range(len(ri) - 7):
+            a = ri[i]
+            if not (isinstance(a, tuple) and a and a[0] == "OP_0x3"):
+                continue
+            b, c, d = ri[i + 1], ri[i + 2], ri[i + 3]
+            if not (
+                isinstance(b, tuple) and b and b[0] == "OP_0x67"
+                and isinstance(c, tuple) and c and c[0] == "OP_0x57"
+                and isinstance(d, tuple) and d and d[0] == "OP_0x9"
+            ):
+                continue
+            setq_ops = []
+            vl = None
+            j = i + 3
+            while True:
+                if not (
+                    j + 4 < len(ri)
+                    and isinstance(ri[j], tuple) and ri[j][0] == "OP_0x9"
+                    and isinstance(ri[j + 1], tuple) and ri[j + 1][0] == "OP_0x6"
+                    and isinstance(ri[j + 2], tuple) and ri[j + 2][0] == "OP_0x9"
+                    and isinstance(ri[j + 3], tuple) and ri[j + 3][0] == "FUNC_REF"
+                    and isinstance(ri[j + 4], tuple) and ri[j + 4][0] == "OP_0xa"
+                ):
+                    break
+                setq_ops.append(ri[j + 1][1])
+                vl = ri[j + 3][1]
+                j += 5
+                if j < len(ri) and isinstance(ri[j], tuple) and ri[j] == ("OP_0x57", 0):
+                    j += 1
+                    continue
+                break
+            if not setq_ops:
+                continue
+            return {
+                "cond": a[1],
+                "setq_ops": setq_ops,
+                "vl": vl,
+            }
+        return None
 
     def _stub_module_id_slots(self) -> Dict[int, Any]:
         """stub 函数表 GVARINIT 的 module_id 槽 → 值映射。
@@ -1052,7 +1115,80 @@ class LispGenerator:
                 lines.extend(self._emit_function(spec))
             lines.append("")
 
+        # 条件 defun 绑定（seg1 模块代码 if-guard + SETQ_G 命令注册）：把对应
+        # 的 c: 命令 defun 包进 `(if <cond> (progn ...))`（panel.lsp 实测
+        # `(if is-gcad (progn (defun C:% ...) (defun C:%% ...)))`）。
+        lines = self._wrap_conditional_defuns(lines, specs)
+
         return "\n".join(lines)
+
+    def _wrap_conditional_defuns(
+        self, lines: List[str], specs: List[Dict[str, Any]]
+    ) -> List[str]:
+        """把条件绑定的 c: 命令 defun 包裹进 if 守卫（seg1 模块代码检测）。"""
+        info = self._detect_conditional_defun_bindings()
+        if not info:
+            return lines
+        n_bind = len(info["setq_ops"])
+        if n_bind <= 0:
+            return lines
+        cond = self._module_gvar_symbol(info["cond"]) or f"gfun_{info['cond']}"
+        cond = cond.lower()
+        # 条件绑定的 c: 命令：按 DEFCODE/spec 序取前 n_bind 个（模块代码绑定序
+        # 与函数注册序一致，panel C:%/C:%%）。
+        cmd_names: List[str] = []
+        for spec in specs:
+            name = spec.get("original_name") or spec["name"]
+            if str(name).lower().startswith("c:") and not spec["is_init"]:
+                cmd_names.append(spec["name"])
+            if len(cmd_names) >= n_bind:
+                break
+        if len(cmd_names) < n_bind:
+            return lines
+        wrapped = {cmd_names[i] for i in range(n_bind)}
+        # 找出被包裹 defun 的行区间，合并为单个 `(if <cond> (progn ...))`。
+        out: List[str] = []
+        collected: List[str] = []
+        pending_cond: Optional[str] = None
+
+        def _flush():
+            nonlocal collected
+            if not collected:
+                return
+            body = [b for b in collected if b.strip()]
+            out.append(f"(if {pending_cond}")
+            out.append("  (progn")
+            for b in body:
+                out.append("    " + b)
+            out.append("  )")
+            out.append(")")
+            collected = []
+
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            m = re.match(r"^\(defun\s+(\S+)", line)
+            if m and m.group(1) in wrapped:
+                if pending_cond is None:
+                    pending_cond = cond
+                block = [lines[i]]
+                i += 1
+                depth = 1
+                while i < len(lines) and depth > 0:
+                    block.append(lines[i])
+                    depth += lines[i].count("(") - lines[i].count(")")
+                    i += 1
+                collected.extend(block)
+                # 吞掉相邻空行，后续 wrapped defun 继续合并
+                while i < len(lines) and not lines[i].strip():
+                    i += 1
+            else:
+                _flush()
+                pending_cond = None
+                out.append(line)
+                i += 1
+        _flush()
+        return out
 
     def _build_function_catalog(self) -> None:
         for table in (self.fas.resource_gvars, self.fas.function_gvars):
@@ -3095,7 +3231,7 @@ class LispGenerator:
             inner = re.sub(r"[^\w:@-]+", "_", raw[1:-1]).strip("_")
             return f"*{(inner or prefix).lower()}*"
 
-        body = re.sub(r"[^\w+<>=.:@-]+", "_", body)
+        body = re.sub(r"[^\w+<>=.:@%?&$-]+", "_", body)
         body = re.sub(r"_+", "_", body)
         if not body:
             body = prefix

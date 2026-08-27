@@ -342,6 +342,11 @@ make cad-test    # 或: python scripts/cad_verify.py
 > 原 t0X 源已迁移至 `tests/compile_src/`，其 golden 由结构断言覆盖）；i18n 拆分件 byte-identity 回归。
 > 链接输出与 `tests/cad/link/*_cad.fas` **3 份 CAD golden** 逐字节一致。
 > CAD 真机验证 **25/25**（`scripts/cad_verify.py`，t01-t24 + i18n）。
+>
+> **@lisp kernel 全量对拍**（2026-08-27）：`../kernel/src/` 下全部 **67 个 `.lsp`**
+> 与 AutoCAD 24.1s 真机产物（`(vlisp-compile 'st ...)`）**逐字节一致**（seg0 + seg1 +
+> nsyms），含条件 defun 绑定、LET 原生、vlax-for 枚举、嵌套 defun、`&optional`/`&rest`
+> 变参等复杂结构。状态用 `scripts/kernel_compare_http.py`（ours→compare）复核。
 
 ## 完整示例
 

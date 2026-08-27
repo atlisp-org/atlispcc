@@ -123,3 +123,18 @@ class Defpackage(Node):
 @dataclass
 class InPackage(Node):
     name: str = ''
+
+
+@dataclass
+class CondDefunBind(Node):
+    """顶层 if 内条件 `(defun ...)` 的运行时绑定标记。
+
+    由 `_hoist_conditional_defuns` 在提升 defun 时留在 if 的 then 分支：
+    defun 体已提升为顶层函数（进 seg0 + DEFCODE），if 内仅保留该标记，
+    模块代码编译时发射 CAD 命令注册字节
+    ``JUMP +0; PUSH_G <func-obj>; SETQ_G <sym>; PUSH_G <sym>;
+    USUBR(1, vl-ACAD-defun); PUSH_NIL; POP``（panel.lsp CAD 实测绑定留在
+    `if is-gcad` 守卫内）。符号收集器忽略此节点（名字已由顶层 defun 注册）。
+    """
+
+    name: str = ''
