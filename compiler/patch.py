@@ -581,13 +581,20 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 sym = sym_of(inst.operands[0])
                 if sym and sym in gvar_map:
                     new_idx = gvar_map[sym] - 1
-                    # 大文件（wide）SETQ_G：目标符号 fg 槽若与 rg 表列表常量
-                    # 槽冲突（@lisp_u 的 foreach 变量 ITEM fg[905] vs
-                    # :DIALOG 列表 rg[905] → CAD 报 symbolp），fallback 符号槽
-                    # 末尾（CAD 实测 foreach 变量在符号槽末尾）。小文件不检测
-                    # （t-series/i18n golden 保持原编址）。
-                    if wide and inst.op_name == "SETQ_G" and 0 <= new_idx < len(rg):
-                        _rgv = rg[new_idx]
+                    # 大文件（wide）SETQ_G：目标符号 **fg 槽**（`gvar_map[sym]`）
+                    # 若与 rg 表列表常量槽冲突（@lisp_u 的 foreach 变量 ITEM
+                    # fg[905] vs :DIALOG 列表 rg[905] → CAD 报 symbolp），
+                    # fallback 符号槽末尾（CAD 实测 foreach 变量在符号槽末尾）。
+                    # 小文件不检测（t-series/i18n golden 保持原编址）。须用
+                    # **fg 槽**（非操作数 new_idx=fg-1）查 rg——merged_32
+                    # `tmp-uri` fg[60] 对应 rg[60]=@::*DEV-MODE*（SYMBOL 不冲突），
+                    # 旧实现查 rg[59]=列表常量 → 误判 fallback → SETQ_G 错槽。
+                    if (
+                        wide
+                        and inst.op_name == "SETQ_G"
+                        and 0 <= gvar_map[sym] < len(rg)
+                    ):
+                        _rgv = rg[gvar_map[sym]]
                         if (
                             isinstance(_rgv, tuple)
                             and len(_rgv) > 1

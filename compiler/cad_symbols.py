@@ -897,32 +897,96 @@ class CadSymbolCollector:
                     else:
                         self.add("T", force=True)
                     continue
-                if isinstance(name, str) and name in _local_is_param:
-                    # 局部同时是其它函数参数：槽注册在**最后处理的拥有者**处。
-                    # order="param"（参数拥有者后处理，net/probe `cached`）：局部
-                    # 拥有者（name in f.locals）跳过，参数拥有者注册。
-                    # order="local"（局部拥有者后处理，net/module `response-str` =
-                    # load-module/fetch-module 局部 + cache-module-response/eval-module
-                    # 参数）：参数拥有者（name not in f.locals）与**非最后**局部
-                    # 拥有者（i != _local_is_param_last）跳过，仅最后局部拥有者
-                    # 注册（否则 @::load-module i=0 抢先占低位槽，CAD 在
-                    # @::fetch-module i=4 组 fg[50]）。
-                    _lo = _local_is_param_order.get(name)
-                    if _lo == "param":
-                        # order="param"：参数拥有者注册该槽。局部拥有者
-                        # （name in f.locals）跳过；**非参数拥有者**（name
-                        # not in f.args，如 foreach 循环变量引用，atlisp_u
-                        # `@::save-pkg-lock-states` `(foreach pkg-name ...)`
-                        # 的 pkg-name 既非参数也非局部）同样跳过——CAD 把
-                        # pkg-name 注册在参数拥有者组（fg[1857] @::update-locale），
-                        # foreach 处无独立槽。旧逻辑仅跳过局部拥有者，foreach
-                        # 变量引用漏过 → 提前注册到 foreach 宿主组（fg[783]）
-                        # → fg/seg0 错位。
-                        if name in f.locals or name not in f.args:
-                            continue
+                _fh_rev = getattr(self, "_foreach_host_rev", {}).get(name, -1)
+                _is_foreach_host = (
+                    name in getattr(self, "_foreach_var_refs", set())
+                    and _fh_rev >= 0
+                )
+                # 宿主是**逆序最后拥有者**（rev 大于所有局部/参数拥有者）时，
+                # foreach 变量由宿主注册（merged_16 `item` = host 128 >
+                # local 61/param 41）；否则（persist `pkg-info` = host 2 <
+                # param 7 @::pkg）由 `_local_is_param` 原逻辑注册。
+                _fh_is_last_owner = (
+                    _is_foreach_host
+                    and _fh_rev > _local_is_param_last.get(name, -1)
+                    and _fh_rev > _param_is_param_last.get(name, -1)
+                )
+                if (
+                    _fh_is_last_owner
+                    and isinstance(name, str)
+                    and name in _local_is_param
+                    and name not in self.shared
+                    and _fh_rev > i
+                ):
+                    # foreach 循环变量同时是局部+参数且**非共享**（merged_16
+                    # `item` = @::handle-keywords foreach 宿主 rev128 +
+                    # @::macro-subst 局部 rev61 + @::dcl-attr-p 参数 rev41）：
+                    # CAD 把槽注册在**逆序最后宿主**（fg[702] @::handle-keywords
+                    # 组）。宿主 rev 更大（宿主逆序更晚处理）时当前函数跳过，
+                    # 由宿主注册；否则（宿主先处理已注册）当前函数正常走。
+                    # 共享参数（`n` = 6 函数参数 + foreach 变量）走 `_shared_last`
+                    # （@::sleep rev 121），不由宿主注册——故排除 shared。
+                    continue
+                if (
+                    _fh_is_last_owner
+                    and isinstance(name, str)
+                    and name in _local_is_param
+                    and name not in self.shared
+                    and _fh_rev == i
+                ):
+                    # foreach 宿主（`_fh_rev == i`）且该符号是局部+参数混合
+                    # 非共享、宿主是逆序最后拥有者：绕过 `_local_is_param`
+                    # 拦截（否则宿主 i != 局部拥有者 last 被跳过 → item 落
+                    # @::macro-subst 组而非 CAD 的 @::handle-keywords 组）。
+                    pass
+                elif isinstance(name, str) and name in _local_is_param:
+                    if any(
+                        str(name).upper() == x.upper()
+                        for x in getattr(self, "_quoted_param_collected", set())
+                    ):
+                        # 唯一参数被其它函数 **quoted 引用**（merged_32 `'file`
+                        # = @::cleanup-dcl `(eq 'file (type fp))` + @::save-list-
+                        # to-file 参数 + @::cache-load 局部）：CAD 的 `'file`
+                        # quoted 槽注册在引用函数组（@::cleanup-dcl fg[507]），
+                        # 不由 `_local_is_param` 拥有者注册——绕过拦截（否则
+                        # order=param 且引用者无 file 参数 → 跳过 → FILE 缺失）。
+                        pass
+                    elif _shared_last.get(name) == i:
+                        # 共享参数 + 嵌套 defun 参数（merged_32 `name` = 7 顶层
+                        # 函数参数 + `@::pkg-deps-tree` 内嵌 `(defun
+                        # @::pkg-deps-tree-rec (name depth))` 参数，`_shared_last`
+                        # = 164 嵌套宿主）：CAD 把槽注册在嵌套宿主组（fg[858]），
+                        # `_local_is_param`（order=param）会让参数拥有者注册——
+                        # 绕过（否则宿主无 name 参数 → `name not in f.args`
+                        # 跳过 → NAME 缺失）。
+                        pass
                     else:
-                        if name not in f.locals or i != _local_is_param_last.get(name):
-                            continue
+                        # 局部同时是其它函数参数：槽注册在**最后处理的拥有者**处。
+                        # order="param"（参数拥有者后处理，net/probe `cached`）：
+                        # 局部拥有者（name in f.locals）跳过，参数拥有者注册。
+                        # order="local"（局部拥有者后处理，net/module
+                        # `response-str` = load-module/fetch-module 局部 +
+                        # cache-module-response/eval-module 参数）：参数拥有者
+                        # （name not in f.locals）与**非最后**局部拥有者
+                        # （i != _local_is_param_last）跳过，仅最后局部拥有者
+                        # 注册（否则 @::load-module i=0 抢先占低位槽，CAD 在
+                        # @::fetch-module i=4 组 fg[50]）。
+                        _lo = _local_is_param_order.get(name)
+                        if _lo == "param":
+                            # order="param"：参数拥有者注册该槽。局部拥有者
+                            # （name in f.locals）跳过；**非参数拥有者**（name
+                            # not in f.args，如 foreach 循环变量引用，atlisp_u
+                            # `@::save-pkg-lock-states` `(foreach pkg-name ...)`
+                            # 的 pkg-name 既非参数也非局部）同样跳过——CAD 把
+                            # pkg-name 注册在参数拥有者组（fg[1857]
+                            # @::update-locale），foreach 处无独立槽。旧逻辑仅
+                            # 跳过局部拥有者，foreach 变量引用漏过 → 提前注册
+                            # 到 foreach 宿主组（fg[783]）→ fg/seg0 错位。
+                            if name in f.locals or name not in f.args:
+                                continue
+                        else:
+                            if name not in f.locals or i != _local_is_param_last.get(name):
+                                continue
                 if (
                     isinstance(name, str)
                     and name.upper()
@@ -992,6 +1056,22 @@ class CadSymbolCollector:
                 # **当前函数体**引用（`loc in 本函数 kept`）且未被函数体组
                 # 注册时才 add——实际已由函数体组注册，此处为安全 no-op。
                 _kept_names = {n for n, _ in kept}
+                _loc_fh_rev = getattr(self, "_foreach_host_rev", {}).get(loc, -1)
+                if (
+                    loc in getattr(self, "_foreach_var_refs", set())
+                    and loc not in self.shared
+                    and _loc_fh_rev > i
+                    and _loc_fh_rev > _local_is_param_last.get(loc, -1)
+                    and _loc_fh_rev > _param_is_param_last.get(loc, -1)
+                ):
+                    # 局部同时是 foreach 变量且宿主逆序更晚且为最后拥有者
+                    # （merged_16 `item` = @::macro-subst 局部 rev61 +
+                    # @::handle-keywords foreach 宿主 rev128）：CAD 把槽注册在
+                    # 宿主组，局部拥有者跳过（否则 @::macro-subst order=local
+                    # last 先注册 → 宿主 rev128 后处理复用 → item 落局部组
+                    # 而非 CAD 宿主组）。共享参数（`n`）走 `_shared_last`，
+                    # 不由宿主注册——排除。
+                    continue
                 if loc in _local_is_param:
                     # 局部同时是其它函数参数：由 _local_is_param_order/_last 决定
                     # 注册者。order="param" 局部拥有者跳过（参数拥有者注册）；
