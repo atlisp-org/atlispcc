@@ -26,6 +26,16 @@ from compiler.ast_nodes import (
 
 CONST_MARK = '__const__'
 
+# vlax- 属性/方法访问函数：第 2 个参数（args[1]）是 ActiveX 属性/方法名
+# （quoted 单符号，如 `(vlax-get-property obj 'Item)` 的 'Item、`(vlax-invoke
+# obj 'Method ...)` 的 'Method）。ActiveX 接口**大小写敏感**（t22_activex 实测），
+# 属性名须保留大小写注册——不递归 quoted 分支（否则 `_is_other_param` 把
+# `'Item` 误判为「参数 item 被 quoted 引用」→ deferred const `('SYMBOL','Item')`
+# → 追加到 cl-* 组 → 多 ITEM 槽抢占 `=` 槽位，atlisp_u fg 2537）。
+_VLAX_PROPERTY_FUNCS = frozenset({
+    "vlax-get-property", "vlax-invoke", "vlax-put-property", "vlax-get",
+})
+
 
 # 无 get-/put-/call-/add-/insert- 子前缀的 vla- 方法名 → 标准 ActiveX
 # CamelCase（base-function CAD 实测 `vla-sendcommand`→`vla-SendCommand`、
@@ -530,6 +540,14 @@ class CadSymbolCollector:
         for _j, _f in enumerate(defuns):
             for _b in _f.body:
                 self._scan_foreach_vars(_b, host_rev=_n_fns - 1 - _j)
+        # let 绑定变量 → 逆序最后宿主 rev（atlisp_u `entry` = @::event-add-handler
+        # src93 的 `(let ((entry ...)))` 变量 + @::log-write-file src152 参数）：
+        # let 宿主源码更早（逆序更晚处理）时 CAD 由 let 宿主注册（fg[2110]），
+        # `_local_is_param` 拦截（order=param）会让参数拥有者注册——宿主绕过。
+        self._let_host_rev: dict = {}
+        for _j, _f in enumerate(defuns):
+            for _b in _f.body:
+                self._scan_let_vars(_b, host_rev=_n_fns - 1 - _j)
 
         if len(defuns) <= 1:
             return self._collect_single(defuns, others, program)
@@ -940,6 +958,23 @@ class CadSymbolCollector:
                     # @::macro-subst 组而非 CAD 的 @::handle-keywords 组）。
                     pass
                 elif isinstance(name, str) and name in _local_is_param:
+                    if (
+                        name in self.shared
+                        and _shared_last.get(
+                            next(
+                                (s for s in self.shared if str(s).upper() == name.upper()),
+                                name,
+                            )
+                        )
+                        != i
+                    ):
+                        # 共享参数 + `_local_is_param`（atlisp_u `msg` = @::cleanup-dcl
+                        # 等 6 函数参数 + @::voice-test 局部，`_shared_last` =
+                        # @::error-handler rev416）：CAD 槽由 `_shared_last` 拥有者
+                        # 注册，`_local_is_param`（order=param）会让参数拥有者
+                        # 抢先注册——跳过（走 `_shared_last` 拦截，否则 msg 落
+                        # @::cleanup-dcl 组而非 CAD 的 `_shared_last` 组）。
+                        continue
                     if any(
                         str(name).upper() == x.upper()
                         for x in getattr(self, "_quoted_param_collected", set())
@@ -950,6 +985,14 @@ class CadSymbolCollector:
                         # quoted 槽注册在引用函数组（@::cleanup-dcl fg[507]），
                         # 不由 `_local_is_param` 拥有者注册——绕过拦截（否则
                         # order=param 且引用者无 file 参数 → 跳过 → FILE 缺失）。
+                        pass
+                    elif getattr(self, "_let_host_rev", {}).get(name, -1) == i and name not in self.shared:
+                        # let 绑定变量 + 参数/局部混合（atlisp_u `entry` =
+                        # @::event-add-handler src93 的 `(let ((entry ...)))` 变量
+                        # + @::log-write-file src152 参数）：let 宿主源码更早
+                        # （逆序更晚处理）时 CAD 由 let 宿主注册（fg[2110]）——
+                        # 绕过 `_local_is_param` 拦截（否则 order=param 且宿主
+                        # 无该参数 → 跳过 → entry 落参数组 fg[1891]）。
                         pass
                     elif _shared_last.get(name) == i:
                         # 共享参数 + 嵌套 defun 参数（merged_32 `name` = 7 顶层
@@ -1131,6 +1174,13 @@ class CadSymbolCollector:
                     # rev < 参数 rev 时不跳过（参数拥有者注册，AGENTS 实测）。
                     if getattr(self, "_foreach_host_rev", {}).get(arg, -1) > i:
                         continue
+                    # 参数同时是**逆序更晚处理**的 let 绑定变量（atlisp_u `entry`
+                    # = @::log-write-file 参数 + @::event-add-handler 的
+                    # `(let ((entry ...)))` 变量，let 宿主 i=412 > 参数 i=353）：
+                    # CAD 由 let 宿主注册（fg[2110]），args 循环跳过（否则参数
+                    # 拥有者先注册 → entry 落参数组 fg[1891]）。
+                    if getattr(self, "_let_host_rev", {}).get(arg, -1) > i:
+                        continue
                     self.add(arg)
 
         return self.names
@@ -1275,6 +1325,76 @@ class CadSymbolCollector:
         elif isinstance(node, _C):
             for _a in getattr(node, "args", []) or []:
                 self._scan_foreach_vars(_a, host_rev=host_rev)
+
+    def _scan_let_vars(self, node, host_rev=None):
+        """递归收集函数体内 let 绑定变量名 → `_let_host_rev`（变量 → 逆序最后
+        宿主 rev）。let 变量同时是其它函数参数（atlisp_u `entry` = @::event-add-
+        handler 的 `(let ((entry ...)))` 变量 + @::log-write-file 参数）且 let
+        宿主源码更早（逆序更晚处理）时，CAD 由 let 宿主注册——`_local_is_param`
+        拦截须绕过（否则 order=param 且宿主无该参数 → 跳过 → entry 落参数组）。
+        """
+        from compiler.ast_nodes import (
+            IfNode as _I,
+            Progn as _P,
+            WhileNode as _W,
+            RepeatNode as _R,
+            Cond as _Cnd,
+            Setq as _S,
+            ListExpr as _LE,
+            Call as _C,
+            LambdaNode as _LN,
+            QuotedExpr as _Q,
+        )
+        if isinstance(node, _C) and node.name == "let" and node.args:
+            _bind = node.args[0]
+            if isinstance(_bind, _LE):
+                for _b1 in _bind.items:
+                    if isinstance(_b1, _S):
+                        _vn = _b1.pairs[0][0].name if _b1.pairs and isinstance(_b1.pairs[0][0], Symbol) else None
+                    elif isinstance(_b1, _C):
+                        _vn = _b1.name
+                    elif isinstance(_b1, Symbol):
+                        _vn = _b1.name
+                    else:
+                        _vn = None
+                    if _vn and host_rev is not None:
+                        self._let_host_rev[_vn] = max(
+                            self._let_host_rev.get(_vn, -1), host_rev
+                        )
+            for _b in node.args[1:]:
+                self._scan_let_vars(_b, host_rev=host_rev)
+        elif isinstance(node, _I):
+            for _p in (getattr(node, "cond", None), getattr(node, "then", None), getattr(node, "else_expr", None)):
+                if _p:
+                    self._scan_let_vars(_p, host_rev=host_rev)
+        elif isinstance(node, _P):
+            for _f in node.forms:
+                self._scan_let_vars(_f, host_rev=host_rev)
+        elif isinstance(node, (_W, _R)):
+            if getattr(node, "count", None):
+                self._scan_let_vars(node.count, host_rev=host_rev)
+            for _b in node.body:
+                self._scan_let_vars(_b, host_rev=host_rev)
+        elif isinstance(node, _Cnd):
+            for _cl in node.clauses:
+                for _it in _cl[1:]:
+                    self._scan_let_vars(_it, host_rev=host_rev)
+        elif isinstance(node, _S):
+            for _t, _v in node.pairs:
+                if _v:
+                    self._scan_let_vars(_v, host_rev=host_rev)
+        elif isinstance(node, _LE):
+            for _i in node.items:
+                self._scan_let_vars(_i, host_rev=host_rev)
+        elif isinstance(node, _LN):
+            for _b in getattr(node, "body", []) or []:
+                self._scan_let_vars(_b, host_rev=host_rev)
+        elif isinstance(node, _Q):
+            if getattr(node, "expr", None):
+                self._scan_let_vars(node.expr, host_rev=host_rev)
+        elif isinstance(node, _C):
+            for _a in getattr(node, "args", []) or []:
+                self._scan_let_vars(_a, host_rev=host_rev)
 
     def _collect_single(self, defuns, others, program):
         """单函数文件（≤1 defun）：模块注册与函数体符号按 CAD 序收集。
@@ -1997,8 +2117,17 @@ class CadSymbolCollector:
                             # （nlp.lsp `expr` = @::ensure-str 参数 + 多个
                             # @::cmd-match-* 的 let 变量），CAD 注册在参数拥有者
                             # 处（EXPR@149），let 组不注册（否则提前到 let 组、
-                            # CAD 槽错位）。
-                            if v in getattr(self, "_all_params", set()):
+                            # CAD 槽错位）。**例外**：let 宿主源码**更早**（entry
+                            # = @::event-add-handler src93 的 let 变量，参数
+                            # @::log-write-file src152 更晚源码 → 逆序更晚处理）
+                            # 时 CAD 由 let 宿主注册（fg[2110]），收集——否则
+                            # 参数拥有者先注册 → entry 落参数组（CC fg[1891]
+                            # 而非 CAD fg[2110]）。
+                            if (
+                                v in getattr(self, "_all_params", set())
+                                and getattr(self, "_param_first_source", {}).get(v, 10**9)
+                                < getattr(self, "_cur_source_idx", 10**9)
+                            ):
                                 continue
                             out.append((v, False))
                 _lb = node.args[1:]
@@ -2025,8 +2154,30 @@ class CadSymbolCollector:
                     if _ai == 0 and not self._seen(out, "ads-cmd"):
                         out.append(("ads-cmd", False))
                 return
-            for a in node.args:
-                self._collect_byteorder(a, out, arg_names, in_quote)
+            if node.name in _VLAX_PROPERTY_FUNCS and len(node.args) > 1:
+                # ActiveX 属性/方法名（`vlax-get-property obj 'Item` 的 'Item、
+                # `vlax-invoke obj 'Method ...` 的 'Method）：quoted 单符号
+                # **保留大小写**（ActiveX 接口大小写敏感，t22_activex 实测）。
+                # 直接收集（不递归 quoted 分支）——否则 `_is_other_param` 把
+                # `'Item` 误判为「参数 item 被 quoted 引用」→ 注册 deferred
+                # const `('SYMBOL','Item')` → 追加到 cl-* 组 → 多 ITEM 槽
+                # （atlisp_u fg 2537 抢占 `=` 槽位，_patch_usubr_idx 138 条
+                # 指令错编址）。属性名经 `_ci_ref_key` 与同名普通符号合并
+                # （CAD 的 'Item 在 @::macro-subst 组 ITEM 槽）。
+                for _ai, _a in enumerate(node.args):
+                    if (
+                        _ai == 1
+                        and isinstance(_a, QuotedExpr)
+                        and isinstance(_a.expr, Symbol)
+                    ):
+                        _ap = _a.expr.name
+                        if not self._seen(out, _ap):
+                            out.append((_ap, False))
+                    else:
+                        self._collect_byteorder(_a, out, arg_names, in_quote)
+            else:
+                for a in node.args:
+                    self._collect_byteorder(a, out, arg_names, in_quote)
             if node.name in ('and', 'or'):
                 # CAD 短路 and/or：编译为 JMP16 指令，不注册符号槽
                 # （i18n-cad 实测无 AND/OR 符号）。
