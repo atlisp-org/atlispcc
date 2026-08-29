@@ -31,7 +31,7 @@
      - `module_code.py`：`_reg` b 槽 `i >= base-tl_funcobj_slot` 让位、`_mid_count_of`
        top-lambda-only 索引、`_skip` 函数仍发 mid（CondDefunBind）、`set` 协议
        纯顶层/混合不同槽
-2. **版本**：v0.1.30（无版本号变化，bugfix 提交）。
+2. **版本**：v0.1.30 → v0.1.31（patch，atlisp_u byte-identity 修复 + 文档更新）。
 
 ---
 
