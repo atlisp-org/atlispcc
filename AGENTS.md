@@ -207,7 +207,7 @@ atlisp_u 从 99.3%（seg0 622 字节 diff + seg1 9630 字节 diff）修到 **100
 7. **module_code.py `_mid_count_of` top-lambda-only 索引**：`_mid_counts` 构建时跳过 top-lambda 提升 defun（fasext/vlx/wget），索引比 func_names 少 3。旧 `_emit_mid_for`/`_has_mid` 直接用 `_mid_counts[i]` 错位；且用 `_skip`（含 `_cond_defun_names` C:%/C:%%）偏移会过度减。改为仅按 `skip_funcs` 偏移；`_skip` 函数跳过 `_reg_emit` 但**仍发射 mid 语句**（CondDefunBind 块在跳过位置发射）。
 8. **module_code.py `set` 协议纯顶层/混合不同槽**：`(set 'X (lambda ...))` 纯顶层（net/wget）PUSH_G = `_lam_slot`，混合文件（atlisp_u @::wget）PUSH_G = `_lam_slot + 1`（`n_funcs > 0` 时 +1）。
 
-验证：atlisp_u 100% byte-identical + kernel 67/67 + merged_2/4/8/16 IDENTICAL + pytest 456 passed + 2 skipped。
+验证：atlisp_u 100% byte-identical + kernel 67/67 + merged_2/4/8/16 IDENTICAL + bootstrap/i18n 转正（pytest 458 passed + 1 empty-skip）。
 
 ### i18n 混合模式拆件
 
@@ -316,6 +316,8 @@ atlisp_u 从 99.3%（seg0 622 字节 diff + seg1 9630 字节 diff）修到 **100
 - **模块代码绑定**用 setq 协议 `JUMP 0; PUSH_G <lam槽+1>; DUP; SETQ_G <sym>`；`-lambda-` 槽不在 symtab/gvar_map，PUSH_G 直接用 `_lam_slot + 1`（不能用 `_slot_gv`）
 - **`_patch_usubr_idx`**：`top_lambda_args` 按 seg0 出现序传参；参数绑定 PUSH_G 与参数读取 PUSH_VALUE 用 `gvar_slot(arg) - 1`（str-vlx fg[9]→8）；参数读取槽识别 `nsyms - len(cur_args) <= idx < nsyms`
 - `_collect_single` 的 `_has_top_lam` 分支走 `_register_module`（第一区）+ 3b 块（第二区）；普通纯顶层仍全局逆序（test-cond/setcmp/set5/setqa 不变）
+- **第二区符号槽序**（bootstrap.lsp byte-identical，2026-08-29）：跨 lambda **共享参数**（bootstrap `(lambda (file) ...)` ×2）推迟到第二区**最末尾**注册（gold `= SUBSTR - STRLEN .fas STRCAT @::*FASEXT* FILE`——vlx 体 `= SUBSTR - STRLEN .fas` → vlx 尾 STRCAT → fasext 体 @::*FASEXT* → 共享 FILE 末尾）；无共享参数多 lambda 按 `[体][参数][tail-call]`（setq-lambda）。`cad_symbols._collect_single` 与 `compile_cmd._top_lambda_body_syms` 双处实现（预扫描 `_param_counts` 计算共享集，发射跳过、末尾 `_deferred_params` 追加）
+- **含 in-package/use-package 的 `-lambda-` 运行时槽**（bootstrap）：`_lam_slot = top_level_count + 2 - _ti + _lam_extra`，`_lam_extra=1` 当 other_forms 含 InPackage/`use-package`（bootstrap gold fasext=28 = `_mrc(25)+3`；setq-lambda/wget 无 in-package 时 = `_mrc+2`）
 
 **混合文件（defun+顶层）顶层 setq-lambda**（platform.lsp byte-identical）：func_offsets 键改用 `-lambda-`/`-lambda-#N`（不提升为同名 defun），`_top_lambda_offsets[offset] = 原名` 供 `_patch_usubr_idx` 按 seg0 offset 解析参数；`-lambda-` 键**不进** `symtab.function_offsets`/entries（否则纯顶层 setq-lambda byte-identity 会破）。纯顶层与混合文件统一走 `_rewrite_top_lambda_binds`（kwote 标记）入口。
 
@@ -334,8 +336,8 @@ atlisp_u 从 99.3%（seg0 622 字节 diff + seg1 9630 字节 diff）修到 **100
 ## 已知限制（仍然有效）
 
 - **变参 `&rest`/`&optional`：CAD 不支持，byte-identity 不适用**（large_synthetic 对拍）：CAD 编译器**不识别变参语义**，把 `&rest`/`&optional` 当**普通参数名**编译（`(a &optional opt &rest rest)` → DEFUN 头 argc=5、`&REST`/`&OPTIONAL` 当符号槽 GET_LOCAL、资源段注册这两个标记符号 nsyms +2），运行行为即错。atlispcc **正确支持**变参（t19/t21 真机功能验证通过），故含变参函数的文件无法整文件 byte-identity（每函数约 12 字节、nsyms 差 2），**不应追求 byte-identity**。
-- **纯顶层 set/setq-lambda 第二区符号槽序残余 diff**（bootstrap fixture）：单 `-lambda-` 文件 CAD 用 **reversed-fwd（含 tail-call 与参数原位）** 编址；多 lambda 文件（无共享参数）按 `[体][参数][tail-call]`（setq-lambda.lsp byte-identical）；共享参数名跨 lambda 时 CAD 把共享参数移末尾、tail-call 前移。compiler 当前统一按 `[体][参数][tail-call]`，与 CAD 单 lambda/共享参数场景不符。fixture `tests/bootstrap.lsp` + golden `tests/cad/bootstrap_cad.fas` 保留作复现，byte-identity 测试从 CAD_GOLDEN_PAIRS 移除（优雅 skip）。
-- **i18n 混合模式 seg1 模块代码残余 diff**：`tests/cad/i18n-cad.fas` 对拍中 seg0+nsyms 已逐字节一致，seg1 模块代码仍有 48 个 contiguous resource_items diff（CAD 多一条 `JUMP32 0; PUSH_G 37; SETQ_G 22; PUSH_G 22; POP` 顶层语句），与 kwote lambda 编址无关。`test_i18n_original_byte_identity` 保持 skip。
+- **纯顶层 set/setq-lambda 第二区符号槽序**：✅ 已修复（2026-08-29，bootstrap.lsp 转正 byte-identity）——跨 lambda 共享参数推迟到第二区最末尾注册（`STRCAT @::*FASEXT* FILE` golden 实测，cad_symbols `_collect_single` + compile_cmd `_top_lambda_body_syms` 双处修复）；含 in-package/use-package 的纯顶层 `-lambda-` 文件 `-lambda-` 运行时槽整体 +1（`_lam_slot` 加 `_lam_extra`，bootstrap gold fasext=28=`_mrc(25)+3` vs setq-lambda/wget 无 in-package =`_mrc+2`）。单 `-lambda-` 文件 CAD 用 **reversed-fwd（含 tail-call 与参数原位）** 编址（bootstrap/setq-lambda 均已对齐，fixture 保留复现）。
+- **i18n 混合模式 seg1 模块代码**：✅ 已恢复（2026-08-29）——seg0+seg1+nsyms 与 `tests/cad/i18n-cad.fas` 逐字节一致，`test_i18n_original_byte_identity` 移除 skip 锁入回归（此前 48 项 diff 已被后续修复消除，仅测试 skip 未同步移除）。
 - **文件头注释/版本戳**（`;A<日期>`）随日期变化，非字节一致性目标；seg0+sec2 已全对齐
 - **MCP CAD 连接不稳定**：建议手动测试；CAD 偶发弹出 `alert`/错误框（`#32770`）会阻塞 `atlisp-mcp` eval，用 `python -m tools.cad_dialog_killer <pid> --watch` 自动关闭
 

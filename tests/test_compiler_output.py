@@ -339,6 +339,11 @@ CAD_GOLDEN_PAIRS = [
     # 纯顶层 `(setq X (lambda ...))` 多 `-lambda-`（setq-lambda.lsp）：seg0 完整
     # compact stub + 函数目录/第二区符号/fg 表布局 + setq 绑定协议（2026-08-15）。
     ('setq-lambda.lsp', 'cad/setq_lambda_cad.fas'),
+    # 纯顶层 `(set 'X (lambda ...))` + in-package/use-package + 跨 lambda 共享参数
+    # （bootstrap.lsp）：`-lambda-` 第二区符号槽序——共享参数推迟到最末尾
+    # （`STRCAT @::*FASEXT* FILE`）+ in-package/use-package 使 `-lambda-` 运行时槽
+    # 整体 +1（2026-08-29 修复，转正 byte-identity）。
+    ('bootstrap.lsp', 'cad/bootstrap_cad.fas'),
     # 函数体内嵌套 `(defun inner ...)`（CAD 原生内嵌 DEFUN，2026-08-25）：
     # n1 最简 / n2 嵌套参数+locals / n3 闭包引用外层局部 / n4 嵌套位于体中段 /
     # n5 多层嵌套 / n6 条件内嵌套。源与 golden 均在 tests/cad/nested/。
@@ -351,11 +356,6 @@ CAD_GOLDEN_PAIRS = [
     # 非嵌套基线（s1 单函数 / s2 嵌套引用外层局部）对照。
     ('cad/nested/s1.lsp', 'cad/nested/s1.fas'),
     ('cad/nested/s2.lsp', 'cad/nested/s2.fas'),
-    # NOTE 2026-08-18：`(set 'X (lambda ...))` + in-package/use-package 的纯顶层
-    # 回归（bootstrap.lsp）暂缺——原 fixture 未入库（不可恢复），重建版与 CAD
-    # 第二区符号槽序有差异（tail-call/共享参数的槽位规则未完全逆向，setq-lambda
-    # 多 lambda 已 byte-identical）。fixture 与 golden 保留于
-    # tests/bootstrap.lsp + tests/cad/bootstrap_cad.fas 作复现用，见 AGENTS.md。
 ]
 
 #: t-series sources whose compiled output is byte-identical to the CAD golden
@@ -755,8 +755,10 @@ def test_i18n_original_byte_identity():
     全新 golden 确认），seg0 + nsyms 已与 i18n-cad.fas 逐字节一致；seg1 模块
     代码仍有 48 项 pre-existing diff（CAD 多一条顶层 setq 语句，与 kwote 无关），
     保持 skip。
+    2026-08-29：P0-1 共享参数/第二区符号槽序修复（cad_symbols/compile_cmd）
+    顺带消除 i18n seg1 模块代码 48 项 diff——seg0+seg1+nsyms 现全部逐字节一致，
+    移除 skip 锁入回归。
     """
-    pytest.skip('i18n seg1 模块代码 48 项 diff（CAD 多一条顶层语句），2026-08-23')
     from compiler.cli import cmd_compile
     from decompiler.fas4_decompiler import Fas4Parser
 

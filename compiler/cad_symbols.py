@@ -1471,21 +1471,45 @@ class CadSymbolCollector:
         #     收集其 lambda 体符号（**不**排除参数，参数也要注册）+ 参数。
         from compiler.ast_nodes import LambdaNode as _LN, QuotedExpr as _Q
 
-        _lam_seen = set()  # 3b 内部去重：跨 lambda 的重复符号（strcat）只注册一次
-        # 仅**纯顶层**（无 defun）文件走第二区 `-lambda-` 处理（net/wget/
-        # setq-lambda.lsp）；混合文件（platform 等，有 defun）的顶层 setq-lambda
-        # 是引用数据，其体符号已在模块注册段，不在此重复处理。
-        for form in reversed(others) if (_has_top_lam and not defuns) else ():
-            _lam = None
+        def _top_lam_of(form):
+            """从顶层 `(set/setq 'sym (lambda ...))` form 提取 lambda 节点。"""
             if isinstance(form, Setq):
                 for _t, _v in form.pairs:
                     if isinstance(_v, _LN) or (isinstance(_v, _Q) and isinstance(_v.expr, _LN)):
-                        _lam = _v if isinstance(_v, _LN) else _v.expr
-                        break
+                        return _v if isinstance(_v, _LN) else _v.expr
             elif isinstance(form, Call) and form.name == "set" and len(form.args) == 2:
                 _v1 = form.args[1]
                 if isinstance(_v1, _LN) or (isinstance(_v1, _Q) and isinstance(_v1.expr, _LN)):
-                    _lam = _v1 if isinstance(_v1, _LN) else _v1.expr
+                    return _v1 if isinstance(_v1, _LN) else _v1.expr
+            return None
+
+        # 预扫描：收集第二区所有顶层 lambda 的**真实参数**（`/` 后局部变量不算），
+        # 计算跨 lambda 共享参数集。CAD 把共享参数名推迟到第二区**最末尾**注册
+        # （bootstrap_cad.fas 实测：fasext/vlx 两个 `(lambda (file) ...)` 共享
+        # `file`，gold 第二区符号块 `... .fas STRCAT @::*FASEXT* FILE`——FILE 在
+        # 全部体符号 + 尾调用之后）。仅**纯顶层**（无 defun）文件走此处理
+        # （net/wget/setq-lambda.lsp）；混合文件（platform 等，有 defun）的顶层
+        # setq-lambda 是引用数据，其体符号已在模块注册段，不在此重复处理。
+        _top_lam_forms = []
+        if _has_top_lam and not defuns:
+            for form in reversed(others):
+                _lam = _top_lam_of(form)
+                if _lam is not None:
+                    _top_lam_forms.append(_lam)
+        _param_counts = {}
+        for _lam in _top_lam_forms:
+            _lam_params = _lam.args
+            if "/" in _lam_params:
+                _lam_params = _lam_params[: _lam_params.index("/")]
+            for _arg in _lam_params:
+                _k = normalize_vla_name(str(_arg))
+                _param_counts[_k] = _param_counts.get(_k, 0) + 1
+        _shared_params = {k for k, c in _param_counts.items() if c >= 2}
+        _deferred_params = []  # 共享参数按首次出现序推迟注册
+
+        _lam_seen = set()  # 3b 内部去重：跨 lambda 的重复符号（strcat）只注册一次
+        for form in reversed(others) if (_has_top_lam and not defuns) else ():
+            _lam = _top_lam_of(form)
             if _lam is None:
                 continue
             # CAD `-lambda-` 体符号顺序（setq-lambda.lsp golden 实测 @::vlx 体
@@ -1536,12 +1560,22 @@ class CadSymbolCollector:
                 self.add("_al-bind-alist")
                 self.add((CONST_MARK, ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))))
             for arg in reversed(_lam_params):
+                _ak = normalize_vla_name(str(arg))
+                if _ak in _shared_params:
+                    # 跨 lambda 共享参数：推迟到第二区末尾注册（bootstrap 共享
+                    # `file` CAD 实测在 STRCAT @::*FASEXT* 之后）。
+                    if _ak not in _deferred_params:
+                        _deferred_params.append(_ak)
+                    continue
                 if arg not in self._name_set:
                     self.add(arg)
             # 最后调用名（strcat，跨 lambda 去重）。
             if _tail_call is not None and _tail_call not in _lam_seen:
                 _lam_seen.add(_tail_call)
-                self.add(_tail_call, force=True)        #    递归函数名：多次自身调用共享同一个重复槽（t03 递归两次仅 1 个重复
+                self.add(_tail_call, force=True)
+        # 共享参数：第二区最末尾注册（bootstrap 共享 `file` → FILE 槽）。
+        for _ak in _deferred_params:
+            self.add(_ak)        #    递归函数名：多次自身调用共享同一个重复槽（t03 递归两次仅 1 个重复
         #    FIB 槽；fact 递归一次 1 个重复槽）。
         for f in reversed(defuns):
             all_args = f.args + f.optional + ([f.rest] if f.rest else [])

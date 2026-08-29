@@ -445,7 +445,20 @@ def cmd_compile(
             # symtab.entries（第二区 `-lambda-` 体符号会膨胀）。多 lambda 逆序
             # 递减。不进 symtab（CAD 无 `-lambda-` 普通符号槽，仅 DEFCODE
             # 区小写注册）。
-            _lam_slot = top_level_count + 2 - _ti
+            # 含 in-package/use-package（bootstrap）：`-lambda-` 运行时槽整体
+            # 大 1（bootstrap gold fasext=28 = `_mrc(25)+3`；setq-lambda/wget
+            # 无 in-package 时 fasext=28 = `_mrc(26)+2`、wget=5=`_mrc(3)+2`）。
+            # in-package/use-package 编译进模块代码占一个额外 gvar 槽。
+            _lam_extra = 0
+            from compiler.ast_nodes import InPackage as _IP
+            for _of in other_forms:
+                if isinstance(_of, _IP):
+                    _lam_extra = 1
+                    break
+                if (isinstance(_of, Call) and str(getattr(_of, "name", "")).lower() == "use-package"):
+                    _lam_extra = 1
+                    break
+            _lam_slot = top_level_count + 2 - _ti + _lam_extra
             top_lambda_slots[_sym] = _lam_slot
     # 混合文件（platform）：`-lambda-` 运行时槽 = `_reg` 的 b 槽 - 1（模块代码
     # setq-lambda 绑定 `PUSH_G <-lambda->` 复用该函数的 `_reg` b 槽：b =
@@ -759,10 +772,25 @@ def cmd_compile(
     # 纯顶层含顶层 `(set/setq 'sym (lambda ...))` 时，收集第二区符号
     # （lambda 体符号 + 参数，CAD DEFCODE 区前置注册，fg 表用）。顺序：源码
     # 逆序（@::vlx 在前、@::fasext 在后），各 lambda 体符号 + 参数。与
-    # cad_symbols 的 3b 块收集顺序一致。
+    # cad_symbols 的 3b 块收集顺序一致。跨 lambda 共享参数（bootstrap
+    # `(lambda (file) ...)` ×2）CAD 推迟到第二区最末尾（`STRCAT @::*FASEXT*
+    # FILE` golden 实测）——先收集全部 lambda 参数计算共享集，发射时跳过、
+    # 末尾追加。
     _top_lambda_body_syms = None
     if top_lambda_binds:
         from compiler.cad_symbols import CadSymbolCollector, _SeenList
+        from compiler.cad_symbols import normalize_vla_name as _nvn
+
+        _param_counts = {}
+        for _sym, _lam in top_lambda_binds:
+            _lp = _lam.args
+            if "/" in _lp:
+                _lp = _lp[:_lp.index("/")]
+            for _a in _lp:
+                _k = _nvn(str(_a))
+                _param_counts[_k] = _param_counts.get(_k, 0) + 1
+        _shared_params = {k for k, c in _param_counts.items() if c >= 2}
+        _deferred = []  # 共享参数按首次出现序末尾注册
 
         _syms = []
         _lam_seen = set()  # 跨 lambda 去重（strcat 出现在两个 lambda 体只注册一次）
@@ -804,12 +832,24 @@ def cmd_compile(
                     _lam_seen.add(_lc)
                     _syms.append(("__const__", ("LIST", _lc)))
             for _a in reversed(_lam_params):
+                _ak = _nvn(str(_a))
+                if _ak in _shared_params:
+                    # 跨 lambda 共享参数：推迟到第二区末尾（bootstrap 共享
+                    # `file` CAD 实测在 STRCAT @::*FASEXT* 之后）。
+                    if _ak not in _deferred:
+                        _deferred.append(_ak)
+                    continue
                 if _a not in _lam_seen:
                     _lam_seen.add(_a)
                     _syms.append(_a)
             if _tc is not None and _tc not in _lam_seen:
                 _lam_seen.add(_tc)
                 _syms.append(_tc)
+        # 共享参数：第二区最末尾注册（bootstrap 共享 `file` → FILE 槽）。
+        for _ak in _deferred:
+            if _ak not in _lam_seen:
+                _lam_seen.add(_ak)
+                _syms.append(_ak)
         _top_lambda_body_syms = _syms
     fas_nsyms = len(symtab.entries) - module_reg_count + 1
     # 纯顶层文件含顶层 `-lambda-`：CAD nsyms = fg 表长度 = 1 + 第二区符号数

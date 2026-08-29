@@ -26,11 +26,11 @@
    - 核心修复：
      - `cad_symbols.py`：共享参数裸 lambda 归属（msg 由参数拥有者注册，不移除）
      - `patch.py`：wide SETQ_G 的 rg 列表常量 fallback 移除（CAD 一律用 fg 槽）
-     - `compile_cmd.py`：嵌套 defun `#dup` FUNCOBJ 反查、混合 `_lam_slot`/
-       `_tl_funcobj_slots` 补 `n_cmds+_tl_lam_count`
-     - `module_code.py`：`_reg` b 槽 `i >= base-tl_funcobj_slot` 让位、`_mid_count_of`
-       top-lambda-only 索引、`_skip` 函数仍发 mid（CondDefunBind）、`set` 协议
-       纯顶层/混合不同槽
+      - `compile_cmd.py`：嵌套 defun `#dup` FUNCOBJ 反查、混合 `_lam_slot`/
+        `_tl_funcobj_slots` 补 `n_cmds+_tl_lam_count`
+      - `module_code.py`：`_reg` b 槽 `i >= base-tl_funcobj_slot` 让位、`_mid_count_of`
+        top-lambda-only 索引、`_skip` 函数仍发 mid（CondDefunBind）、`set` 协议
+        纯顶层/混合不同槽
 2. **版本**：v0.1.30 → v0.1.31（patch，atlisp_u byte-identity 修复 + 文档更新）。
 3. **测试扩充**（456 用例，+76）：
    - 新增 `tests/test_atlisp_u_byte_identity.py`：atlisp_u 全量 byte-identity 回归、
@@ -39,6 +39,30 @@
    - `test_compiler_output.py` 补 **8 项根因定向回归**：共享参数裸 lambda、wide
      SETQ_G fg 槽、嵌套 `#dup` FUNCOBJ、混合 `_lam_slot` n_cmds、set 协议纯顶层
      vs 混合、CondDefunBind mid 发射、`_reg` b 槽让位。
+
+### 本周期（2026-08-29 P0 收尾，v0.1.32）
+
+| 指标 | 数值 |
+|------|------|
+| 测试用例 | **458 用例**（458 passed + 1 empty-skip 占位） |
+| bootstrap byte-identity | **转正**（纯顶层 `(set 'X (lambda ...))` + in-package/use-package + 共享参数） |
+| i18n 混合模式 | **恢复**（`test_i18n_original_byte_identity` 移除 skip） |
+| 回归 | setq-lambda / net-wget / reload / atlisp_u / kernel 67/67 不回归 |
+
+成果：
+1. **bootstrap.lsp 转正 byte-identity**（P0-1）——关闭最后两个已知 byte-identity 缺口之一：
+   - **跨 lambda 共享参数推迟到第二区最末尾**：`(lambda (file) ...)` ×2（fasext/vlx）共享
+     `file`，CAD 把共享参数移末尾（`STRCAT @::*FASEXT* FILE`）。`cad_symbols._collect_single`
+     与 `compile_cmd._top_lambda_body_syms` 双处修复（预扫描 `_param_counts` 计算共享集，
+     发射跳过、末尾 `_deferred_params` 追加）。修复前 `FILE` 在 vlx 参数位注册 → seg0 符号
+     槽引用偏移（`06`↔`08`）+ seg1 第二区符号块错序。
+   - **含 in-package/use-package 的 `-lambda-` 运行时槽 +1**：`_lam_slot` 加 `_lam_extra`（bootstrap
+     fasext=28 = `_mrc(25)+3` vs setq-lambda/wget 无 in-package = `_mrc+2`）。
+   - 移回 `test_byte_identity_with_cad_golden[bootstrap.lsp]`（此前从 CAD_GOLDEN_PAIRS 移除）。
+2. **i18n 混合模式恢复**（P0-2）——`test_i18n_original_byte_identity` 移除 skip：seg0+seg1+nsyms
+   与 `tests/cad/i18n-cad.fas` 逐字节一致（48 项 pre-existing diff 已被此前修复消除，仅测试
+   skip 未同步移除）。
+3. **版本**：v0.1.31 → v0.1.32（patch）。
 
 ---
 
