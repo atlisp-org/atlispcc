@@ -2482,30 +2482,7 @@ class CadSymbolCollector:
                     < getattr(self, "_cur_source_idx", 10**9)
                 )
                 if not _excluded and _a in self.shared:
-                    # **共享参数**裸 lambda 引用（atlisp_u `@::save-list-to-file`
-                    # 等 `(lambda (msg) ...)` 的 msg = cleanup-dcl 等 6 函数参数）：
-                    # CAD 槽由 `_shared_last`（逆序最后参数声明者，cleanup-dcl）
-                    # 的 args 循环注册，裸 lambda 宿主不重复收集。旧逻辑仅按
-                    # `_param_first_source < cur` 排除（参数拥有者更早），但裸
-                    # lambda 宿主（src 70 < pfs 89）时 `_excluded` 为 False →
-                    # msg 提前注册到 `@::save-list-to-file` 组（fg[2132]），CAD
-                    # 在 cleanup-dcl 组（fg[2235]）→ fg/seg0 错位。当前函数
-                    # 的逆序索引 ≠ `_shared_last` 拥有者时排除。
-                    # **例外**：裸 lambda 是**尾返回值**（`(lambda (msg) ...)`
-                    # 直接作为函数返回值，kernel error/handler `@::error-handler`
-                    # 实测 CAD msg 槽在宿主组 fg[86]）时不排除——CAD 把返回
-                    # lambda 的共享参数注册在返回者组，而非参数声明者组。
-                    if _is_tail:
-                        pass
-                    else:
-                        _cur_rev = (
-                            self._n_funcs - 1 - getattr(self, "_cur_source_idx", 0)
-                            if self._n_funcs
-                            else None
-                        )
-                        _sl = getattr(self, "_shared_last", {}).get(_a)
-                        if _sl is not None and _sl != _cur_rev:
-                            _excluded = True
+                    pass
                 if (
                     _a not in arg_names
                     and not _excluded

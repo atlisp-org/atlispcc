@@ -462,7 +462,13 @@ def cmd_compile(
             _i = _tl_index.get(_sym)
             if _i is None:
                 continue
-            _lam_slot = 2 * len(defun_forms) + top_level_count - _i
+            _lam_slot = (
+                2 * len(defun_forms)
+                + top_level_count
+                + (1 if any(getattr(f, "is_command", False) or str(f.name).startswith("c:") for f in defun_forms) else 0)
+                + sum(1 for k in func_offsets if str(k).startswith("-lambda-#TL"))
+                - _i
+            )
             top_lambda_slots[_sym] = _lam_slot
 
     # 内嵌 `(function (lambda ...))` / `((lambda ...) args)` DEFUN（kwote/
@@ -673,6 +679,13 @@ def cmd_compile(
         funcobj_map = {}
         for _nk, _no in _fnd_seen:
             _foi = _fo_by_name.get(_nk)
+            if _foi is None and '#dup' in str(_nk):
+                _base_name = _nested_defun_names.get(_nk)
+                if _base_name:
+                    for _bkey, _bidx in _fo_by_name.items():
+                        if str(_bkey).upper() == str(_base_name).upper():
+                            _foi = _bidx
+                            break
             if _foi is not None and _nk in _fo_pos:
                 funcobj_map[_foi] = _fo_base + _fo_pos[_nk]
         # **`-lambda-` 槽（lambda_slot_map）**：与 func-obj 槽同规则，按 `_pre_all`
@@ -740,8 +753,9 @@ def cmd_compile(
     _tl_funcobj_slots = {}
     for _tlk, _pos in _tl_kwote_pos.items():
         _tl_funcobj_slots[_tlk] = (
-            2 * len(defun_forms) + 1 + top_level_count + _tl_lam_count - _pos
+            2 * len(defun_forms) + 1 + top_level_count + n_cmds + _tl_lam_count - _pos
         )
+
     # 纯顶层含顶层 `(set/setq 'sym (lambda ...))` 时，收集第二区符号
     # （lambda 体符号 + 参数，CAD DEFCODE 区前置注册，fg 表用）。顺序：源码
     # 逆序（@::vlx 在前、@::fasext 在后），各 lambda 体符号 + 参数。与

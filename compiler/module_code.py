@@ -438,9 +438,13 @@ def _build_cad_module_code(
                         )  # PUSH_G <sym>
                         _b += bytes([0x57, 0x00, 0x00, 0x00, 0x00])  # JUMP 0
                         # `-lambda-` 槽是 DEFCODE 区注册的独立 gvar 槽（不在
-                        # symtab/gvar_map），PUSH_G = _lam_slot。不能用 _slot_gv
-                        # （会把槽当 symtab 索引查 entries → 错位到 gvar_map）。
-                        _b += bytes([0x09]) + struct.pack("<H", _lam_slot)  # PUSH_G <-lambda->
+                        # symtab/gvar_map），PUSH_G = _lam_slot（纯顶层 net/wget
+                        # golden 5 = tlc+2-_ti）或 +1（混合文件 atlisp_u wget
+                        # golden 1303 = b = `2*len+tlc+n_cmds+_tl_lam-i`）。不能
+                        # 用 _slot_gv（会把槽当 symtab 索引查 entries → 错位到
+                        # gvar_map）。
+                        _lam_push = _lam_slot + (1 if n_funcs > 0 else 0)
+                        _b += bytes([0x09]) + struct.pack("<H", _lam_push)  # PUSH_G <-lambda->
                         _b += encode_usubr(
                             2, _slot_gv(_set_idx), 3
                         )  # USUBR(2, set)
@@ -535,8 +539,6 @@ def _build_cad_module_code(
         (_last_global_progn and not post_forms and n_pre == 0)
         or _post_selfbal
     )
-    import sys as _dsp
-    print("DBG skip_reg_pc=%s n_pre=%d n_funcs=%d n_globals=%d last_global_progn=%s post_selfbal=%s len(globals)=%d len(mid)=%d len(post)=%d" % (_skip_reg_pc, n_pre, n_funcs, n_globals, _last_global_progn, _post_selfbal, len(globals_forms), len(mid_forms), len(post_forms)), file=_dsp.stderr)
 
     _emit_stmts(globals_forms, last_no_pop=(n_funcs == 0 and not post_forms))
 
@@ -573,10 +575,15 @@ def _build_cad_module_code(
             # （vl 符号占用其后一槽）；未显式给定函数名时退化为相对编号
             # n_funcs - i。
             nonlocal out
-            b = 2 * n_module_funcs + top_level_count + 1 + n_cmds + _tl_lam_count - i
-            # 顶层 kwote lambda 的 func-obj 槽位于 START 注册之后（setup 槽 29，
-            # START 37..30 / TAIL 28..23）：TAIL 注册（i >= n_pre）让出该槽 -1。
-            if _tl_lam_count and i >= n_pre:
+            base = 2 * n_module_funcs + top_level_count + 1 + n_cmds + _tl_lam_count
+            b = base - i
+            # 顶层 kwote lambda 的 func-obj 槽（DEFCODE 区注册的模块 rg 槽）
+            # 占用 b 序列中的一个槽位（`tl_funcobj_slot` = base - tl_pos，setup
+            # 29 = 37-8、atlisp_u 1303 = 1542-239）：源码位置在其之后的函数
+            # （i >= tl_pos）b 值让出该槽 -1。setup 的 tl_pos=8 = n_pre（START
+            # 边界），atlisp_u 的 tl_pos=239 ≠ n_pre=1（tl 在 TAIL 中段）。
+            _tl_pos = base - tl_funcobj_slot if tl_funcobj_slot is not None else None
+            if _tl_pos is not None and i >= _tl_pos:
                 b -= 1
             fn_slot = symtab.name_to_idx.get(func_names[i]) if i < len(func_names) and func_names else None
             c = (fn_slot + 1) if fn_slot is not None else (n_funcs - i)
@@ -637,14 +644,32 @@ def _build_cad_module_code(
         _mi = 0
         _mid_counts = mid_counts or ()
 
+        def _mid_count_of(i):
+            # `_mid_counts` 按**真实 defun 序**（跳过 top-lambda 提升 defun，
+            # 与 `func_names` 含 3 个 `-lambda-` 提升函数错位：atlisp_u wget
+            # 是 func_names[215] 但 mid 索引 212）。`_mid_counts` 在 compile_cmd
+            # 构建时 `if name in _top_lambda_names: continue` 不 append → 索引
+            # 比 func_names 少 3。此处按 func_names 前导 **top-lambda skip**
+            # 数偏移映射——**仅 `skip_funcs`**（fasext/vlx/wget 提升 defun），
+            # 不含 `_cond_defun_names`（C:%/C:%% 条件 defun 有真实 mid 槽）。
+            _ri = i
+            for _j in range(i):
+                if func_names and _j < len(func_names) and func_names[_j] in (skip_funcs or set()):
+                    _ri -= 1
+            return _mid_counts[_ri] if 0 <= _ri < len(_mid_counts) else 0
+
+        def _mid_skip_prefix(i):
+            # func_names 前导 **top-lambda skip**（提升 defun）数：mid_counts
+            # 索引偏移量。不含 `_cond_defun_names`（条件 defun 有真实 mid 槽）。
+            return sum(
+                1
+                for _j in range(i)
+                if func_names and _j < len(func_names) and func_names[_j] in (skip_funcs or set())
+            )
+
         def _emit_mid_for(i):
-            # 交错模式下按 mid_counts 把函数 i 的 mid 语句分配给它（无 mid 的
-            # 函数跳过）。mid_forms 顺序与源码 mid 顺序一致（cl-functions
-            # @::eval/@::require 无 mid，不消耗 mid_forms）。
             nonlocal _mi
-            if not _interleave_mid:
-                return
-            _cnt = _mid_counts[i] if i < len(_mid_counts) else 0
+            _cnt = _mid_count_of(i)
             if _cnt > 0 and _mi < len(mid_forms):
                 _emit_stmts(mid_forms[_mi : _mi + _cnt], last_no_pop=False)
                 _mi += _cnt
@@ -656,14 +681,11 @@ def _build_cad_module_code(
             # CAD 不为其发 no-op）。非 set 别名 mid（setq/if 等）仍保留 no-op
             #（@::PLATFORM-IS-LINUX-P 的 `(setq @::*platform-cache* ...)`
             # mid 实测 CAD 保留 no-op）。
-            if (
-                not _interleave_mid
-                or i >= len(_mid_counts)
-                or _mid_counts[i] == 0
-            ):
+            _cnt_i = _mid_count_of(i)
+            if not _interleave_mid or _cnt_i == 0:
                 return False
-            _start = sum(_mid_counts[:i])
-            if _start + _mid_counts[i] > len(mid_forms):
+            _start = sum(_mid_counts[: (i - _mid_skip_prefix(i))])
+            if _start + _cnt_i > len(mid_forms):
                 return False
             return _mid_lead_alias(mid_forms[_start])
 
@@ -734,6 +756,7 @@ def _build_cad_module_code(
             # mid_counts 分配，无 mid 函数跳过）。
             for i in range(n_pre, n_funcs):
                 if func_names and i < len(func_names) and func_names[i] in _skip:
+                    _emit_mid_for(i)
                     continue
                 _reg_emit(i)
                 _emit_mid_for(i)
