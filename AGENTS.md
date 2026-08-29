@@ -114,8 +114,8 @@ Makefile 快捷目标：`make test`（pytest）、`make check`（一键全量检
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，380 用例：378 passed + 2 skipped）：
-- `test_parser.py`（21）、`test_lexer.py`（11）、`test_symbol_table.py`（10）、`test_analyzer.py`（9）、`test_cli.py`（28）、`test_compile_decompile.py`（74）、`test_compiler_output.py`（50）、`test_optimizer.py`（32）、`test_linker.py`（13）、`test_assembler.py`（8）、`test_disasm.py`（9）、`test_resource_stream.py`（25）、`test_packages.py`（4）、`test_vlx_builder.py`（3）、`test_variadic_args.py`（17）、`test_zelx.py`（5）、`test_diagnostics.py`（20）。
+**测试文件在 `tests/` 目录下**（pytest 风格，456 用例：454 passed + 2 skipped）：
+- `test_parser.py`（21）、`test_lexer.py`（11）、`test_symbol_table.py`（10）、`test_analyzer.py`（9）、`test_cli.py`（28）、`test_compile_decompile.py`（74）、`test_compiler_output.py`（75）、`test_optimizer.py`（32）、`test_linker.py`（13）、`test_assembler.py`（8）、`test_disasm.py`（9）、`test_resource_stream.py`（25）、`test_packages.py`（4）、`test_vlx_builder.py`（3）、`test_variadic_args.py`（17）、`test_zelx.py`（5）、`test_diagnostics.py`（20）、`test_atlisp_u_byte_identity.py`（70：atlisp_u 全量 byte-identity + roundtrip + **kernel 67 文件 × CAD golden 参数化**）。
 
 一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。
 
@@ -207,7 +207,7 @@ atlisp_u 从 99.3%（seg0 622 字节 diff + seg1 9630 字节 diff）修到 **100
 7. **module_code.py `_mid_count_of` top-lambda-only 索引**：`_mid_counts` 构建时跳过 top-lambda 提升 defun（fasext/vlx/wget），索引比 func_names 少 3。旧 `_emit_mid_for`/`_has_mid` 直接用 `_mid_counts[i]` 错位；且用 `_skip`（含 `_cond_defun_names` C:%/C:%%）偏移会过度减。改为仅按 `skip_funcs` 偏移；`_skip` 函数跳过 `_reg_emit` 但**仍发射 mid 语句**（CondDefunBind 块在跳过位置发射）。
 8. **module_code.py `set` 协议纯顶层/混合不同槽**：`(set 'X (lambda ...))` 纯顶层（net/wget）PUSH_G = `_lam_slot`，混合文件（atlisp_u @::wget）PUSH_G = `_lam_slot + 1`（`n_funcs > 0` 时 +1）。
 
-验证：atlisp_u 100% byte-identical + kernel 67/67 + merged_2/4/8/16 IDENTICAL + pytest 380 passed + 2 skipped。
+验证：atlisp_u 100% byte-identical + kernel 67/67 + merged_2/4/8/16 IDENTICAL + pytest 456 passed + 2 skipped。
 
 ### i18n 混合模式拆件
 

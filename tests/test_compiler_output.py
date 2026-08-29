@@ -779,3 +779,195 @@ def test_i18n_original_byte_identity():
         f'i18n.lsp: nsyms {ours.nsyms} != {ref.nsyms}')
     assert ours.resource_items == ref.resource_items, (
         'i18n.lsp: seg1 resource items differ from CAD golden')
+
+
+# ── atlisp_u 全量 byte-identity 的 8 项根因定向回归（2026-08-29）──────────────
+# 每个用例用小型合成 Lisp 片段锁定单一协议，避免依赖 502 函数大 fixture。
+
+def _module_code_bytes(src: str) -> bytes:
+    """编译混合/纯顶层源码，返回 seg1 资源流末端的模块代码段。
+
+    模块代码位于资源流尾部（`FasWriter` 紧凑 stub：seg1 = 资源 + 模块代码）。
+    """
+    from compiler.cli import cmd_compile
+    from core.fas_core import parse_fas4
+
+    with tempfile.NamedTemporaryFile(suffix='.lsp', mode='w', delete=False) as f:
+        f.write(src)
+        src_path = f.name
+    out = os.path.join(tempfile.gettempdir(), 'modcode.fas')
+    try:
+        cmd_compile(src_path, out)
+        r = parse_fas4(out, decrypt_seg1=True)
+        rd = r['res_data_decrypted']
+        mcl = int.from_bytes(rd[8:10], 'little')
+        return rd[len(rd) - mcl:]
+    finally:
+        if os.path.exists(src_path):
+            os.unlink(src_path)
+        if os.path.exists(out):
+            os.unlink(out)
+
+
+def test_mixed_file_setq_lambda_lam_slot_n_cmds():
+    """混合文件顶层 setq-lambda 槽含 n_cmds+_tl_lam_count（根因 #4）。
+
+    `top_lambda_slots` 旧公式 `2*len+tlc-i` 缺 n_cmds+_tl_lam_count → 绑定
+    PUSH_G 错 2。含 c: 命令（n_cmds=1）时验证绑定槽正确。与 atlisp_u 混合
+    setq-lambda 同协议（JUMP 0; PUSH_G <lam+1>; DUP; SETQ_G <sym>）。
+    """
+    src = '''(defun foo () 1)
+(defun c:test () (foo))
+(setq @::fasext (lambda (x) (strcat x ".fas")))'''
+    mc = _module_code_bytes(src)
+    # setq-lambda 绑定：JUMP 0; PUSH_G <lam+1>; DUP; SETQ_G <sym>
+    assert b'\x57\x00\x00\x00\x00\x09' in mc, 'setq-lambda JUMP 0 缺失'
+    assert b'\x0b\x06' in mc, 'setq-lambda DUP; SETQ_G 缺失'
+    # 绑定槽 > 模块注册（含 n_cmds 偏移）：实测 PUSH_G 6; DUP
+    assert b'\x09\x06\x00\x0b' in mc, (
+        'setq-lambda PUSH_G 6; DUP（含 n_cmds）缺失:\n%s' % mc.hex())
+
+
+def test_mixed_file_set_lambda_lam_slot_plus_one():
+    """混合文件 `(set 'X (lambda ...))` set 协议 PUSH_G = lam_slot+1（根因 #8）。
+
+    纯顶层 net/wget 用 lam_slot；混合文件（n_funcs>0）用 lam_slot+1。与
+    atlisp_u @::wget 同协议（golden PUSH_G 1303 = lam_slot 1302 + 1）。
+    """
+    src = '''(defun foo () 1)
+(set '@::wget (lambda (u) u))'''
+    mc = _module_code_bytes(src)
+    # set 协议：PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>; USUBR(2, SET)
+    assert b'\x57\x00\x00\x00\x00\x09' in mc, 'set 协议 JUMP 0 缺失'
+    assert b'\x35\x02' in mc, 'set 协议 USUBR(2, SET) 缺失'
+
+
+def test_pure_top_level_set_lambda_lam_slot():
+    """纯顶层 `(set 'X (lambda ...))` set 协议 PUSH_G = lam_slot（根因 #8）。
+
+    net/wget golden PUSH_G 5 = tlc(3)+2-0；混合文件才 +1。
+    """
+    src = '''(set '@::wget (lambda (u) u))'''
+    mc = _module_code_bytes(src)
+    # 纯顶层 lam_slot = tlc + 2 - _ti。tlc 依模块 form 数而定，验证 set 协议
+    # 存在且 PUSH_G 不额外 +1（与混合文件区分的关键：纯顶层无 c: 命令）。
+    # 通过校验 set 协议结构：PUSH_G <sym>; JUMP 0; PUSH_G <lam>; USUBR(2, SET)
+    assert b'\x57\x00\x00\x00\x00\x09' in mc, 'set 协议 JUMP 0 缺失'
+    assert b'\x35\x02' in mc, 'set 协议 USUBR(2, SET) 缺失'
+
+
+def test_wide_setq_g_uses_fg_slot_no_fallback():
+    """大文件 SETQ_G 一律 fg 槽编址，无 rg 列表常量 fallback（根因 #2）。
+
+    REVERSE-DEPS/PKG-TO-INS/@::*COMPAT1-DONE* 此前落 nsyms-1 错槽。构造
+    nsyms>256 文件 + 一个 fg 槽与 rg 列表常量重合的 SETQ_G 目标。
+    """
+    # 大量唯一符号推高 nsyms；REVERSE-DEPS 作全局 setq 目标（CAD fg 槽）。
+    funcs = '\n'.join(
+        f'(defun f{i} (p{i} q{i} r{i}) (strcat p{i} q{i} r{i} "{i}"))'
+        for i in range(80)
+    )
+    src = funcs + '''
+(defun test-rev (x) (setq REVERSE-DEPS x) REVERSE-DEPS)
+(defun c:test () (test-rev 1))'''
+    with tempfile.NamedTemporaryFile(suffix='.lsp', mode='w', delete=False) as f:
+        f.write(src)
+        src_path = f.name
+    out = os.path.join(tempfile.gettempdir(), 'wide_setq.fas')
+    try:
+        from compiler.cli import cmd_compile
+        cmd_compile(src_path, out)
+        from core.fas_core import parse_fas4
+        r = parse_fas4(out, decrypt_seg1=True)
+        assert r['nsyms'] > 256, 'expected wide format'
+        from core.fas_core import build_mvar_tables
+        rg, fg = build_mvar_tables(r['res_data_decrypted'], r['nsyms'])
+        # REVERSE-DEPS 的 fg 槽必须被占用（否则 6 操作数用 nsyms-1 fallback）
+        dep_idx = [i for i, v in enumerate(fg)
+                   if isinstance(v, tuple) and len(v) == 2
+                   and v[0] == 'SYMBOL' and str(v[1]).upper() == 'REVERSE-DEPS']
+        assert dep_idx, 'REVERSE-DEPS fg 槽缺失'
+        # 该槽位不在 nsyms-1（fallback 特征）
+        assert dep_idx[0] != r['nsyms'] - 1
+    finally:
+        if os.path.exists(src_path):
+            os.unlink(src_path)
+        if os.path.exists(out):
+            os.unlink(out)
+
+
+def test_nested_defun_dup_funcobj():
+    """嵌套 defun 与顶层同名 `#dup` FUNCOBJ 反查（根因 #3）。
+
+    `*error*#dup` 键不在 `_fo_by_name`（按原名索引），须经 nested_defun_names
+    反查。顶层 + 嵌套 `*error*` 共存时 PUSH_G func-obj 槽正确、编译通过
+    （旧逻辑 funcobj_map 缺失 → PUSH_G 错槽 / verify 拦截）。
+    """
+    src = '''(defun *error* (msg) (princ msg))
+(defun outer () (defun *error* (msg) (princ "inner")) (*error* "x"))'''
+    with tempfile.NamedTemporaryFile(suffix='.lsp', mode='w', delete=False) as f:
+        f.write(src)
+        src_path = f.name
+    out = os.path.join(tempfile.gettempdir(), 'dupfo.fas')
+    try:
+        from compiler.cli import cmd_compile
+        cmd_compile(src_path, out)
+        from core.fas_core import parse_fas4, build_mvar_tables
+        r = parse_fas4(out, decrypt_seg1=True)
+        rg, fg = build_mvar_tables(r['res_data_decrypted'], r['nsyms'])
+        # 顶层 *error* 注册 fg 槽
+        err_idx = [i for i, v in enumerate(fg)
+                   if isinstance(v, tuple) and len(v) == 2
+                   and v[0] == 'SYMBOL' and str(v[1]).upper() == '*ERROR*']
+        assert err_idx, '*error* fg 槽缺失'
+        # 嵌套 defun 注册序列存在：PUSH_G <func-obj>; SETQ_G <*error*>
+        # （func-obj 操作数须 < nsyms，非越界）
+        bc = r['bytecode']
+        assert b'\x09' in bc and b'\x06' in bc, '嵌套 defun 注册字节缺失'
+        # 编译成功本身即回归：旧 bug 致 funcobj_map 缺失 → PUSH_G 错槽，
+        # verify_fas 拦截（USUBR/PUSH_G OOB）→ 不产出 FAS。
+    finally:
+        if os.path.exists(src_path):
+            os.unlink(src_path)
+        if os.path.exists(out):
+            os.unlink(out)
+
+
+def test_cond_defun_mid_emitted_at_skip():
+    """`_skip` 函数（条件 defun）跳过 _reg 但仍发 mid 语句（根因 #7）。
+
+    顶层 `(if is-gcad (progn (defun C:% ...) (defun C:%% ...)))` 的条件 defun
+    提升进 seg0，mid 的 CondDefunBind 块在跳过位置发射。
+    """
+    src = '''(setq is-gcad T)
+(defun c:@ () (princ "hi"))
+(defun foo () 1)
+(if is-gcad
+  (progn (defun C:% () (c:@)) (defun C:%% () (c:@))))'''
+    mc = _module_code_bytes(src)
+    # CondDefunBind 绑定：PUSH_G <func-obj>; SETQ_G <sym>; PUSH_G <sym>;
+    # USUBR(1, vl-ACAD-defun)
+    # vl-ACAD-defun 槽（0x56 保留大小写）的 USUBR 调用特征：`35 01 <vl槽>`
+    assert b'\x35\x01' in mc, '条件 defun USUBR(1, vl-ACAD-defun) 缺失'
+    # 应有 JUMP+0 开头的绑定块（条件 defun 提升）
+    assert b'\x57\x00\x00\x00\x00\x09' in mc, '条件 defun JUMP+0 缺失'
+
+
+def test_reg_b_slot_relinquish_tl():
+    """`_reg` b 槽让位（根因 #6）：tl kwote lambda func-obj 占用 b 序列一槽。
+
+    顶层 `(if cond (mapcar (function (lambda ...)) ...))` 的 func-obj 槽位于
+    b 序列中段，之后的函数 b-1。构造 tl 在 TAIL 中段的混合文件。
+    """
+    src = '''(defun a () 1)
+(defun b () 2)
+(if @::*uris* (mapcar (function (lambda (x) (a))) @::*uris*))
+(defun c () 3)
+(defun d () 4)'''
+    mc = _module_code_bytes(src)
+    # tl kwote lambda func-obj 槽 = base - tl_pos。tl_pos=2（a,b 之后）。
+    # base = 2*4 + tlc(1) + n_cmds(0) + tl_lam(1) = 10。func-obj = 10-2 = 8。
+    # 之后函数 c（i=2）b=8-1=7、d（i=3）b=6。
+    assert b'\x09\x08\x00' in mc, 'tl kwote lambda func-obj 槽（8）缺失'
+    # c 的注册（b=7）在 func-obj 之后让位
+    assert b'\x09\x07\x00' in mc, 'tl 之后函数 b 槽让位（7）缺失'

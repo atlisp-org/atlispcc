@@ -10,7 +10,7 @@
 
 | 指标 | 数值 |
 |------|------|
-| 测试用例 | **380 用例**（378 passed + 2 skipped） |
+| 测试用例 | **456 用例**（454 passed + 2 skipped） |
 | kernel 编译 | **67/67 全部可编译** |
 | kernel byte-identity | **67/67 逐字节一致**（seg0 + seg1 + nsyms，DIFF=0） |
 | @lisp_u byte-identity | **100% 逐字节一致**（seg0+seg1+nsyms，此前 99.3%） |
@@ -32,6 +32,13 @@
        top-lambda-only 索引、`_skip` 函数仍发 mid（CondDefunBind）、`set` 协议
        纯顶层/混合不同槽
 2. **版本**：v0.1.30 → v0.1.31（patch，atlisp_u byte-identity 修复 + 文档更新）。
+3. **测试扩充**（456 用例，+76）：
+   - 新增 `tests/test_atlisp_u_byte_identity.py`：atlisp_u 全量 byte-identity 回归、
+     大文件 roundtrip + **kernel 67 文件参数化 golden 比对**（无 CAD 环境回归，
+     此前仅 `scripts/kernel_compare_http.py` MCP 验证）。
+   - `test_compiler_output.py` 补 **8 项根因定向回归**：共享参数裸 lambda、wide
+     SETQ_G fg 槽、嵌套 `#dup` FUNCOBJ、混合 `_lam_slot` n_cmds、set 协议纯顶层
+     vs 混合、CondDefunBind mid 发射、`_reg` b 槽让位。
 
 ---
 

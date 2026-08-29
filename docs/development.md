@@ -228,7 +228,7 @@ CAD 真机 add/mul、square/sum-squares、f1/f2/f3、重名冲突场景全部可
 ./scripts/run_tests.sh         # 一键全量检查（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）
 ./scripts/run_tests.sh --cad   # 附加 CAD 真机验证（需 CAD 连接）
 python scripts/cad_verify.py   # CAD 真机验证（逐个编译 t01-t24+i18n 加载断言，25 项）
-python -m pytest               # 运行所有测试（380 用例：378 passed + 2 skipped）
+python -m pytest               # 运行所有测试（456 用例：454 passed + 2 skipped）
 python -m pytest tests/ -v     # 详细输出
 python -m pytest tests/test_resource_stream.py  # 资源码专项测试
 ```
