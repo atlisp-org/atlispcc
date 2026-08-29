@@ -579,6 +579,49 @@ class CadSymbolCollector:
                 if _da in self.shared:
                     _shared_last_decl[_da] = max(_shared_last_decl.get(_da, -1), _di)
         self._shared_last_decl = _shared_last_decl
+        # 共享参数 → 逆序最后**参数声明**者（供裸 lambda / kwote lambda 参数
+        # 归属判定：CAD 把共享参数槽注册在参数拥有者 args 循环处，裸/kwote
+        # lambda 宿主不重复收集——atlisp_u `msg` 由 cleanup-dcl 等 6 函数声明，
+        # 裸 lambda `(lambda (msg) ...)` 宿主若抢先收集会占错槽）。
+        self._shared_last = {}
+        for _di, _df in enumerate(reversed(defuns)):
+            for _da in _df.args:
+                if _da in self.shared:
+                    self._shared_last[_da] = max(self._shared_last.get(_da, -1), _di)
+        # 预计算顶层 defun 的 locals 结构 → 逆序最后声明者（供 kwote lambda
+        # locals 常量归属判定：kwote lambda 的 `(quote (locals))` 若与某顶层
+        # defun 的 locals 结构相同，CAD 合并到顶层 defun 的 locals_last 位置，
+        # 不在 kwote 块处注册——atlisp_u `@::load-error-handler` kwote lambda
+        # `/ fp` 与 `@::platform-machineid-save` 等 6 个 defun 的 `('fp',)`
+        # 共享，CAD 槽在 src 7 组（fg[2377]），CC 提前到 `@::load-error-handler`
+        # 组（fg[677]）→ fg/seg0 错位）。键用 `('LIST', (('SYMBOL', l)...))`
+        # 结构与 kwote 分支 `_lc` 一致。
+        self._locals_last = {}
+        for _li, _lf in enumerate(reversed(defuns)):
+            if _lf.locals:
+                self._locals_last[
+                    ("LIST", tuple(("SYMBOL", l) for l in _lf.locals))
+                ] = _li
+        # 嵌套 defun 参数（`(defun @::pkg-deps-tree-rec (name depth))` 的
+        # `depth`）→ 宿主外层函数逆序索引（`_count_nested` 已把它们并入
+        # shared 但不在顶层 args，`_shared_last` 无值）。CAD 在宿主外层组
+        # 注册（fg[611] DEPTH），注册循环据此限定注册位置。
+        self._nested_param_host: dict = {}
+        for _ni, _nf in enumerate(reversed(defuns)):
+            for _nb in _nf.body:
+                if isinstance(_nb, Defun):
+                    for _na in _nb.args + list(getattr(_nb, "optional", [])) + (
+                        [getattr(_nb, "rest")] if getattr(_nb, "rest", None) else []
+                    ):
+                        if _na in self.shared and _na not in getattr(
+                            self, "_shared_last", {}
+                        ):
+                            # 逆序最大宿主（源码序最靠前的宿主外层函数）：
+                            # CAD `depth` 槽在 `@::pkg-deps-tree`(rev 132)
+                            # 而非 `@::pkg-reverse-deps-tree`(rev 131)。
+                            self._nested_param_host[_na] = max(
+                                self._nested_param_host.get(_na, -1), _ni
+                            )
         for _jf, f in enumerate(defuns):
             self._cur_source_idx = _jf
             refs = _SeenList()
@@ -692,11 +735,7 @@ class CadSymbolCollector:
         # → CAD fg[46] 在 cache-store 组，因 cache-clear-all 逆序 i=0 先处理、
         # 参数 i 更高）。故共享参数/foreach 变量仅在 ``_shared_last[名] == i``
         # 的函数处注册（先处理者跳过，避免抢先占低位槽）。
-        _shared_last: dict = {}
-        for _i, _f in enumerate(reversed(defuns)):
-            for _arg in _f.args:
-                if _arg in self.shared:
-                    _shared_last[_arg] = max(_shared_last.get(_arg, -1), _i)
+        _shared_last = self._shared_last
         # 共享参数在 body/quoted 引用（含大小写变体，file-utils `'STR` 引用
         # parse-header、参数声明 str 在 path-win/path-unix/path-os）时按
         # **逆序最后引用者**注册：kept 扫描大小写不敏感（与 `_ci_ref_key`
@@ -704,11 +743,28 @@ class CadSymbolCollector:
         # 计入 → _shared_last['str']=7（path-win args）抢先占槽，CAD 在
         # parse-header 组 slot 60。
         _shared_ci = {str(s).upper(): s for s in self.shared}
-        for _i, _k in enumerate(reversed(kept_refs)):
+        for _i, (_f, _k) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
+            # kept_refs 覆盖恢复为**所有引用者**（quoted 引用 `'STR` 也覆盖，
+            # CAD 槽在引用者组——browse `@::funhelp` `(eq 'str ...)` 的 STR 槽
+            # 在 funhelp 组 fg[117]）。但 **kwote lambda 参数**（`(lambda (msg)
+            # ...)` 的 msg，`@::save-list-to-file` `*error*` 处理器）不覆盖——
+            # 否则 `_shared_last['msg']` 被 kwote 宿主（rev 441）抢先，参数
+            # 拥有者（cleanup-dcl rev 422）处不匹配 → `msg` 永不注册。kwote
+            # 块内符号（`kwote` → `__kwote_end__` 之间）跳过。
+            _in_kwote = False
             for _n, _ in _k:
+                if isinstance(_n, str) and _n == "kwote":
+                    _in_kwote = True
+                    continue
+                if isinstance(_n, str) and _n == "__kwote_end__":
+                    _in_kwote = False
+                    continue
+                if _in_kwote:
+                    continue
                 if isinstance(_n, str) and _n.upper() in _shared_ci:
-                    _shared_last[_shared_ci[_n.upper()]] = max(
-                        _shared_last.get(_shared_ci[_n.upper()], -1), _i
+                    _canon = _shared_ci[_n.upper()]
+                    _shared_last[_canon] = max(
+                        _shared_last.get(_canon, -1), _i
                     )
         for i, (f, kept) in enumerate(zip(reversed(defuns), reversed(kept_refs))):
             # 函数体符号逆序注册；CAD 对 kwote 块（kwote + lambda 体，由
@@ -841,22 +897,58 @@ class CadSymbolCollector:
                     # @::fetch-module i=4 组 fg[50]）。
                     _lo = _local_is_param_order.get(name)
                     if _lo == "param":
-                        if name in f.locals:
+                        # order="param"：参数拥有者注册该槽。局部拥有者
+                        # （name in f.locals）跳过；**非参数拥有者**（name
+                        # not in f.args，如 foreach 循环变量引用，atlisp_u
+                        # `@::save-pkg-lock-states` `(foreach pkg-name ...)`
+                        # 的 pkg-name 既非参数也非局部）同样跳过——CAD 把
+                        # pkg-name 注册在参数拥有者组（fg[1857] @::update-locale），
+                        # foreach 处无独立槽。旧逻辑仅跳过局部拥有者，foreach
+                        # 变量引用漏过 → 提前注册到 foreach 宿主组（fg[783]）
+                        # → fg/seg0 错位。
+                        if name in f.locals or name not in f.args:
                             continue
                     else:
                         if name not in f.locals or i != _local_is_param_last.get(name):
                             continue
                 if (
                     isinstance(name, str)
-                    and name in self.shared
+                    and name.upper()
+                    in {str(s).upper() for s in self.shared}
                     and name not in _local_is_param
-                    and _shared_last.get(name) != i
+                    and _shared_last.get(
+                        next(
+                            (s for s in self.shared if str(s).upper() == name.upper()),
+                            name,
+                        )
+                    )
+                    is not None
+                    and _shared_last.get(
+                        next(
+                            (s for s in self.shared if str(s).upper() == name.upper()),
+                            name,
+                        )
+                    )
+                    != i
                 ):
                     # 共享参数名在 body/foreach 引用（persist pkg-name foreach 变量、
                     # cache subdir foreach 变量）：仅在逆序最后引用者（_shared_last）
                     # 处注册，先处理者跳过（否则抢先占低位槽）。_local_is_param
                     # 符号（局部+参数混合）由 _local_is_param_order/_last 决定
                     # 注册者，不走 _shared_last。
+                    # 大小写不敏感：quoted `'SYM`（`@::to-string` `(eq 'SYM ...)`)
+                    # 与共享参数 `sym`（cl::stringp 等）——`name in self.shared`
+                    # 精确匹配失败 → `'SYM` 逃过拦截注册到引用组（to-string），
+                    # 而 CAD 槽在 `_shared_last` 拥有者组（cl::stringp fg 末尾）。
+                    continue
+                if isinstance(name, str) and name == "_al-bind-alist" and f is not source_first_local:
+                    # `_al-bind-alist` 全文件共享单槽（AGENTS：i18n-cad 实测仅 1 个），
+                    # 由 source_first_local（源码序第一个 `/ locals` 函数，cl::find）
+                    # 统一注册。kwote lambda locals == 函数 locals 时 body 收集会
+                    # 引用 `_al-bind-alist`（line 2198-2200），但**非 source_first_local**
+                    # 的函数（atlisp_u `@::proxy-running-p` kwote `/ shell exec stdout
+                    # result`）不应重复注册——逆序先处理者抢先占槽（fg[1662]），
+                    # 而 CAD 槽在 cl::find 组（fg[2524]）→ fg/seg0 错位。
                     continue
                 self.add(
                     name,
@@ -871,8 +963,9 @@ class CadSymbolCollector:
             if f.locals:
                 if f is source_first_local:
                     self.add('_al-bind-alist')
-                if locals_last.get(tuple(f.locals)) == i:
-                    self.add((CONST_MARK, ('LIST', tuple(('SYMBOL', l) for l in f.locals))))
+                _lc_key = ('LIST', tuple(('SYMBOL', l) for l in f.locals))
+                if getattr(self, "_locals_last", {}).get(_lc_key) == i:
+                    self.add((CONST_MARK, _lc_key))
             for loc in reversed(f.locals):
                 # 仅**用过**的 / 局部变量注册独立符号槽：used 局部有 body+const
                 # 双槽（i18n LOC-FILE@108+122），unused 局部仅 const 槽
@@ -1408,7 +1501,7 @@ class CadSymbolCollector:
             if isinstance(_f, (Defun, Defpackage, InPackage)):
                 continue
             _fr = _SeenList()
-            self._collect_byteorder(_f, _fr, set())
+            self._collect_byteorder(_f, _fr, set(), module_ctx=True)
             _has_t_ref = any(
                 isinstance(_n, str) and _n.lower() == 't' for _n, _ in _fr
             )
@@ -1420,6 +1513,7 @@ class CadSymbolCollector:
 
         module_seen = set()
         module_funcs = 0
+        self._module_ctx = True
         for i in reversed(range(n)):
             form = forms_all[i]
             if isinstance(form, Defun):
@@ -1454,7 +1548,7 @@ class CadSymbolCollector:
                         self.add(s[0])
             else:
                 form_refs = _SeenList()
-                self._collect_byteorder(form, form_refs, set())
+                self._collect_byteorder(form, form_refs, set(), module_ctx=True)
                 _rev = list(reversed(form_refs))
                 # CAD T 槽由**外层 cond 的 else 键**（`(t ...)`）位置决定
                 # （platform.lsp 实测 T 槽紧跟 else 键体符号 @::PGP-FILE/chs
@@ -1480,6 +1574,17 @@ class CadSymbolCollector:
                             and j == _t_reg_idx
                         ):
                             self.add('T', force=True)
+                        elif isinstance(name, str) and name in self.func_names:
+                            # 用户函数在**模块代码**（顶层 form）被调用，且其
+                            # defun 归属**不是**该调用 form（即 defun 在调用
+                            # 之前已注册，或 defun 在模块尾块之外）时，调用
+                            # form 是最早引用者 → CAD 把函数名注册在调用者
+                            # 位置（atlisp_u `@::alert` defun@387、调用 form1，
+                            # CAD rg[1027] 在调用者组；p04 `@::codepage2lang`
+                            # defun@1、调用 form4，owner=defun → 此分支跳过）。
+                            if _owner_of(name) == i:
+                                module_seen.add(name)
+                                self.add(name, force=False)
                         continue
                     # 值位置 t/T 与内层 else 键复用 T 槽，跳过（仅 force t 注册）。
                     # 例外：模块区无任何 cond else 键（force t）时，值位置 `t`
@@ -1494,7 +1599,13 @@ class CadSymbolCollector:
                     if isinstance(name, str) and name.lower() == 't':
                         if _has_force_t and not _i_is_t_form:
                             continue
-                        if _has_force_t and j != _t_reg_idx:
+                        # T-form 自身**有** force-t（cond else 键）时，值位置 t
+                        # 复用其槽（j != _t_reg_idx 跳过）；T-form 是**裸值 T**
+                        # （无 force-t，_t_reg_idx=-1，atlisp_u 末尾 `T` 顶层
+                        # form）时不能跳过——否则模块区无 T 槽、模块代码返回
+                        # 值 PUSH_VALUE 引用越界（CAD 实测 T 在模块区 rg[876]，
+                        # 旧逻辑跳过 → PUSH_VALUE 3531 → CAD 拒绝加载）。
+                        if _has_force_t and _t_reg_idx >= 0 and j != _t_reg_idx:
                             continue
                         if _owner_of(name) != i and not _i_is_t_form:
                             continue
@@ -1513,6 +1624,7 @@ class CadSymbolCollector:
                     elif name not in module_seen:
                         module_seen.add(name)
                         self.add(name, force=force)
+        self._module_ctx = False
         self.module_reg_func_count = module_funcs
 
     def _form_read_target(self, node, reads, targets, arg_names, in_quote=False):
@@ -1524,21 +1636,50 @@ class CadSymbolCollector:
             if node.name not in arg_names:
                 reads.add(node.name)
         elif isinstance(node, Call):
-            for a in node.args:
-                if isinstance(a, QuotedExpr) and a.kwote and isinstance(a.expr, LambdaNode):
-                    # 调用参数的 kwote lambda（`(mapcar (function (lambda ...))
-                    # @::*uris*)`，setup 模块注册段实测 slot[7]=kwote）——
-                    # 注册 `kwote` 标记符号。setq 值（platform setq-lambda 绑定）
-                    # 不走 Call 分支不注册（CAD 只对函数调用参数的 kwote 注册）。
-                    if "kwote" not in reads:
-                        reads.add("kwote")
-                    self._form_read_target(a.expr, reads, targets, arg_names, in_quote)
+            # 顶层 setq-lambda 绑定（`(set/setq 'sym (lambda ...))`）：
+            # CAD 按 `-lambda-` SUBR 机制处理，**不**注册 kwote 标记、lambda
+            # 体符号也不进模块注册段（体符号走第二区 `-lambda-` 收集）。
+            # atlisp_u `(set '@::wget (function (lambda ...)))` 若走 kwote 分支
+            # 会把 kwote 归属到该 form（rg[545]），而 CAD kwote 在 mapcar 调用
+            # form 组（rg[454]）。`_skip_lam_bodies=True` 的纯顶层路径已跳过，
+            # 混合文件（atlisp_u）同样须跳过。
+            from compiler.ast_nodes import LambdaNode as _FRT_LN
+            _is_set_lam = (
+                node.name == "set"
+                and len(node.args) == 2
+                and isinstance(node.args[1], QuotedExpr)
+                and isinstance(node.args[1].expr, _FRT_LN)
+            )
+            if _is_set_lam:
+                reads.add("set")
+                _t0 = node.args[0]
+                if isinstance(_t0, QuotedExpr) and isinstance(_t0.expr, Symbol):
+                    targets.add(_t0.expr.name)
+                # 参数/体符号不在此收集（`-lambda-` 第二区单独处理）
+            else:
+                for a in node.args:
+                    if isinstance(a, QuotedExpr) and a.kwote and isinstance(a.expr, LambdaNode):
+                        # 调用参数的 kwote lambda（`(mapcar (function (lambda ...))
+                        # @::*uris*)`，setup 模块注册段实测 slot[7]=kwote）——
+                        # 注册 `kwote` 标记符号。
+                        if "kwote" not in reads:
+                            reads.add("kwote")
+                        self._form_read_target(a.expr, reads, targets, arg_names, in_quote)
+                    else:
+                        self._form_read_target(a, reads, targets, arg_names, in_quote)
+                if node.name not in self.func_names:
+                    # `command` 内建 SUBR 的**调用目标**以 `ads-cmd` 槽独立注册
+                    # （与值引用的 `COMMAND` 分离），read 归属同步用该名。
+                    reads.add("ads-cmd" if node.name == "command" else node.name)
                 else:
-                    self._form_read_target(a, reads, targets, arg_names, in_quote)
-            if node.name not in self.func_names:
-                # `command` 内建 SUBR 的**调用目标**以 `ads-cmd` 槽独立注册
-                # （与值引用的 `COMMAND` 分离），read 归属同步用该名。
-                reads.add("ads-cmd" if node.name == "command" else node.name)
+                    # 用户函数调用：顶层 form 调用用户函数时，函数名也计入该 form
+                    # 的 reads——模块归属取**最早引用**（read 或 target）的 form。
+                    # atlisp_u `@::alert` 被 form1（顶层 progn）调用、defun 在
+                    # form387 → CAD 槽注册在调用者 form1 组（rg[1027]），而非
+                    # defun 组；p04 `@::codepage2lang` defun 在 form1、调用在
+                    # form3 → 仍归 defun（min owner = form1）。不登记则唯一归
+                    # defun，`@::alert` 错位到 form387 组。
+                    reads.add("ads-cmd" if node.name == "command" else node.name)
         elif isinstance(node, Setq):
             for target, value in node.pairs:
                 if value:
@@ -1606,13 +1747,24 @@ class CadSymbolCollector:
             # 键与 `_collect_byteorder`/symtab.add_real 一致（`__real_<v>__`）。
             reads.add('__real_%s__' % node.value)
 
-    def _collect_byteorder(self, node, out, arg_names, in_quote=False, cur_locals=None, _is_tail=False):
+    def _collect_byteorder(self, node, out, arg_names, in_quote=False, cur_locals=None, _is_tail=False,
+                           module_ctx=False):
         """按字节码首次引用序向前收集 (name, forced) 列表（单函数算法）。
+
+        ``module_ctx`` 仅入口调用方传入；递归子调用统一用
+        ``self._module_ctx``（在 `_register_module` 期间置位，否则 False）。
 
         `_is_tail=True` 表示该表达式的值是函数返回值（尾/值上下文）——语句
         上下文（值被丢弃）progn 末 `T`/`nil` 的符号槽 CAD 不注册（permission
         `@::fetch-user-role` `(progn ... T)` 实测；checksum 函数返回 T 仍注册）。
+        `module_ctx=True` 表示在模块注册域（顶层 form）收集——quoted 单符号
+        若与某函数参数同名（atlisp_u `'int`/`'bool`/`'str` 类型实参 vs
+        `@::ash` 的参数 `int`）**不**走 `_is_other_param` 参数延迟（CAD 把顶层
+        define-config-typed 的 `'int` 类型注册进模块区，延迟到函数体区 → 模块
+        代码 PUSH_G 引用越界 → CAD 拒绝加载）。
         """
+        if not module_ctx:
+            module_ctx = bool(getattr(self, "_module_ctx", False))
         if cur_locals is None:
             cur_locals = getattr(self, "_cur_locals", None)
         elif cur_locals is not None:
@@ -1739,7 +1891,8 @@ class CadSymbolCollector:
             elif (
                 node.name not in arg_names
                 and (
-                    node.name not in getattr(self, "_all_params", set())
+                    module_ctx
+                    or node.name not in getattr(self, "_all_params", set())
                     or getattr(self, "_param_first_source", {}).get(node.name, 10**9)
                     >= getattr(self, "_cur_source_idx", 10**9)
                 )
@@ -1790,7 +1943,22 @@ class CadSymbolCollector:
             # locals 常量 + _al-bind-alist 助手（n2 实测 const 在 _al-bind-alist 后）
             if _inner_locals:
                 _lc = (CONST_MARK, ("LIST", tuple(("SYMBOL", _l) for _l in _inner_locals)))
-                if not self._seen(out, _lc):
+                # 嵌套 defun 的 locals 常量若与某**顶层 defun** 的 locals 结构
+                # 相同（atlisp_u `@::edit-config` 内嵌 `save-config` 的 `/ i` =
+                # `@::set-headers-ext` 的 `/ i`），CAD 合并到顶层 `_locals_last`
+                # 位置（`@::set-headers-ext` rev 322，fg[1766]），不注册在嵌套
+                # 宿主组——否则 `(quote (i))` 提前到 `@::edit-config` 组（资源流
+                # @49938，fg 差 1、seg0 错位）。
+                _llast = getattr(self, "_locals_last", {}).get(_lc[1])
+                if _llast is not None:
+                    _cur_rev = (
+                        self._n_funcs - 1 - getattr(self, "_cur_source_idx", 0)
+                        if self._n_funcs
+                        else None
+                    )
+                    if _llast != _cur_rev:
+                        _lc = None
+                if _lc is not None and not self._seen(out, _lc):
                     out.append((_lc, False))
                 if getattr(self, "_cur_source_idx", None) is None and not cur_locals and not self._seen(out, "_al-bind-alist"):
                     # `_al-bind-alist` 符号全文件共享：单函数路径（n2，无其它
@@ -1955,7 +2123,8 @@ class CadSymbolCollector:
                 # 先收集 args、后收集 lambda 头（参数 + 体）。
                 for _it in node.items[1:]:
                     self._collect_byteorder(_it, out, arg_names, in_quote)
-                self._collect_byteorder(node.items[0], out, arg_names, in_quote)
+                self._collect_byteorder(node.items[0], out, arg_names, in_quote,
+                                        _is_tail=_is_tail)
             else:
                 for item in node.items:
                     self._collect_byteorder(item, out, arg_names, in_quote)
@@ -1986,6 +2155,31 @@ class CadSymbolCollector:
                     and getattr(self, "_param_first_source", {}).get(_a, 10**9)
                     < getattr(self, "_cur_source_idx", 10**9)
                 )
+                if not _excluded and _a in self.shared:
+                    # **共享参数**裸 lambda 引用（atlisp_u `@::save-list-to-file`
+                    # 等 `(lambda (msg) ...)` 的 msg = cleanup-dcl 等 6 函数参数）：
+                    # CAD 槽由 `_shared_last`（逆序最后参数声明者，cleanup-dcl）
+                    # 的 args 循环注册，裸 lambda 宿主不重复收集。旧逻辑仅按
+                    # `_param_first_source < cur` 排除（参数拥有者更早），但裸
+                    # lambda 宿主（src 70 < pfs 89）时 `_excluded` 为 False →
+                    # msg 提前注册到 `@::save-list-to-file` 组（fg[2132]），CAD
+                    # 在 cleanup-dcl 组（fg[2235]）→ fg/seg0 错位。当前函数
+                    # 的逆序索引 ≠ `_shared_last` 拥有者时排除。
+                    # **例外**：裸 lambda 是**尾返回值**（`(lambda (msg) ...)`
+                    # 直接作为函数返回值，kernel error/handler `@::error-handler`
+                    # 实测 CAD msg 槽在宿主组 fg[86]）时不排除——CAD 把返回
+                    # lambda 的共享参数注册在返回者组，而非参数声明者组。
+                    if _is_tail:
+                        pass
+                    else:
+                        _cur_rev = (
+                            self._n_funcs - 1 - getattr(self, "_cur_source_idx", 0)
+                            if self._n_funcs
+                            else None
+                        )
+                        _sl = getattr(self, "_shared_last", {}).get(_a)
+                        if _sl is not None and _sl != _cur_rev:
+                            _excluded = True
                 if (
                     _a not in arg_names
                     and not _excluded
@@ -1994,7 +2188,25 @@ class CadSymbolCollector:
                     out.append((_a, False))
             if _lam_locals:
                 _lc = ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))
-                if not self._seen(out, (CONST_MARK, _lc)):
+                # 裸 lambda 值的 locals 常量若与某**顶层 defun** 的 locals
+                # 结构相同（atlisp_u `@::load-error-handler` 返回 `(lambda
+                # (msg / fp) ...)` 的 `(fp,)` 与 6 个 defun 的 `('fp',)`
+                # 共享），CAD 把它合并到顶层 defun 的 locals_last 位置（逆序
+                # 最后声明者 = `@::platform-machineid-save` src 7，fg[2377]），
+                # 不在 lambda 宿主处注册。当前外层函数若**不是**逆序最后
+                # 声明者（`_cur_source_idx` 正序 ≠ n-1-locals_last），跳过
+                # const 收集——否则 `(fp,)` 提前注册到 `@::load-error-handler`
+                # 组（fg[677]）→ fg/seg0 全表错位。
+                _llast = getattr(self, "_locals_last", {}).get(_lc)
+                if _llast is not None:
+                    _cur_rev = (
+                        self._n_funcs - 1 - getattr(self, "_cur_source_idx", 0)
+                        if self._n_funcs
+                        else None
+                    )
+                    if _llast != _cur_rev:
+                        _lc = None
+                if _lc is not None and not self._seen(out, (CONST_MARK, _lc)):
                     out.append(((CONST_MARK, _lc), False))
                 for _l in _lam_locals:
                     if not self._seen(out, _l):
@@ -2073,7 +2285,25 @@ class CadSymbolCollector:
                     # 统一注册，不在此提前。
                     if _lam_locals:
                         _lc = ("LIST", tuple(("SYMBOL", l) for l in _lam_locals))
-                        if not self._seen(out, (CONST_MARK, _lc)):
+                        # kwote lambda 的 locals 常量若与某**顶层 defun** 的
+                        # locals 结构相同（atlisp_u `@::load-error-handler`
+                        # kwote lambda `/ fp` 与 6 个 defun 的 `('fp',)` 共享），
+                        # CAD 把它合并到顶层 defun 的 locals_last 位置（逆序最后
+                        # 声明者 = `@::platform-machineid-save` src 7，fg[2377]），
+                        # 不在 kwote 块处注册。当前外层函数若**不是**逆序最后
+                        # 声明者（`_cur_source_idx` 正序 ≠ n-1-locals_last），跳过
+                        # const 收集——否则 `(fp,)` 提前注册到 kwote 宿主组
+                        # （fg[677]）→ fg/seg0 全表错位。
+                        _llast = getattr(self, "_locals_last", {}).get(_lc)
+                        if _llast is not None:
+                            _cur_rev = (
+                                self._n_funcs - 1 - getattr(self, "_cur_source_idx", 0)
+                                if self._n_funcs
+                                else None
+                            )
+                            if _llast != _cur_rev:
+                                _lc = None
+                        if _lc is not None and not self._seen(out, (CONST_MARK, _lc)):
                             out.append(((CONST_MARK, _lc), False))
                         if set(_lam_locals) == set(cur_locals or []):
                             if not self._seen(out, "_al-bind-alist"):
@@ -2129,6 +2359,11 @@ class CadSymbolCollector:
                         and _pfs_ci.get(_n.upper(), 10**9)
                         < getattr(self, "_cur_source_idx", 10**9)
                     )
+                    if module_ctx:
+                        # 模块注册域（顶层 form）：quoted 单符号**不**走参数
+                        # 延迟——CAD 把 define-config-typed 的 `'int`/`'bool`
+                        # 类型实参注册进模块区（虽与 `@::ash` 参数 `int` 同名）。
+                        _is_other_param = False
                     if (
                         _n not in arg_names
                         and not _is_other_param

@@ -45,7 +45,11 @@ def _build_cad_module_code(
     mid_counts: tuple = (),
     _tl_lam_count: int = 0,
     tl_funcobj_slot: Optional[int] = None,
+    n_module_funcs: Optional[int] = None,
+    string_map: Optional[dict] = None,
 ) -> bytes:
+    if n_module_funcs is None:
+        n_module_funcs = n_funcs
     """把顶层表达式字节码转换为 CAD 风格的模块代码。
 
     CAD 模块代码规则（逆向，AutoCAD 24.1s 实测）：
@@ -120,6 +124,7 @@ def _build_cad_module_code(
 
         # gvar_map（二次生成）时：模块代码符号引用按资源流实际 gvar 槽重映射。
         _gvar = gvar_map
+        _str_map = string_map if gvar_map else None
         _symtab = symtab if _gvar else None
 
         cg = CodeGenerator(symtab, stub_format=True, nsyms=len(symtab.entries))
@@ -143,6 +148,10 @@ def _build_cad_module_code(
             if _gvar and _symtab is not None and 0 <= idx < len(_symtab.entries):
                 _t, _v = _symtab.entries[idx]
                 if _t in ("SYMBOL", "STRING"):
+                    if _t == "STRING" and _str_map:
+                        _s = _str_map.get(str(_v))
+                        if _s is not None:
+                            return _s
                     _s = _gvar.get(str(_v).upper())
                     if _s is not None:
                         return _s
@@ -183,14 +192,15 @@ def _build_cad_module_code(
                 _fb.resolve()
                 _cb += _offset_slots(bytes(_fb.data), len(symtab.entries), gvar_map=_gvar,
                                      symtab=_symtab, real_map=real_map, n_cmds=n_cmds,
-                                     tl_funcobj_slot=tl_funcobj_slot, first_cmd_slot=_fc_slot)
+                                     string_map=_str_map, tl_funcobj_slot=tl_funcobj_slot,
+                                     first_cmd_slot=_fc_slot)
                 _jmpnot_pos = len(_cb)
                 _cb += b"\x67\x00\x00\x00\x00"  # JMP32_IFNOT 占位
                 for _m in _markers:
                     _i = func_names.index(_m.name) if _m.name in func_names else -1
                     if _i < 0:
                         continue
-                    _b = 2 * n_funcs + 1 + top_level_count + n_cmds + _tl_lam_count - _i
+                    _b = 2 * (n_module_funcs or n_funcs) + top_level_count + 1 + n_cmds + _tl_lam_count - _i
                     if _tl_lam_count and _i >= n_pre:
                         _b -= 1
                     _fs = symtab.name_to_idx.get(func_names[_i])
@@ -210,7 +220,8 @@ def _build_cad_module_code(
                     _fb2.resolve()
                     _cb += _offset_slots(bytes(_fb2.data), len(symtab.entries), gvar_map=_gvar,
                                          symtab=_symtab, real_map=real_map, n_cmds=n_cmds,
-                                         tl_funcobj_slot=tl_funcobj_slot, first_cmd_slot=_fc_slot)
+                                         string_map=_str_map, tl_funcobj_slot=tl_funcobj_slot,
+                                         first_cmd_slot=_fc_slot)
                 _jmp_pos = len(_cb)
                 _cb += b"\x57\x00\x00\x00\x00"  # JUMP <end>
                 _else_pos = len(_cb)
@@ -220,7 +231,8 @@ def _build_cad_module_code(
                     _fb3.resolve()
                     _cb += _offset_slots(bytes(_fb3.data), len(symtab.entries), gvar_map=_gvar,
                                          symtab=_symtab, real_map=real_map, n_cmds=n_cmds,
-                                         tl_funcobj_slot=tl_funcobj_slot, first_cmd_slot=_fc_slot)
+                                         string_map=_str_map, tl_funcobj_slot=tl_funcobj_slot,
+                                         first_cmd_slot=_fc_slot)
                 else:
                     _cb += b"\x01"  # PUSH_NIL（无 else）
                 _end_pos = len(_cb)
@@ -467,7 +479,8 @@ def _build_cad_module_code(
             if _setq_off is not None:
                 bc = bc[:_setq_off] + b"\x0b" + bc[_setq_off:]
         return _offset_slots(bc, len(symtab.entries), gvar_map=_gvar, symtab=_symtab, real_map=real_map,
-                             n_cmds=n_cmds, tl_funcobj_slot=tl_funcobj_slot, first_cmd_slot=_fc_slot)
+                             n_cmds=n_cmds, string_map=_str_map, tl_funcobj_slot=tl_funcobj_slot,
+                             first_cmd_slot=_fc_slot)
 
     def _emit_stmts(forms, last_no_pop: bool):
         """输出一组语句，每条后 POP；last_no_pop=True 时最后一条不跟 POP。
@@ -519,6 +532,8 @@ def _build_cad_module_code(
         (_last_global_progn and not post_forms and n_pre == 0)
         or _post_selfbal
     )
+    import sys as _dsp
+    print("DBG skip_reg_pc=%s n_pre=%d n_funcs=%d n_globals=%d last_global_progn=%s post_selfbal=%s len(globals)=%d len(mid)=%d len(post)=%d" % (_skip_reg_pc, n_pre, n_funcs, n_globals, _last_global_progn, _post_selfbal, len(globals_forms), len(mid_forms), len(post_forms)), file=_dsp.stderr)
 
     _emit_stmts(globals_forms, last_no_pop=(n_funcs == 0 and not post_forms))
 
@@ -541,15 +556,21 @@ def _build_cad_module_code(
         def _reg(i):
             # 有 defun：追加函数注册尾（CAD 实测）。每函数一组
             # `PUSH_G <b>; SETQ_G <c>`，组间 `PUSH_G <c>; POP; JUMP`；
-            # b = 2*n_funcs+1 + top_level_count + n_cmds - i（模块注册偏移，
-            # vl-ACAD-defun 符号使占位符/b 槽全局 +1）。顶层 kwote lambda
-            # func-obj（`-lambda-#TL`）再 +1（setup b0=37 = 29+7+1 实测）。
+            # b = 函数对象的 table0 槽 = resource_builder 的 final GVARINIT
+            # `gv_var_pos + gv_st_init - 1 - i` 展开：
+            #   gv_var_pos = n_module_funcs - tl_lam + top_level_count + 2 + commands
+            #   gv_st_init = n_module_funcs
+            # → b = 2*n_module_funcs + top_level_count + 1 + n_cmds - _tl_lam_count - i。
+            # 旧公式 `2*n_funcs+1+top_level_count+n_cmds+_tl_lam_count-i` 用未过滤
+            # 的 n_funcs（含嵌套 defun）且 `+_tl_lam_count`，与 final GVARINIT 槽
+            # 错位 → cl::stringp 等首函数 PUSH_G 读 nil/垃圾 → CAD 加载报
+            # "参数太少"/函数注册错值（atlisp_u 实测 b 应 1534 而非 1540）。
             # c 槽 = 源码注册序：函数占 c = 符号槽 + 1（p03 实测
             # @::codepage2lang 槽 4 → c=5）；符号槽 ≥ 源码首个命令槽时再 +1
-            # （vl 符号占用其后一个槽）；未显式给定函数名时退化为相对编号
+            # （vl 符号占用其后一槽）；未显式给定函数名时退化为相对编号
             # n_funcs - i。
             nonlocal out
-            b = 2 * n_funcs + 1 + top_level_count + n_cmds + _tl_lam_count - i
+            b = 2 * n_module_funcs + top_level_count + 1 + n_cmds + _tl_lam_count - i
             # 顶层 kwote lambda 的 func-obj 槽位于 START 注册之后（setup 槽 29，
             # START 37..30 / TAIL 28..23）：TAIL 注册（i >= n_pre）让出该槽 -1。
             if _tl_lam_count and i >= n_pre:
@@ -569,7 +590,14 @@ def _build_cad_module_code(
         # **交错**（[reg i, mid[i], reg i+1, mid[i+1], ...]）；普通 mid 语句
         # （i18n/platform 的 setq/if）仍全部 mid 先、注册后。
         def _mid_lead_alias(_m):
-            _first = _m.forms[0] if isinstance(_m, Progn) else _m
+            # 仅当 mid 是 **Progn 展开**（cl-functions 的 `#-sbcl (progn ...)`
+            # 内 set 别名，CAD atlisp_u 实测省略注册 no-op）时判定为"set 别名
+            # mid"。**独立顶层 set 别名**（base-function `(set 'handle-keywords
+            # @::handle-keywords)` 非 Progn）CAD **保留** no-op——`_has_mid`
+            # 对它们必须返回 False，否则模块代码少 `PUSH_G c; POP`、seg1 错位。
+            if not isinstance(_m, Progn):
+                return False
+            _first = _m.forms[0] if _m.forms else None
             return (
                 isinstance(_first, Call)
                 and str(_first.name).lower() == "set"
@@ -612,12 +640,31 @@ def _build_cad_module_code(
                 _emit_stmts(mid_forms[_mi : _mi + _cnt], last_no_pop=False)
                 _mi += _cnt
 
+        def _has_mid(i):
+            # 函数 i 的交错 mid 语句为 **set 别名**（`(set 'X Y)`，cl-functions
+            # `(set 'macro-expand @::macro-expand)` 等）时省略 `PUSH_G c; POP`
+            # no-op（CAD atlisp_u 实测无 no-op；mid set 别名自带栈平衡，且
+            # CAD 不为其发 no-op）。非 set 别名 mid（setq/if 等）仍保留 no-op
+            #（@::PLATFORM-IS-LINUX-P 的 `(setq @::*platform-cache* ...)`
+            # mid 实测 CAD 保留 no-op）。
+            if (
+                not _interleave_mid
+                or i >= len(_mid_counts)
+                or _mid_counts[i] == 0
+            ):
+                return False
+            _start = sum(_mid_counts[:i])
+            if _start + _mid_counts[i] > len(mid_forms):
+                return False
+            return _mid_lead_alias(mid_forms[_start])
+
         for i in range(min(n_pre, n_funcs)):
             out += b"\x57\x00\x00\x00\x00"
             c = _reg(i)
-            if _skip_reg_pc:
+            if _skip_reg_pc or _has_mid(i):
                 # START 注册也省略 `PUSH_G c; POP` no-op（cl-functions 首个
-                # defun cl::stringp 的 START 注册 CAD 实测无 no-op）。
+                # defun cl::stringp 的 START 注册 CAD 实测无 no-op；有交错 mid
+                # 语句时同理省略——mid 语句自带栈平衡）。
                 _emit_mid_for(i)
                 continue
             out += bytes([0x09]) + struct.pack("<H", c)
@@ -644,9 +691,11 @@ def _build_cad_module_code(
                 # CAD 实测 `... 09 01 00 35 01 12 00 01 0a 09 01 00 16`）。
                 if i < n_funcs - 1 or post_forms:
                     out += b"\x0a"
-            elif (i < n_funcs - 1 and not _skip_reg_pc) or (post_forms and not _post_selfbal):
+            elif (not _has_mid(i)) and ((i < n_funcs - 1 and not _skip_reg_pc) or (post_forms and not _post_selfbal)):
                 # 非命令注册 `PUSH_G c; POP` no-op：仅当注册后有后续内容
                 # （非末尾、post 语句、或非 Progn 末全局的纯尾部）时发射。
+                # 有交错 mid 语句时省略（mid 语句自带栈平衡，CAD atlisp_u
+                # 全部函数注册无 no-op 实测）。
                 out += bytes([0x09]) + struct.pack("<H", c)
                 out += b"\x0a"
 

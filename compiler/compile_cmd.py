@@ -170,16 +170,31 @@ def cmd_compile(
     from compiler.cad_symbols import derive_symbol_names, is_const_entry
 
     for sym in derive_symbol_names(program):
-        if top_lambda_binds and sym == "kwote":
+        if not defun_forms and top_lambda_binds and sym == "kwote":
             # 纯顶层含顶层 `(set/setq 'sym (lambda ...))`（CAD `-lambda-` 机制）：
             # 收集器对 kwote 标记误收 `kwote` 符号（CAD 无此槽，顶层 lambda
             # 不经 kwote 调用）。跳过；`-lambda-` 由 seg0 阶段经 top_lambda_slots
             # 注册，不进 symtab。
+            # 仅纯顶层文件跳过：混合文件（含 defun，atlisp_u）的 kwote lambda
+            # （顶层 `(function (lambda ...))` 调用）**需要** kwote 符号槽——
+            # 跳过 → 模块注册缺 kwote 0x56 块 → build_mvar_tables fg 缺 KWOTE →
+            # `_patch_usubr_idx` fallback 错槽 → seg0 嵌套函数 FUNC kwote 调用
+            # 指向字符串 → CAD 加载报 "函数错误: \"\\\""。
             continue
         if is_const_entry(sym):
             symtab.add_constant(sym[1])
         elif isinstance(sym, str) and sym.startswith('__real_') and sym.endswith('__'):
-            symtab.add_real(float(sym[len('__real_'):-len('__')]))
+            _rv = float(sym[len('__real_'):-len('__')])
+            if f'__real_{_rv}__' in symtab.name_to_idx:
+                # CAD 实数跨区重复注册：模块区与函数体区各自独立 gvar 槽
+                # （atlisp_u `(* 0.707 (getvar "viewsize") 0.1)` 的 0.1 在模块
+                # 顶层常量与函数体 @::dbclicked 各注册一次，fg 表两处都有）。
+                # 首次 add_real 登记 name_to_idx，二次（重复）直接追加重复
+                # REAL 槽——否则 `add_real` 去重复用模块槽 → fg 缺函数体
+                # REAL、nsyms 少 1、后续符号槽位错位。
+                symtab.add_real(_rv, force=True)
+            else:
+                symtab.add_real(_rv)
         elif sym.startswith('"') and sym.endswith('"'):
             _sv = sym[1:-1]
             if f"__str_{_sv}__" in symtab.name_to_idx:
@@ -194,7 +209,22 @@ def cmd_compile(
             # CAD stub：允许符号重复（递归/跨函数引用产生重复槽）
             symtab.add_force(sym)
         else:
-            symtab.get_or_add(sym)
+            # 大小写变体引用（C:@H 调用 `@::showCopyRight`，defun 名
+            # `@::showCopyright`）：模块注册已登记 `@::showCopyright`（name_to_idx
+            # 大小写敏感键），函数体调用变体 `@::showCopyRight` 查不到精确键。
+            # `get_or_add` 的大小写不敏感回退会复用模块槽 → fg 表缺函数体重复
+            # 槽（CAD fg[128] 有 @::SHOWCOPYRIGHT；atlisp_u 实测 @::SHOWCOPYRIGHT
+            # rg[446] + fg[128] 双槽）。须按 CAD stub 语义 `add_force` 追加重复槽。
+            _ci_hit = any(
+                not k.startswith("__")
+                and not SymbolTable._is_case_sensitive(k)
+                and k.upper() == sym.upper()
+                for k in symtab.name_to_idx
+            )
+            if _ci_hit:
+                symtab.add_force(sym)
+            else:
+                symtab.get_or_add(sym)
 
     # 顶层表达式符号（defun 之外）：CAD 把它们的符号并入模块注册段。
     # InPackage/Defpackage 也编译进模块代码（InPackage `PUSH_VALUE :@; FUNC_REF
@@ -513,7 +543,24 @@ def cmd_compile(
             for rel_start, rel_end, _, _ in reversed(_fnl_raw):
                 nested_list.append((off + rel_start, off + rel_end))
     for i, (n_start, n_end) in enumerate(nested_list):
-        func_offsets[f"-lambda-#{i + 1}" if i else "-lambda-"] = n_start
+        # **`-lambda-#N` 键冲突**（atlisp_u 实测）：顶层 setq-lambda 已用
+        # `-lambda-`/`-lambda-#N` 键（emit 循环 line 394），嵌套 kwote lambda
+        # 若也从 `-lambda-#1` 起编 → 顶层 `-lambda-#2`（@::vlx）被嵌套 `-lambda-#2`
+        # 覆盖，顶层 lambda 丢失（CAD 目录 3 个 `-lambda-` 缺 3）。用 `_base =
+        # max 现有 #N` 避让，嵌套键从 base+1 起（CAD 顶层 setq-lambda 与其后
+        # kwote 嵌套 lambda 均独立 DEFCODE，键不冲突）。
+        _base = 0
+        for _k in func_offsets:
+            if str(_k) == "-lambda-":
+                _base = max(_base, 0)
+            elif str(_k).startswith("-lambda-#"):
+                _tail = str(_k)[len("-lambda-#"):]
+                if _tail.isdigit():
+                    _base = max(_base, int(_tail))
+        _nkey = f"-lambda-#{_base + i + 1}"
+        if _base + i == 0 and "-lambda-" not in func_offsets:
+            _nkey = "-lambda-"
+        func_offsets[_nkey] = n_start
         nested_ends[n_start] = n_end
 
     # 函数体内嵌套 `(defun inner ...)`（CAD 原生内嵌 DEFUN）：登记进 func_offsets
@@ -527,6 +574,7 @@ def cmd_compile(
     # 嵌套 defun 可再含嵌套（n5 mid→inner）：用 worklist 传递收集。
     _fnd_seen = set()
     _fnd_work = list(func_offsets.items())
+    _nested_defun_names: dict = {}
     while _fnd_work:
         _name, _off = _fnd_work.pop(0)
         _fnd_raw = list(codegen._func_nested_defuns.get(_name, []))
@@ -535,7 +583,16 @@ def cmd_compile(
             n_end = _off + rel_end
             _nkey = normalize_vla_name(nd_name)
             if _nkey in func_offsets:
-                continue
+                # 嵌套 defun 与已注册函数同名（atlisp_u @::panel-dialog-core 内嵌
+                # `*error*` 与顶层 `*error*` 冲突）。func_offsets 键需唯一：
+                # 追加 `#dupN` 后缀；DEFCODE 目录名仍用原名（nested_defun_names
+                # 映射回 `*ERROR*`，CAD 顶层与嵌套 `*ERROR*` 同名共存）。
+                _nkey = f"{_nkey}#dup"
+                _dup = 1
+                while _nkey in func_offsets:
+                    _dup += 1
+                    _nkey = f"{normalize_vla_name(nd_name)}#dup{_dup}"
+            _nested_defun_names[_nkey] = normalize_vla_name(nd_name)
             func_offsets[_nkey] = n_start
             nested_ends[n_start] = n_end
             _fnd_seen.add((_nkey, n_start))
@@ -643,8 +700,13 @@ def cmd_compile(
     for name, offset in func_offsets.items():
         # `-lambda-`/`-lambda-#N`（内嵌 DEFUN）不进符号表（仅 DEFCODE 区注册，
         # 顶层 lambda 的 `-lambda-` 槽由 top_lambda_slots 计算）。其余函数名
-        # 注册符号槽。
-        if isinstance(name, str) and (name == "-lambda-" or name.startswith("-lambda-#")):
+        # 注册符号槽。**嵌套 defun 同名 `#dup` 键**（`*error*#dup`）同样不进
+        # 符号表——嵌套 defun 仅经前置 DEFCODE 区注册（resource_builder
+        # nested_defun_names 映射回原名），注册进 symtab 会多一个 `*ERROR*#DUP`
+        # 符号槽（atlisp_u 资源流 `5b *ERROR*#DUP 00` → CAD 无此槽、fg/seg0 错位）。
+        if isinstance(name, str) and (
+            name == "-lambda-" or name.startswith("-lambda-#") or "#dup" in name
+        ):
             continue
         from compiler.cad_symbols import normalize_vla_name
 
@@ -919,6 +981,8 @@ def cmd_compile(
         nested_ends=nested_ends,
         top_lambda_body_syms=_top_lambda_body_syms,
         module_func_count=_mr_func_count,
+        module_reg_count=module_reg_count,
+        nested_defun_names=_nested_defun_names,
     )
     # commands + 顶层混合模式：模块注册把函数名逆序置前、顶层符号在后，
     # 模块代码符号引用（USUBR/PUSH_G）的 `symtab_idx+1` 不再等于实际 gvar 槽，
@@ -947,6 +1011,7 @@ def cmd_compile(
             # @[50,51,52]，模块代码引用 52 = symtab idx 51 + 1）若取首槽 50，
             # `_offset_slots` 会把正确的 PV52 重映射成 PV50（pass1 模块代码
             # 与 CAD 逐字节一致，gvar_map 首槽破坏之）。
+            string_map = {}
             for _i in range(len(symtab.entries)):
                 _t, _v = symtab.entries[_i]
                 if _t not in ("SYMBOL", "STRING"):
@@ -959,7 +1024,13 @@ def cmd_compile(
                         _rv_key = str(_rv[1]).upper() if _rv[0] == "SYMBOL" else str(_rv[1])
                         if _rv_key == _rk:
                             gvar_map[_rk] = _natural
+                            if _t == "STRING":
+                                string_map[_rk] = _natural
             # 补充：模块注册顺序不一致（atlisp_u 函数名逆序）时按 rg 表修正。
+            # string_map：STRING 专属 gvar 槽——SYMBOL 与 STRING 同名时
+            # （panel `C:%` = 函数名 SYMBOL rg[14] + 字符串 "C:%" rg[7]）gvar_map
+            # 被 SYMBOL 覆盖，模块代码对字符串的 PUSH_G 须用 STRING 槽（rg[7]，
+            # CAD 实测）。仅当 SYMBOL 槽与 STRING 槽共存时才区分。
             for _idx, _v in enumerate(_rg):
                 if isinstance(_v, tuple) and len(_v) == 2 and _v[0] in ("SYMBOL", "STRING"):
                     _key = str(_v[1]).upper() if _v[0] == "SYMBOL" else str(_v[1])
@@ -972,6 +1043,7 @@ def cmd_compile(
                             gvar_map[_key] = _idx
                     else:
                         gvar_map.setdefault(_key, _idx)
+                        string_map.setdefault(_key, _idx)
             # 实数常量：模块代码顶层 setq 的 REAL 值按值匹配 fg 槽
             # （与函数体 real_map 同基准；@lisp_u 顶层 `(setq @::*seconds-per-day*
             # 86400.0)` 实测 fg[2604]，此前 fallback symtab_idx+1 越界 → CAD
@@ -1000,6 +1072,7 @@ def cmd_compile(
                 gvar_map=gvar_map,
                 top_lambda_slots=top_lambda_slots,
                 real_map=real_map,
+                string_map=string_map if gvar_map else None,
                 n_pre=_n_pre,
                 skip_funcs=_top_lambda_names,
                 n_cmds=n_cmds,
@@ -1033,6 +1106,8 @@ def cmd_compile(
         nested_ends=nested_ends,
         top_lambda_body_syms=_top_lambda_body_syms,
         module_func_count=_mr_func_count,
+        module_reg_count=module_reg_count,
+        nested_defun_names=_nested_defun_names,
     )
     sec2_items = count_resource_items(seg1)
     # 确保 items 与 CAD 编译器一致。CAD 的 items 语义：

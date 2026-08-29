@@ -37,6 +37,175 @@ def _slot_of(symtab, node):
     return None
 
 
+def build_module_rg_map(res_data: bytes, nsyms: int) -> dict:
+    """由资源流重建模块注册区的 {符号名大写: gvar 槽} 映射。
+
+    build_mvar_tables 的栈模拟在模块区含 CONST/命令混合时漂移（漏掉
+    @::alert 等函数名 → gvar_map 缺失 → `_offset_slots` fallback symtab_idx+1
+    错位 → 模块代码调用错槽 → CAD 加载报 "参数太少"）。本函数直接按模块
+    GVARINIT 的弹栈语义计算每个存活 SYMBOL/STRING 的真实 gvar 槽：
+
+    - 定位模块 GVARINIT（var_pos=0、st_init 合理、后随 0a）
+    - 模拟到该点，快照栈（含将成为 module_id 的栈顶）
+    - 弹栈分配：module_id 先弹，循环再弹 st_init 项 → table0[st_init-p]
+      对应栈底位置 (D-1)-(p-1) = D-p → gvar = b + st_init - D + 1
+    """
+    import struct
+
+    from core.fas_core import decode_fas_text
+
+    # 定位模块 GVARINIT
+    mgi = None
+    mgi_st = 0
+    for i in range(len(res_data) - 6):
+        if res_data[i] == 0x43 and res_data[i + 1] == 0 and res_data[i + 2] == 0:
+            si = res_data[i + 3] | (res_data[i + 4] << 8)
+            if 300 < si < 8000 and res_data[i + 5] == 0x0A:
+                mgi = i
+                mgi_st = si
+                break
+    if mgi is None:
+        return {}
+
+    stack: list = []
+    pos = 0
+    while pos < len(res_data):
+        if pos == mgi:
+            break
+        op = res_data[pos]
+        if op in (0x56, 0x5B):
+            pos += 1
+            while pos < len(res_data):
+                end = res_data.find(b"\x00", pos)
+                if end < 0:
+                    break
+                sym = res_data[pos:end]
+                pos = end + 1
+                if not sym:
+                    break
+                stack.append(("SYMBOL", decode_fas_text(sym)))
+        elif op == 0x55:
+            pos += 1
+            num = struct.unpack("<H", res_data[pos : pos + 2])[0]
+            pos += 2
+            for _ in range(num):
+                slen = struct.unpack("<H", res_data[pos : pos + 2])[0]
+                pos += 2
+                if pos + slen > len(res_data):
+                    break
+                stack.append(("STRING", decode_fas_text(res_data[pos : pos + slen])))
+                pos += slen
+        elif op in (0x00, 0x01):
+            stack.append(None)
+            pos += 1
+        elif op == 0x02:
+            stack.append(True)
+            pos += 1
+        elif op == 0x0A:
+            if stack:
+                stack.pop()
+            pos += 1
+        elif op == 0x0B:
+            if stack:
+                stack.append(stack[-1])
+            pos += 1
+        elif op in (0x14, 0x15):
+            stack.append(("DEFHDR", tuple(res_data[pos + 1 : pos + 5])))
+            pos += 5
+        elif op in (0x03, 0x09):
+            pos += 3
+            stack.append(None)
+        elif op == 0x06:
+            pos += 3
+            if stack:
+                stack.pop()
+        elif op == 0x2A:
+            if len(stack) >= 2:
+                stack.pop()
+                stack.pop()
+                stack.append(None)
+            pos += 1
+        elif op in (0x28, 0x29):
+            if stack:
+                stack.pop()
+            stack.append(None)
+            pos += 1
+        elif op == 0x32:
+            stack.append(struct.unpack("<b", res_data[pos + 1 : pos + 2])[0])
+            pos += 2
+        elif op == 0x33:
+            stack.append(struct.unpack("<i", res_data[pos + 1 : pos + 5])[0])
+            pos += 5
+        elif op == 0x39:
+            count = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
+            count = min(count, len(stack))
+            del stack[-count:]
+            stack.append(None)
+            pos += 3
+        elif op == 0x34:
+            argc = res_data[pos + 1]
+            count = min(argc + 1, len(stack))
+            del stack[-count:]
+            stack.append(None)
+            pos += 3
+        elif op in (0x35, 0x51):
+            argc = res_data[pos + 1]
+            count = min(argc, len(stack))
+            del stack[-count:]
+            stack.append(None)
+            pos += 5
+        elif op == 0x3A:
+            if len(stack) >= 3:
+                stack.pop()
+                stack.pop()
+                stack.pop()
+                stack.append(None)
+            pos += 1
+        elif op == 0x23:
+            stack.append(None)
+            pos += 1
+        elif op == 0x24:
+            stack.append(None)
+            pos += 1
+        elif op in (0x57, 0x67, 0x68, 0x69, 0x6A):
+            pos += 5
+        elif op in (0x05, 0x07, 0x0C, 0x0D, 0x0E, 0x37, 0x3C, 0x3D, 0x5C, 0x5D, 0x5E):
+            pos += 3
+        elif op in (0x1E, 0x1F):
+            pos += 2
+        elif op in (0x16, 0x1C, 0x20, 0x62, 0x63):
+            pos += 1
+        elif op == 0x3B:
+            end = res_data.find(b"\x00", pos + 1)
+            if end < 0:
+                break
+            pos = end + 1
+            stack.append(None)
+        elif op == 0x43:
+            # 模块注册前的其他 GVARINIT（不应出现，安全跳过）
+            vp = struct.unpack("<H", res_data[pos + 1 : pos + 3])[0]
+            si = struct.unpack("<H", res_data[pos + 3 : pos + 5])[0]
+            if stack:
+                stack.pop()
+            for _ in range(si):
+                if not stack:
+                    break
+                stack.pop()
+            pos += 5
+        else:
+            pos += 1
+
+    D = len(stack)
+    result: dict = {}
+    for b, v in enumerate(stack):
+        if isinstance(v, tuple) and len(v) == 2 and v[0] in ("SYMBOL", "STRING"):
+            slot = b + mgi_st - D + 1
+            if 0 <= slot < nsyms:
+                key = str(v[1]).upper() if v[0] == "SYMBOL" else str(v[1])
+                result[key] = slot
+    return result
+
+
 def _is_empty_quote(node) -> bool:
     """判断是否为空列表引用 `'()`（CAD 用 PUSH_NIL，无常量槽）。"""
     from compiler.ast_nodes import QuotedExpr, ListExpr
@@ -46,7 +215,7 @@ def _is_empty_quote(node) -> bool:
 
 def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: Optional[dict] = None,
                   n_cmds: int = 0, tl_funcobj_slot: Optional[int] = None,
-                  first_cmd_slot: Optional[int] = None) -> bytes:
+                  first_cmd_slot: Optional[int] = None, string_map: Optional[dict] = None) -> bytes:
     """把字节码中的符号槽引用 +1（CAD 模块代码用 gvar 槽 = 符号槽+1）。
 
     处理 PUSH_G(0x09)/PUSH_VALUE(0x03)/SETQ_G(0x06)/USUBR(0x35) 的符号槽。
@@ -78,6 +247,13 @@ def _offset_slots(bc: bytes, n_sym: int, gvar_map=None, symtab=None, real_map: O
         if gvar_map and symtab is not None and 0 <= idx < len(symtab.entries):
             _t, _v = symtab.entries[idx]
             if _t in ("SYMBOL", "STRING"):
+                if _t == "STRING" and string_map:
+                    # STRING 专属槽：SYMBOL 与 STRING 同名时（panel `C:%`
+                    # SYMBOL rg[14] + STRING rg[7]）gvar_map 被 SYMBOL 覆盖，
+                    # 模块代码对字符串字面量的 PUSH_G 须用 STRING 槽。
+                    _s = string_map.get(str(_v))
+                    if _s is not None:
+                        return _s
                 return gvar_map.get(str(_v).upper())
             if _t == "REAL" and real_map is not None:
                 # 实数常量：按值匹配资源段 REAL 槽（fg，与函数体 real_map 同基准）；

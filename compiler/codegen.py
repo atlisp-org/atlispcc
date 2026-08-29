@@ -712,9 +712,14 @@ class CodeGenerator:
                 with self._value_ctx():
                     self._emit_expr(buf, _arg)
                 self._emit_func3(buf, 1, idx)
-                buf.emit(encode_op_noarg(0x00))  # NIL
-                buf.emit(encode_op_noarg(PUSH_NIL))  # PUSH_NIL
-                buf.emit(encode_op_noarg(0x00))  # NIL
+                if not self.wide_subr:
+                    # 小文件 3 字节 FUNC：CAD 追加 `NIL; PUSH_NIL; NIL` 清理
+                    # （platform-api 实测）。大文件 6 字节 FUNC flags=1 已内联
+                    # 清理语义（CAD atlisp_u 实测 `FUNC; POP`，无 `NIL;
+                    # PUSH_NIL; NIL`，同 `_al-bind-alist` 的 wide 逻辑）。
+                    buf.emit(encode_op_noarg(0x00))  # NIL
+                    buf.emit(encode_op_noarg(PUSH_NIL))  # PUSH_NIL
+                    buf.emit(encode_op_noarg(0x00))  # NIL
                 if _i < len(args) - 1:
                     buf.emit(encode_op_noarg(POP))
             return
@@ -1280,9 +1285,14 @@ class CodeGenerator:
         # collect-init：结果（iterator 状态）存 slot
         idx_init = self.symtab.get_or_add("collect-init")
         self._emit_func3(buf, 1, idx_init)
-        buf.emit(encode_op_noarg(0x00))  # NIL
-        buf.emit(encode_op_noarg(PUSH_NIL))
-        buf.emit(encode_op_noarg(0x00))  # NIL
+        if not self.wide_subr:
+            # 小文件 3 字节 FUNC：CAD 追加 `NIL; PUSH_NIL; NIL` 清理
+            # （menu.lsp golden 实测）。大文件 6 字节 FUNC flags=1 已内联
+            # 清理语义（CAD atlisp_u 实测 `FUNC; SET_LOCAL`，无 `NIL;
+            # PUSH_NIL; NIL`）。
+            buf.emit(encode_op_noarg(0x00))  # NIL
+            buf.emit(encode_op_noarg(PUSH_NIL))
+            buf.emit(encode_op_noarg(0x00))  # NIL
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
         # CAD 预载：PUSH_G <var>; PUSH_NIL; INIT_ARGS 3
         buf.emit(encode_op_u16(PUSH_G, v_idx))
@@ -1299,9 +1309,14 @@ class CodeGenerator:
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
         idx_next = self.symtab.get_or_add("collect-next")
         self._emit_func3(buf, 1, idx_next)
-        buf.emit(encode_op_noarg(0x00))  # NIL
-        buf.emit(encode_op_noarg(PUSH_NIL))
-        buf.emit(encode_op_noarg(0x00))  # NIL
+        if not self.wide_subr:
+            # 小文件 3 字节 FUNC：CAD 追加 `NIL; PUSH_NIL; NIL` 清理
+            # （menu.lsp golden 实测）。大文件 6 字节 FUNC flags=1 已内联
+            # 清理语义（CAD atlisp_u 实测 `FUNC; DUP`，无 `NIL; PUSH_NIL;
+            # NIL`）。
+            buf.emit(encode_op_noarg(0x00))  # NIL
+            buf.emit(encode_op_noarg(PUSH_NIL))
+            buf.emit(encode_op_noarg(0x00))  # NIL
         buf.emit(encode_op_noarg(DUP))
         buf.emit(encode_op_u16(SETQ_G, v_idx))
         jmp_pos = buf.pos()
@@ -1336,9 +1351,14 @@ class CodeGenerator:
         idx_release = self.symtab.get_or_add("collect-release")
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
         self._emit_func3(buf, 1, idx_release)
-        buf.emit(encode_op_noarg(0x00))  # NIL
-        buf.emit(encode_op_noarg(PUSH_NIL))
-        buf.emit(encode_op_noarg(0x00))  # NIL
+        if not self.wide_subr:
+            # 小文件 3 字节 FUNC：CAD 追加 `NIL; PUSH_NIL; NIL` 清理
+            # （menu.lsp golden 实测）。大文件 6 字节 FUNC flags=1 已内联
+            # 清理语义（CAD atlisp_u 实测 `FUNC; POP`，无 `NIL; PUSH_NIL;
+            # NIL`）。
+            buf.emit(encode_op_noarg(0x00))  # NIL
+            buf.emit(encode_op_noarg(PUSH_NIL))
+            buf.emit(encode_op_noarg(0x00))  # NIL
         buf.emit(encode_op_noarg(POP))
         buf.emit(encode_op_u16(CLEAR_ARGS, 1))
 

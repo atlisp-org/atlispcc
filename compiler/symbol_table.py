@@ -143,12 +143,14 @@ class SymbolTable:
             self.entries.append(('INT', value))
         return self.name_to_idx[key]
 
-    def add_real(self, value: float) -> int:
+    def add_real(self, value: float, force: bool = False) -> int:
         key = f'__real_{value}__'
-        if key not in self.name_to_idx:
+        if force or key not in self.name_to_idx:
             idx = len(self.entries)
-            self.name_to_idx[key] = idx
+            if not force:
+                self.name_to_idx[key] = idx
             self.entries.append(('REAL', value))
+            return idx
         return self.name_to_idx[key]
 
     def add_constant(self, structure) -> int:

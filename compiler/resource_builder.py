@@ -413,6 +413,8 @@ class ResourceBuilder:
         nested_ends: Optional[Dict[int, int]] = None,
         top_lambda_body_syms: Optional[list] = None,
         module_func_count: int = 0,
+        module_reg_count: int = 0,
+        nested_defun_names: Optional[Dict[str, str]] = None,
     ) -> bytes:
         """构建与 AutoCAD 编译器一致的 seg1 资源流。
 
@@ -422,7 +424,15 @@ class ResourceBuilder:
         - 每个函数一个 DEFCODE（GET_LOCAL + PUSH_INT8 <offset> + SYMBOL + DEFCODE）
         - GVARINIT + INIT_DONE
         - 模块代码
+
+        ``nested_defun_names``：嵌套 defun 的 func_offsets 键 → DEFCODE 名
+        映射。函数体内嵌套 `(defun *error* ...)` 与顶层 `*error*` 同名时，
+        func_offsets 键需唯一（`*error*#dup`），但 DEFCODE 目录名仍须为原
+        名 `*ERROR*`（atlisp_u @::panel-dialog-core 内嵌 `*error*` CAD 实测
+        `5b *ERROR* 00 00 3a` 与顶层 `*error*` 同名共存）。
         """
+        if nested_defun_names is None:
+            nested_defun_names = {}
         entries = self.symtab.entries
         if not entries:
             return bytes(self.data)
@@ -598,9 +608,17 @@ class ResourceBuilder:
             # 截断（7beeddf 引入）据错误的"CAD 只注册 48 个"假设，导致其余
             # 函数不在模块注册段、模块代码 USUBR 引用错槽位 → CAD 加载报
             # "no function definition: nil"。已移除。
+            # 切片宽度：优先用收集器 module_reg_count（_register_module 实际
+            # 注册的模块符号数 = 全部函数名 + 顶层符号，cad_symbols 实测 1028）。
+            # 回退 `len(func_names_all) + top_level_count` 会因 func_names_all
+            # 过滤嵌套/-lambda- 键而偏小，把模块区末位顶层符号（`#-sbcl`、
+            # `vl-load-com`、`vlax-ename->vla-object` 等）切到函数体区 → 模块
+            # 代码 PUSH_G/USUBR 引用 nil 槽 → CAD 加载报 "no function definition:
+            # nil"（atlisp_u 实测模块 GVARINIT st_init 1028 vs CAD 1034）。
             # CAD 模块注册：函数名（源码逆序）+ 顶层表达式符号，连续 SYMBOL 合并，
             # 遇 STRING 分块；PUSH_NIL + GVARINIT。
-            module_entries = entries[: len(func_names_all) + top_level_count]
+            _slice_n = module_reg_count or (len(func_names_all) + top_level_count)
+            module_entries = entries[: _slice_n]
             module_entries_count = len(module_entries)
             fn_bytes = bytearray()
             # 函数名（逆序）在前，其后是顶层符号（entries 顺序）。
@@ -710,7 +728,12 @@ class ResourceBuilder:
             # 连续 STRING 合并为单个 55 块（i18n-cad 实测 `55 02 00
             # <len> <str> <len> <str>`，`.en.lang`/`.zh.lang`）。
             # 跳过模块已注册的符号（函数名 + 顶层表达式符号，含字符串）。
-            skip_first = len(func_names_all) + top_level_count
+            # 用 module_reg_count（模块注册实际宽度）而非 `len(func_names_all)
+            # + top_level_count`：后者因 func_names_all 过滤嵌套/-lambda- 键而
+            # 偏小，导致模块区末位顶层符号（atlisp_u `#-sbcl`、`vl-load-com`、
+            # `vlax-ename->vla-object`）在函数体段被重复注册 → fg 表多 3 个槽、
+            # nsyms 偏大、seg0 符号索引错位。
+            skip_first = module_reg_count or (len(func_names_all) + top_level_count)
             symbol_bytes = bytearray()
             sub = entries[1:]
             i = 0
@@ -733,6 +756,21 @@ class ResourceBuilder:
                         # kwote 内嵌 `-lambda-`：仅经资源流前置 DEFCODE 注册
                         # （ref i18n-cad 实测），不进符号块。函数体内嵌套
                         # `(defun inner ...)`（真实名字）仍需符号槽。
+                        i += 1
+                        continue
+                    if (
+                        entry_val == "-lambda-"
+                        and nested_offs
+                    ):
+                        # codegen 为每个嵌套 kwote `-lambda-` 追加重复 SYMBOL 槽
+                        # （`add_force("-lambda-")`），但 CAD 不把它们注册进符号
+                        # 块——`-lambda-` 仅经 DEFCODE 区前置注册（i18n-cad
+                        # 实测）。只跳过嵌套 lambda 的重复槽：模块注册/顶层
+                        # setq-lambda 提升的 `-lambda-`（单条，offset 不在
+                        # nested_offs）仍需符号槽或由其它路径处理。atlisp_u
+                        # 111 个嵌套 `-lambda-` 重复槽全部跳过 → fg 表不再出现
+                        # -LAMBDA-（CAD fg 无 -LAMBDA-），否则 fg 多 111 槽、
+                        # 后续符号槽位全错位。
                         i += 1
                         continue
                     if str(entry_val) in _CASE_PRESERVE_SUBR_BLOCKS:
@@ -827,11 +865,15 @@ class ResourceBuilder:
                     out += b"\x5c\x00\x00\x32" + bytes([off & 0xFF])
                 else:
                     out += b"\x5c\x00\x00" + res_int32(off)
-                name_enc = (
-                    self._enc("-lambda-")
-                    if ResourceBuilder._is_lambda_key(fname)
-                    else self._enc_sym(fname)
-                )
+                if fname in nested_defun_names:
+                    # 同名嵌套 defun（`*error*#dup` → `*ERROR*`）：用原名编码
+                    name_enc = self._enc_sym(nested_defun_names[fname])
+                else:
+                    name_enc = (
+                        self._enc("-lambda-")
+                        if ResourceBuilder._is_lambda_key(fname)
+                        else self._enc_sym(fname)
+                    )
                 out += b"\x5b" + name_enc + b"\x00\x00"
                 out += b"\x3a"
         out += b"\x5c\x00\x00"
@@ -865,11 +907,14 @@ class ResourceBuilder:
                 # CAD `-lambda-`（内嵌函数）保留小写（`-LAMBDA-` 是错的）；
                 # 其余函数名统一大写。多 `-lambda-` 用 `-lambda-#N` 目录键，
                 # 编码仍为 `-lambda-`。
-                name_enc = (
-                    self._enc("-lambda-")
-                    if ResourceBuilder._is_lambda_key(fname)
-                    else self._enc_sym(fname)
-                )
+                if fname in nested_defun_names:
+                    name_enc = self._enc_sym(nested_defun_names[fname])
+                else:
+                    name_enc = (
+                        self._enc("-lambda-")
+                        if ResourceBuilder._is_lambda_key(fname)
+                        else self._enc_sym(fname)
+                    )
                 out += b"\x5b" + name_enc + b"\x00\x00"
                 # CAD 只有最后一个 DEFCODE 追加 01（stub 格式）。
                 out += b"\x3a\x01" if fi == len(func_names) - 1 else b"\x3a"

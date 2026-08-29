@@ -472,8 +472,23 @@ def build_mvar_tables(res_data: bytes, nsyms: int) -> tuple:
         del stack[-count:]
         return values
 
+    # 模块代码起点：seg1 尾部。头 `14 01 01 01 00` 后代码引用 `32 00 33
+    # <len16> 00 00`，len16 即模块代码长度（紧凑 stub，FasWriter 编码）。
+    # 只解析资源流数据区到模块代码起点为止——seg1 末尾模块代码的 SETQ_G/
+    # PUSH_G 指令若被当资源流数据处理会覆盖 table0[0..]（atlisp_u 模块
+    # GVARINIT 正确赋值后被覆盖成 NULL/'Not found...' → rg/fg 全表错位 →
+    # `_patch_usubr_idx` 引用错槽 → CAD 加载报 "参数太少"/"函数错误"）。
+    stop = len(res_data)
+    if len(res_data) >= 12 and res_data[:5] == b"\x14\x01\x01\x01\x00" and res_data[5] == 0x32:
+        try:
+            _mc_len = struct.unpack("<H", res_data[8:10])[0]
+            if 0 < _mc_len < len(res_data):
+                stop = len(res_data) - _mc_len
+        except Exception:
+            pass
+
     pos = 0
-    while pos < len(res_data):
+    while pos < min(stop, len(res_data)):
         op = res_data[pos]
 
         if op in (0x00, 0x01):
