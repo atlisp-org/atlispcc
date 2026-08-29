@@ -367,11 +367,30 @@ GVARINIT(函数数+2, 函数数) + 1c (INIT_DONE)
   57 01 00 00 00                # JUMP +1（跳过 else）
   <else>: 01                    # PUSH_NIL（无 else 的 if 值占位）
   16                            # END_DEFUN
+   ```
+   绑定字节的 func-obj/b/c/vl 槽按 `_reg(i)` 公式预计算（panel C:% b=39/c=14、
+   C:%% b=38/c=12、vl=13），已是最终 gvar 槽，**不再经 `_offset_slots` 重映射**；
+   条件/其余语句/else 单独 codegen + `_offset_slots` 后拼接，JMP32_IFNOT/JUMP 偏移
+   手动 patch。
+
+- **`_reg` b 槽让位（atlisp_u 实测，v0.1.31+）**：顶层 kwote lambda 的 func-obj 槽
+  （`tl_funcobj_slot` = base - tl_pos，DEFCODE 区注册的模块 rg 槽）占用 b 序列
+  一槽。源码位置在 tl 之后的函数（`i >= base - tl_funcobj_slot`）b 值 -1：
   ```
-  绑定字节的 func-obj/b/c/vl 槽按 `_reg(i)` 公式预计算（panel C:% b=39/c=14、
-  C:%% b=38/c=12、vl=13），已是最终 gvar 槽，**不再经 `_offset_slots` 重映射**；
-  条件/其余语句/else 单独 codegen + `_offset_slots` 后拼接，JMP32_IFNOT/JUMP 偏移
-  手动 patch。
+  base = 2*n_module_funcs + top_level_count + 1 + n_cmds + _tl_lam_count
+  b = base - i
+  if tl_funcobj_slot is not None and i >= base - tl_funcobj_slot: b -= 1
+  ```
+  setup tl_pos=8 = n_pre（START 边界）；atlisp_u tl_pos=239 ≠ n_pre=1（tl 在
+  TAIL 中段）——统一用 `i >= base - tl_funcobj_slot` 判定。
+
+- **顶层 setq-lambda / set-lambda 槽**（v0.1.31+，atlisp_u 实测）：
+  - **setq 协议**（`(setq X (lambda ...))`，setq-lambda.lsp / atlisp_u fasext/vlx）：
+    模块代码 `JUMP 0; PUSH_G <-lambda-槽>; DUP; SETQ_G <sym>`，PUSH_G = `_lam_slot + 1`。
+  - **set 协议**（`(set 'X (lambda ...))`）：`PUSH_G <sym>; JUMP 0; PUSH_G <-lambda-槽>;
+    USUBR(2, SET)`。纯顶层（net/wget）PUSH_G = `_lam_slot`；混合文件（atlisp_u
+    @::wget）PUSH_G = `_lam_slot + 1`（`n_funcs > 0` 时 +1，混合 `_lam_slot` 公式
+    已含 n_cmds+_tl_lam_count）。
 
 ### 3.6 nsyms
 
@@ -451,6 +470,16 @@ for i in 0..len(data)-1:
 > （seg0 + seg1 + nsyms，DIFF=0）。含条件 defun 绑定（§3.5）、LET 原生、vlax-for
 > 枚举、嵌套 defun、`&optional`/`&rest` 变参等复杂结构。状态用
 > `scripts/kernel_compare_http.py`（ours→compare）复核。
+>
+> **@lisp 综合包 atlisp_u 全量对拍（v0.1.31，2026-08-29）**：`tests/atlisp_u.lsp`
+> （502 函数 + 221 顶层语句 + 80 kwote 回调）与 CAD golden `tests/atlisp_u_cad2.fas`
+> **逐字节一致**（seg0 + seg1 + nsyms，DIFF=0）——此前 99.3%（seg0 622 + seg1
+> 9630 字节 diff）。新增协议：`_reg` b 槽让位（`i >= base - tl_funcobj_slot`，
+> 顶层 kwote lambda func-obj 占用 b 序列一槽）、`_mid_count_of` top-lambda-only
+> 索引（`_mid_counts` 跳过提升 defun）、`_skip` 函数跳过 `_reg_emit` 但仍发 mid
+> 语句（CondDefunBind）、`set` 协议 `PUSH_G <-lambda-槽>` 纯顶层/混合文件不同编址、
+> 大文件 `SETQ_G` 一律用 fg 槽（移除 rg 列表常量 fallback）。详见 AGENTS.md
+> 「atlisp_u 全量 byte-identity（2026-08-29）」。
 
 > 早期历史：四类编译产物（seg0 + seg1 + total_size）与 AutoCAD **逐字节一致**，
 > CAD 运行结果全部正确：纯函数（t1-t11）、多个纯函数（m1/m2）、无函数纯顶层

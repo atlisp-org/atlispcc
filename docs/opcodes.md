@@ -570,7 +570,7 @@ JUMP func_entry
 
 ---
 
-## 验证状态（2026-08-12）
+## 验证状态（2026-08-12，2026-08-29 更新）
 
 对操作码定义与编码的完整验证结果：
 
@@ -591,6 +591,16 @@ JUMP func_entry
   （模块代码 if 守卫内 `PUSH_G <func-obj>; SETQ_G <sym>; USUBR(1, vl-ACAD-defun);
   PUSH_NIL; POP`，`35` 4 字节格式）、`-lambda-` DEFCODE 发射序逆序、嵌套 kwote
   lambda 父-子链修正等（见 [cad-stub-format.md §3.5](cad-stub-format.md)）
+- **@lisp 综合包 atlisp_u 全量对拍**（v0.1.31，2026-08-29）：`tests/atlisp_u.lsp`
+  （502 函数 + 221 顶层语句）与 CAD golden **逐字节一致**（seg0 + seg1 + nsyms，
+  DIFF=0）。覆盖操作码语义：`SETQ_G(0x06)` 大文件一律用 fg 槽编址（移除 rg 列表
+  常量冲突 fallback）、`PUSH_G(0x09)` 顶层 kwote lambda func-obj 槽（`-lambda-#TL`
+  让位规则 `i >= base - tl_funcobj_slot`）、`USUBR/FUNC` 嵌套 defun `#dup` FUNCOBJ
+  反查、`set` 协议 `PUSH_G <-lambda-槽>` 纯顶层/混合文件不同编址（`_lam_slot` vs
+  `_lam_slot+1`）、模块代码 `SETQ_G` 命令/顶层混合 gvar 槽重映射（见
+  [cad-stub-format.md §3.5](cad-stub-format.md) 与 AGENTS.md「atlisp_u 全量 byte-identity」）
+- **merged_2/4/8/16 合并文件**：与 CAD golden 逐字节一致（in-package/defpackage mid、
+  REAL rg 槽、no-op zone、foreach 变量归属）
 
 **GET_LOCAL 二义性**：`0x05`（短）与 `0x5c`（宽）均为局部变量读取，但操作数宽度不同；
 `0x5c` 的规范名称为 `GET_LOCAL_WIDE`（与 `0x05` 的 `GET_LOCAL` 区分），汇编 `GET_LOCAL_WIDE N`
