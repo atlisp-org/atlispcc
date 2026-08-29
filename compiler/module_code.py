@@ -274,27 +274,30 @@ def _build_cad_module_code(
                             break
                         v_ok = True
                     elif isinstance(value, _Real):
-                        # 实数常量：纯顶层文件（无 defun，无 fg 表）模块代码用
-                        # PUSH_G 引用 REAL 槽（gvar 槽 = 符号槽+1，constants.lsp
-                        # CAD golden 实测 `09 1b 00`）。混合文件（有 defun）实数
-                        # 注册在 fg 表、模块代码(rg 上下文)读不到，内联
-                        # PUSH_REAL `3b <ascii> 00` 保证值正确（@lisp_u
-                        # `(setq @::*seconds-per-day* 86400.0)` 实测）。
+                        # 实数常量：模块代码 REAL 值用 PUSH_G 引用符号槽。
+                        # 纯顶层文件（无 defun）用 symtab REAL 槽（gvar 槽 =
+                        # 符号槽+1，constants.lsp CAD golden 实测 `09 1b 00`）；
+                        # 混合文件（有 defun）用 **rg 表** REAL 槽（merged 文件
+                        # constants.lsp `(setq @::*seconds-per-day* 86400.0)`
+                        # CAD 实测 `09 1b 00` = rg[27]，REAL 常量注册进模块区
+                        # GVARINIT）。real_map 由调用方按 rg 表构建（compile_cmd
+                        # 二次生成）。查不到时内联 PUSH_REAL `3b <ascii> 00` 兜底。
+                        from compiler.resource_builder import _real_fmt as _rf2
+                        _rkey = _rf2(float(value.value))
+                        _r_slot = None
                         if n_funcs == 0:
                             _rk = f"__real_{value.value}__"
                             _r_idx = symtab.name_to_idx.get(_rk)
                             if _r_idx is not None:
-                                pre += bytes([0x09]) + struct.pack("<H", _slot_gv(_r_idx))  # PUSH_G
-                                v_ok = True
-                            else:
-                                from compiler.resource_builder import _real_fmt as _rf
-
-                                pre += b"\x3b" + _rf(float(value.value)).encode("ascii") + b"\x00"
-                                v_ok = True
+                                _r_slot = _slot_gv(_r_idx)
                         else:
-                            from compiler.resource_builder import _real_fmt as _rf
-
-                            pre += b"\x3b" + _rf(float(value.value)).encode("ascii") + b"\x00"
+                            if real_map:
+                                _r_slot = real_map.get(_rkey)
+                        if _r_slot is not None and 0 <= _r_slot <= 0xFFFF:
+                            pre += bytes([0x09]) + struct.pack("<H", _r_slot)  # PUSH_G
+                            v_ok = True
+                        else:
+                            pre += b"\x3b" + _rkey.encode("ascii") + b"\x00"
                             v_ok = True
                     else:
                         v_idx = _slot_of(symtab, value)
@@ -619,6 +622,12 @@ def _build_cad_module_code(
         # base-function 的 mid[0] `(set '$platform (read ...))`（值非符号）
         # 与 mid[5] `(setq @::*mktime-epoch* ...)` 非干净别名 set，但同样交错。
         _interleave_mid = sum(mid_counts) > 0
+        # `_interleave_mid` 模式下连续注册间 CAD 省略 no-op 的 zone 状态：
+        # `_has_mid` True（Progn set 别名 mid）的注册置位；无 mid 函数在
+        # zone 内也省略（merged_8 `@::eval`/`@::get-macro` 等无 mid 函数夹在
+        # mid set 链之间，注册后直接 JUMP）。遇到非 set 别名 mid（独立 set
+        # Call，@::handle-keywords 有 no-op）或 zone 外无 mid 普通注册时清除。
+        _in_noop_skip_zone = False
         # START 函数注册：前 n_pre 个函数（定义在首个顶层语句之前，CAD
         # platform 实测 set-locale/get-locale 在 globals 语句前注册）。
         # 每组 `JUMP; PUSH_G b; SETQ_G c; PUSH_G c; POP`；命令组为 CAD
@@ -677,7 +686,7 @@ def _build_cad_module_code(
         def _reg_emit(i):
             # 其余函数注册（最后一个 defun 之前、post 语句之前）。setq-lambda
             # 函数（skip_funcs）已由 mid_forms 的 setq 绑定，不在此 `_reg`。
-            nonlocal out, _last_reg_cmd
+            nonlocal out, _last_reg_cmd, _in_noop_skip_zone
             out += b"\x57\x00\x00\x00\x00"
             c = _reg(i)
             _last_reg_cmd = _is_cmd(i)
@@ -691,13 +700,33 @@ def _build_cad_module_code(
                 # CAD 实测 `... 09 01 00 35 01 12 00 01 0a 09 01 00 16`）。
                 if i < n_funcs - 1 or post_forms:
                     out += b"\x0a"
-            elif (not _has_mid(i)) and ((i < n_funcs - 1 and not _skip_reg_pc) or (post_forms and not _post_selfbal)):
+            elif (
+                not _has_mid(i)
+                and not (
+                    i < n_funcs - 1
+                    and _in_noop_skip_zone
+                    and (i >= len(_mid_counts) or _mid_counts[i] == 0)
+                )
+                and ((i < n_funcs - 1 and not _skip_reg_pc) or (post_forms and not _post_selfbal))
+            ):
                 # 非命令注册 `PUSH_G c; POP` no-op：仅当注册后有后续内容
                 # （非末尾、post 语句、或非 Progn 末全局的纯尾部）时发射。
                 # 有交错 mid 语句时省略（mid 语句自带栈平衡，CAD atlisp_u
-                # 全部函数注册无 no-op 实测）。
+                # 全部函数注册无 no-op 实测）。`_interleave_mid` 模式下连续
+                # 注册间 CAD 省略 no-op（merged_8 `@::eval`/`@::get-macro` 等
+                # 无 mid 函数夹在 mid set 别名函数链之间 → 注册后直接 JUMP，
+                # 无 `PUSH_G c; POP`）；`_in_noop_skip_zone` 由 `_has_mid`
+                # True 的函数置位，**仅无 mid（mid_counts[i]==0）**函数在
+                # zone 内省略（defmacro cnt=3 有 mid → 保留 no-op）。
                 out += bytes([0x09]) + struct.pack("<H", c)
                 out += b"\x0a"
+            # 维护 no-op skip zone：`_has_mid` True（Progn set 别名）置位；
+            # 有非 set 别名 mid（独立 set Call，@::handle-keywords）退出；
+            # 无 mid（JUMP 链延续）保持 zone 不变。
+            if _has_mid(i):
+                _in_noop_skip_zone = True
+            elif i < len(_mid_counts) and _mid_counts[i] > 0:
+                _in_noop_skip_zone = False
 
         if _interleave_mid:
             # mid 别名 set 与注册交错：每个注册（START/TAIL）后紧跟其对应

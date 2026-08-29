@@ -888,10 +888,23 @@ def cmd_compile(
                     continue
                 _mid_counts.append(0)
                 _cur_fn = len(_mid_counts) - 1
-            elif _cur_fn is not None and not isinstance(_f, (_Defpackage, _InPackage)) and not (
-                isinstance(_f, _Call) and str(_f.name).lower() in ("use-package", "defpackage")
-            ):
-                if _i < _last_defun_pos:
+            elif _cur_fn is not None:
+                # InPackage 即使位于最后一个 defun 之后也计入 mid（`_n_post_forms`
+                # 已排除 InPackage，post 不含它，故它必在 mid_forms 中且须被
+                # `_emit_mid_for` 发射——合并文件第二个 in-package 实测 CAD 发射
+                # `PUSH_VALUE :@; USUBR(1, IN-PACKAGE)`，旧 `< _last_defun_pos`
+                # 条件把它排除 → 模块代码丢语句、seg1 错位）。use-package/
+                # defpackage（Call）/Defpackage 同样被 CAD 发射（`_stmt_bytes`
+                # Defpackage 分支发射 `PUSH_VALUE :C; ...; USUBR 3, DEFPACKAGE`，
+                # merged_8 init/sequence `(defpackage :theme ...)` 实测在
+                # defmacro 注册后发射），计入 mid——否则模块代码丢语句、seg1
+                # 错位。
+                if isinstance(_f, _InPackage) or isinstance(_f, _Defpackage) or (
+                    isinstance(_f, _Call)
+                    and str(_f.name).lower() in ("use-package", "defpackage")
+                ):
+                    _mid_counts[_cur_fn] += 1
+                elif _i < _last_defun_pos:
                     _mid_counts[_cur_fn] += 1
         module_code = _build_cad_module_code(
             top_level_code,
@@ -1044,13 +1057,16 @@ def cmd_compile(
                     else:
                         gvar_map.setdefault(_key, _idx)
                         string_map.setdefault(_key, _idx)
-            # 实数常量：模块代码顶层 setq 的 REAL 值按值匹配 fg 槽
-            # （与函数体 real_map 同基准；@lisp_u 顶层 `(setq @::*seconds-per-day*
-            # 86400.0)` 实测 fg[2604]，此前 fallback symtab_idx+1 越界 → CAD
-            # segfault 0xC0000005）。注意：fg 槽是函数 gvar 表索引，模块代码
-            # PUSH_G 是否可用需对拍——若 runtime 只用 table0，则此表仅供参考。
+            # 实数常量：模块代码顶层 setq 的 REAL 值按值匹配 **rg 表**（table0，
+            # 模块代码 GVARINIT）的 REAL 槽——CAD 模块代码对 REAL 常量用
+            # `PUSH_G <rg REAL 槽>`（merged 文件 constants.lsp `(setq
+            # @::*seconds-per-day* 86400.0)` CAD 实测 `09 1b 00` = rg[27]），
+            # 而非内联 PUSH_REAL。fg 表（函数体区）REAL 槽**不**适用模块代码
+            #（@lisp_u 顶层 `(setq @::*seconds-per-day* 86400.0)` 实测 rg 有槽、
+            # 模块代码 PUSH_G 引用它；旧实现按 fg 匹配 → 找不到 → 内联
+            # PUSH_REAL → merged_2 seg1 差异 6 字节）。
             real_map = {}
-            for _idx, _v in enumerate(_fg):
+            for _idx, _v in enumerate(_rg):
                 if isinstance(_v, tuple) and len(_v) == 2 and _v[0] == "REAL":
                     real_map.setdefault(_real_fmt(float(_v[1])), _idx)
             if not gvar_map:

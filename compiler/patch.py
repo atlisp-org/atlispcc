@@ -592,6 +592,10 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                             isinstance(_rgv, tuple)
                             and len(_rgv) > 1
                             and not (len(_rgv) == 2 and _rgv[0] in ("SYMBOL", "STRING", "REAL"))
+                            and not (
+                                isinstance(_rgv[0], str)
+                                and _rgv[0].upper() == "FUNC"
+                            )
                         ):
                             new_idx = nsyms - 1 - offset
                     if 0 <= new_idx <= 0xFFFF:

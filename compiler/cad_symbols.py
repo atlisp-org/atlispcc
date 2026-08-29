@@ -518,6 +518,18 @@ class CadSymbolCollector:
                         self._param_lam_hosts[_p] = max(
                             self._param_lam_hosts.get(_p, -1), _ri
                         )
+        # 被 foreach 循环变量引用的唯一参数（merged `@::confirm` `(foreach str
+        # ...)` 的 str = @::parse-version-constraint 唯一参数）：CAD 把槽注册在
+        # foreach 宿主组（宿主逆序处理比参数拥有者更晚——confirm rev 27 >
+        # parse rev 6），args 循环据此跳过（与 `_param_lam_hosts` 同模式，
+        # line 1030）。`_foreach_host_rev` = 参数名 → 引用它的 foreach 宿主
+        # **最大逆序索引**（宿主比参数拥有者逆序更晚时由宿主注册）。
+        self._foreach_var_refs: set = set()
+        self._foreach_host_rev: dict = {}
+        _n_fns = len(defuns)
+        for _j, _f in enumerate(defuns):
+            for _b in _f.body:
+                self._scan_foreach_vars(_b, host_rev=_n_fns - 1 - _j)
 
         if len(defuns) <= 1:
             return self._collect_single(defuns, others, program)
@@ -1029,6 +1041,16 @@ class CadSymbolCollector:
                     # 跳过（否则 strbytelen 抢先占 fg[7]，后续槽错位）。
                     if getattr(self, "_param_lam_hosts", {}).get(arg, -1) > i:
                         continue
+                    # 唯一参数被 foreach 变量引用且宿主逆序处理更晚（merged
+                    # `@::confirm` `(foreach str ...)` = str 唯一参数
+                    # @::parse-version-constraint rev6，宿主 confirm rev27 更晚）：
+                    # CAD 把槽注册在 foreach 宿主组（merged_4 实测 STR fg[199]
+                    # 在 confirm 组），args 循环跳过（否则 parse rev6 先处理
+                    # 占位 → confirm rev27 复用 → STR 落到 parse 组 fg[75]
+                    # 错位）。与 `_param_lam_hosts` 同模式。cache `subdir` 宿主
+                    # rev < 参数 rev 时不跳过（参数拥有者注册，AGENTS 实测）。
+                    if getattr(self, "_foreach_host_rev", {}).get(arg, -1) > i:
+                        continue
                     self.add(arg)
 
         return self.names
@@ -1115,6 +1137,64 @@ class CadSymbolCollector:
             for _t, _v in node.pairs:
                 if _v:
                     yield from self._iter_kwote_lambdas(_v)
+
+    def _scan_foreach_vars(self, node, host_rev=None):
+        """递归收集函数体内 foreach/vlax-for 循环变量名 → `_foreach_var_refs`。
+
+        唯一参数被 foreach 变量引用且宿主逆序处理更晚（merged `@::confirm`
+        `(foreach str ...)`，confirm rev 27 > parse rev 6）时，CAD 把槽注册在
+        foreach 宿主组——args 循环须跳过（line 1030），否则参数拥有者先注册
+        占位、宿主复用 → 槽落参数组。`host_rev` = 宿主函数逆序索引。
+        """
+        from compiler.ast_nodes import (
+            ForeachNode as _F,
+            IfNode as _I,
+            Progn as _P,
+            WhileNode as _W,
+            RepeatNode as _R,
+            Cond as _Cnd,
+            Setq as _S,
+            ListExpr as _LE,
+            Call as _C,
+        )
+        if isinstance(node, _F):
+            if node.var is not None:
+                _vn = node.var.name if hasattr(node.var, "name") else str(node.var)
+                self._foreach_var_refs.add(_vn)
+                if host_rev is not None:
+                    self._foreach_host_rev[_vn] = max(
+                        self._foreach_host_rev.get(_vn, -1), host_rev
+                    )
+            if node.list_expr:
+                self._scan_foreach_vars(node.list_expr, host_rev=host_rev)
+            for _b in node.body:
+                self._scan_foreach_vars(_b, host_rev=host_rev)
+        elif isinstance(node, _I):
+            for _p in (node.cond, node.then, node.else_expr):
+                if _p:
+                    self._scan_foreach_vars(_p, host_rev=host_rev)
+        elif isinstance(node, _P):
+            for _f in node.forms:
+                self._scan_foreach_vars(_f, host_rev=host_rev)
+        elif isinstance(node, (_W, _R)):
+            if getattr(node, "count", None):
+                self._scan_foreach_vars(node.count, host_rev=host_rev)
+            for _b in node.body:
+                self._scan_foreach_vars(_b, host_rev=host_rev)
+        elif isinstance(node, _Cnd):
+            for _cl in node.clauses:
+                for _it in _cl[1:]:
+                    self._scan_foreach_vars(_it, host_rev=host_rev)
+        elif isinstance(node, _S):
+            for _t, _v in node.pairs:
+                if _v:
+                    self._scan_foreach_vars(_v, host_rev=host_rev)
+        elif isinstance(node, _LE):
+            for _i in node.items:
+                self._scan_foreach_vars(_i, host_rev=host_rev)
+        elif isinstance(node, _C):
+            for _a in getattr(node, "args", []) or []:
+                self._scan_foreach_vars(_a, host_rev=host_rev)
 
     def _collect_single(self, defuns, others, program):
         """单函数文件（≤1 defun）：模块注册与函数体符号按 CAD 序收集。
@@ -2072,9 +2152,24 @@ class CadSymbolCollector:
                 # var 位置独立注册（golden 局部块 `ITEM ITEMS CATEGORY NEW-MENU`，
                 # `_al-bind-alist` 绑定协议需要本函数槽）。
                 _v = normalize_vla_name(node.var.name)
+                # 唯一参数（cache `subdir` = cache-store 参数 + cache-clear-all
+                # foreach 变量）同名时**不独立注册**——CAD 复用参数拥有者槽。
+                # 例外：参数拥有者源码序**更晚**（foreach 宿主逆序处理更晚，
+                # merged base-function `@::confirm` `(foreach str ...)` = str
+                # 唯一参数 @::parse-version-constraint src28 更晚，confirm src7
+                # 逆序更晚处理）时 foreach 变量**独立注册**在宿主组（CAD
+                # merged_4 实测 STR fg[199] 在 confirm 组，非参数拥有者组）。
+                _is_later_host = (
+                    getattr(self, "_param_first_source", {}).get(_v, 10**9)
+                    > getattr(self, "_cur_source_idx", 10**9)
+                )
                 if (
                     _v not in arg_names
-                    and _v not in getattr(self, "_unique_params", set()) - (cur_locals or set()) - (cur_locals or set())
+                    and (
+                        _v not in getattr(self, "_unique_params", set())
+                        - (cur_locals or set())
+                        or _is_later_host
+                    )
                     and not self._seen(out, _v)
                 ):
                     out.append((_v, False))
