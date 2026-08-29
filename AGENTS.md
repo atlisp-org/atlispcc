@@ -192,7 +192,22 @@ make cad-test        # 或: bash scripts/run_tests.sh --cad
 - **大文件 USUBR/FUNC 宽格式**：符号槽 >255 用 5 字节 USUBR（`35 argc idx16 flags=3`）、6 字节 FUNC（`51 argc idx16 flags=1 00`），小文件保持 3 字节
 - 模块代码槽引用 = 资源 gvar 表(rg)（操作数 = rg 索引）；`in-package`/`use-package` 是编译期指令（模块代码不发射调用）；setq 值 = 函数符号 → `PUSH_G`、set 值 = 函数符号 → `PUSH_VALUE`；模块代码 REAL 常量内联 `PUSH_REAL`
 - **KNOWN_ISSUES**：混合文件顶层 `(setq X (lambda ...))` 的 `-lambda-` SUBR 未实现；@::fasext/@::vlx 绑定为引用数据 LIST（调用报 "函数错误: (LAMBDA ...)"）——不影响加载
-- **byte-identity**：@lisp_u 与 CAD 真机产物非 byte-identical（历史遗留：复杂混合场景），**功能验证通过**
+- **byte-identity**：**@lisp_u 全量 byte-identical（seg0+seg1+nsyms 与 CAD golden `tests/atlisp_u_cad2.fas` 逐字节一致，2026-08-29）**。最终修复见「atlisp_u 全量 byte-identity（2026-08-29）」。
+
+### atlisp_u 全量 byte-identity（2026-08-29）
+
+atlisp_u 从 99.3%（seg0 622 字节 diff + seg1 9630 字节 diff）修到 **100% byte-identical**，涉及 4 个文件 8 项根因：
+
+1. **cad_symbols.py 共享参数裸 lambda 归属**：移除 `_shared_last` 对裸 lambda 参数的 `_excluded` 拦截（atlisp_u `msg` = cleanup-dcl 等 6 函数参数 + @::voice-test 局部）。旧逻辑误排除使 msg 落 cleanup-dcl 组（fg[2132]），CAD 实际注册在 @::cleanup-dcl 组（fg[2235]，msg 由参数拥有者 args 循环注册）→ fg/seg0 错位 103 槽。
+2. **patch.py wide SETQ_G fallback 移除**：rg 表列表常量冲突检查（`ITEM fg[905] vs :DIALOG rg[905]`）对所有 CAD golden 均不触发——REVERSE-DEPS/PKG-TO-INS/@::*COMPAT1-DONE* 的 SETQ_G 操作数落 `nsyms-1` 错槽。改为一律用 fg 槽（`gvar_map[sym]-1`）。
+3. **compile_cmd.py 嵌套 defun `#dup` FUNCOBJ 反查**：嵌套 `*error*`（与顶层同名 → `*error*#dup` 键）不在 `_fo_by_name`（按原名索引），funcobj_map 缺失 → PUSH_G 错槽。按 `_nested_defun_names` 反查。
+4. **compile_cmd.py 混合文件 `_lam_slot` 补 `+n_cmds+_tl_lam_count`**：`top_lambda_slots` 对混合文件（含 defun）的 setq-lambda 槽公式旧为 `2*len+tlc-i`，缺 `n_cmds`+`_tl_lam_count` → 模块代码 setq-lambda 绑定 PUSH_G 错 2。
+5. **compile_cmd.py `_tl_funcobj_slots` 补 `+n_cmds`**：顶层 kwote lambda func-obj 槽公式缺 `n_cmds`（atlisp_u 1303 = 1542-239，旧公式 1302）。
+6. **module_code.py `_reg` b 槽让位规则统一**：顶层 kwote lambda func-obj 占用 b 序列一槽（`tl_funcobj_slot` = base - tl_pos）。旧规则仅 `i >= n_pre` 时 -1（setup tl_pos=8 = n_pre 恰好成立），atlisp_u tl_pos=239 ≠ n_pre=1 → TAIL 中段函数 b 值差 1。统一为 `i >= base - tl_funcobj_slot` 时 -1。
+7. **module_code.py `_mid_count_of` top-lambda-only 索引**：`_mid_counts` 构建时跳过 top-lambda 提升 defun（fasext/vlx/wget），索引比 func_names 少 3。旧 `_emit_mid_for`/`_has_mid` 直接用 `_mid_counts[i]` 错位；且用 `_skip`（含 `_cond_defun_names` C:%/C:%%）偏移会过度减。改为仅按 `skip_funcs` 偏移；`_skip` 函数跳过 `_reg_emit` 但**仍发射 mid 语句**（CondDefunBind 块在跳过位置发射）。
+8. **module_code.py `set` 协议纯顶层/混合不同槽**：`(set 'X (lambda ...))` 纯顶层（net/wget）PUSH_G = `_lam_slot`，混合文件（atlisp_u @::wget）PUSH_G = `_lam_slot + 1`（`n_funcs > 0` 时 +1）。
+
+验证：atlisp_u 100% byte-identical + kernel 67/67 + merged_2/4/8/16 IDENTICAL + pytest 380 passed + 2 skipped。
 
 ### i18n 混合模式拆件
 

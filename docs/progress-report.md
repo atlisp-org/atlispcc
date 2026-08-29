@@ -1,12 +1,41 @@
 # atlispcc 项目进度报告
 
-> 生成日期：2026-08-28
+> 生成日期：2026-08-29
 > 分支：main
 > 本文档为滚动进度报告；历史周期记录保留于下方，最新周期见第 0 节。
 
 ---
 
-## 0. 本周期（2026-08-27，v0.1.30）摘要
+## 0. 本周期（2026-08-29，v0.1.30+）摘要
+
+| 指标 | 数值 |
+|------|------|
+| 测试用例 | **380 用例**（378 passed + 2 skipped） |
+| kernel 编译 | **67/67 全部可编译** |
+| kernel byte-identity | **67/67 逐字节一致**（seg0 + seg1 + nsyms，DIFF=0） |
+| @lisp_u byte-identity | **100% 逐字节一致**（seg0+seg1+nsyms，此前 99.3%） |
+| merged_2/4/8/16 byte-identity | **全部逐字节一致** |
+| CAD 真机编译 | AutoCAD 24.1s `(vlisp-compile 'st ...)` 逐文件对比 |
+
+### 本周期成果
+
+1. **@lisp 综合包 atlisp_u 全量 byte-identity 达成（100%）**：
+   - atlisp_u.lsp（502 函数 + 221 顶层语句）从 99.3%（seg0 622 字节 diff +
+     seg1 9630 字节 diff）修到 **seg0+seg1+nsyms 与 CAD golden 逐字节一致**。
+   - 涉及 4 个文件 8 项根因，详见 AGENTS.md「atlisp_u 全量 byte-identity（2026-08-29）」。
+   - 核心修复：
+     - `cad_symbols.py`：共享参数裸 lambda 归属（msg 由参数拥有者注册，不移除）
+     - `patch.py`：wide SETQ_G 的 rg 列表常量 fallback 移除（CAD 一律用 fg 槽）
+     - `compile_cmd.py`：嵌套 defun `#dup` FUNCOBJ 反查、混合 `_lam_slot`/
+       `_tl_funcobj_slots` 补 `n_cmds+_tl_lam_count`
+     - `module_code.py`：`_reg` b 槽 `i >= base-tl_funcobj_slot` 让位、`_mid_count_of`
+       top-lambda-only 索引、`_skip` 函数仍发 mid（CondDefunBind）、`set` 协议
+       纯顶层/混合不同槽
+2. **版本**：v0.1.30（无版本号变化，bugfix 提交）。
+
+---
+
+## 0.1 本周期（2026-08-27，v0.1.30）摘要
 
 | 指标 | 数值 |
 |------|------|

@@ -306,6 +306,22 @@ CLEAR_ARGS = argc + locals。
 注册段得到 `{符号名: gvar槽}` 映射，`_offset_slots` 二次生成模块代码时按实际
 槽位重映射 USUBR/PUSH_G/FUNC（`symtab_idx+1` 不再等于实际 gvar 槽）。
 
+**模块代码 `_reg` b 槽让位**（v0.1.30+，`i >= base - tl_funcobj_slot`）：顶层
+kwote lambda 的 func-obj 槽（`tl_funcobj_slot` = base - tl_pos，DEFCODE 区注册）
+占用 b 序列一槽，源码位置在 tl 之后的函数 b 值 -1。setup tl_pos=8 = n_pre
+（START 边界）；atlisp_u tl_pos=239 ≠ n_pre=1（tl 在 TAIL 中段），统一用
+`i >= base - tl_funcobj_slot` 判定（旧 `i >= n_pre` 对 atlisp_u 不生效）。
+
+**`_mid_count_of` top-lambda-only 索引**（v0.1.30+）：`_mid_counts` 构建时跳过
+top-lambda 提升 defun（fasext/vlx/wget），索引比 `func_names` 少 3。`_emit_mid_for`/
+`_has_mid` 按 `func_names` 前导 **skip_funcs**（非 `_skip`，后者含 `_cond_defun_names`
+条件 defun）偏移映射；`_skip` 函数跳过 `_reg_emit` 但**仍发射 mid 语句**
+（CondDefunBind 块在跳过位置发射，panel C:%/C:%% 实测）。
+
+**`set` 协议纯顶层/混合不同槽**（v0.1.30+）：`(set 'X (lambda ...))` 纯顶层
+（net/wget）PUSH_G = `_lam_slot`；混合文件（atlisp_u @::wget）PUSH_G =
+`_lam_slot + 1`（`n_funcs > 0` 时 +1，`_lam_slot` 混合公式已含 n_cmds+_tl_lam_count）。
+
 **`_offset_slots` fallback 编址**（v0.1.30+，`first_cmd_slot` 判定）：
 - SYMBOL/STRING 表外符号 fallback = `symtab_idx + 1 + n_cmds`（vl-ACAD-defun 插入
   使模块注册其后的符号 gvar 槽整体 +1，atlisp_u `(set 'e2o ...)` 实测）。

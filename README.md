@@ -347,6 +347,11 @@ make cad-test    # 或: python scripts/cad_verify.py
 > 与 AutoCAD 24.1s 真机产物（`(vlisp-compile 'st ...)`）**逐字节一致**（seg0 + seg1 +
 > nsyms），含条件 defun 绑定、LET 原生、vlax-for 枚举、嵌套 defun、`&optional`/`&rest`
 > 变参等复杂结构。状态用 `scripts/kernel_compare_http.py`（ours→compare）复核。
+>
+> **@lisp 综合包 atlisp_u 全量对拍**（2026-08-29）：`tests/atlisp_u.lsp`（502 函数 +
+> 221 顶层语句）seg0+seg1+nsyms 与 CAD golden `tests/atlisp_u_cad2.fas` **逐字节一致**，
+> 覆盖 commands+顶层混合 gvar 槽重映射、顶层 kwote lambda func-obj 让位、条件 defun
+> mid 发射、`set` 协议槽等复杂混合场景。
 
 ## 完整示例
 
