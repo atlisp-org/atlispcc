@@ -103,7 +103,7 @@ class Parser:
             return ListExpr()
         head = self.parse_form(quoted)
         if isinstance(head, Symbol):
-            name = head.name
+            name = head.name.lower()
             if quoted and self.peek()[0] == 'RPAREN' and name in (
                 'defun', 'defun-q', 'setq', 'if', 'while', 'foreach',
                 'repeat', 'progn', 'cond', 'defpackage', 'in-package',
@@ -201,8 +201,8 @@ class Parser:
                 if dotted is not None:
                     if quoted:
                         return ListExpr(items=[head] + items, dotted=dotted)
-                    return Call(name=name, args=items + [dotted])
-                return Call(name=name, args=items)
+                    return Call(name=head.name, args=items + [dotted])
+                return Call(name=head.name, args=items)
         items, dotted = self._parse_items_until_rparen(quoted)
         return ListExpr(items=[head] + items, dotted=dotted)
 

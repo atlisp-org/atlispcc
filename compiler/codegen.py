@@ -42,37 +42,7 @@ _INT32_MIN = -2147483648
 _INT32_MAX = 2147483647
 
 
-def normalize_vla_name(name):
-    """规范化 vla- 前缀的 ActiveX 方法符号名（与 cad_symbols 保持一致）。
-
-    CAD 对 ``vla-get-<Method>`` 等方法符号保留原始大小写且方法名首字母大写
-    （t22_activex golden 实测），``vlax-`` 前缀保持小写。非 vla-/vlax- 不变。
-    """
-    for prefix in ("vla-get-", "vla-put-", "vla-call-", "vla-add-", "vla-insert-"):
-        if name.lower().startswith(prefix):
-            method = name[len(prefix):]
-            if method and method[0].islower():
-                return prefix + method[0].upper() + method[1:]
-            return name
-    # 其余 `vla-` 函数/方法（vla-sendcommand→vla-SendCommand、
-    # vla-postcommand→vla-PostCommand，base-function CAD 实测）。
-    if name.lower().startswith("vla-"):
-        try:
-            from compiler.cad_symbols import _VLA_METHOD_MAP
-
-            mapped = _VLA_METHOD_MAP.get(name.lower())
-            if mapped:
-                return mapped
-        except ImportError:
-            pass
-        rest = name[len("vla-"):]
-        if rest and rest[0].islower():
-            # 不在方法表的无子前缀 vla- 名（voice.lsp `vla-object` 类型名）：
-            # CAD 用大写（VLA-OBJECT），返回大写形式（resource_builder _enc_sym
-            # 对 vla- 不 .upper()）。此前首字母大写（vla-Object）对类型名错。
-            return name.upper()
-        return name
-    return name
+from compiler.cad_symbols import normalize_vla_name
 from compiler.symbol_table import SymbolTable
 
 PUSH_T = NAME_TO_OPCODE["PUSH_T"]  # 0x02
@@ -1099,8 +1069,14 @@ class CodeGenerator:
 
         if self._in_tail_context and self.stub_format:
             buf.emit(encode_op_noarg(POP))
-        for i, form in enumerate(node.body):
-            last_in_body = i == len(node.body) - 1
+        _wbody = node.body
+        if len(_wbody) > 1:
+            _wbody = [
+                x for i, x in enumerate(_wbody)
+                if i == len(_wbody) - 1 or not isinstance(x, String)
+            ]
+        for i, form in enumerate(_wbody):
+            last_in_body = i == len(_wbody) - 1
             if self.stub_format and last_in_body and self._in_tail_context:
                 # 尾 while 的最后一个体语句是 while 的"值"（尾协议由 loop 头
                 # PUSH_NIL 占位 + 体首 POP 处理）：尾上下文发射（setq 补 DUP
@@ -1227,8 +1203,14 @@ class CodeGenerator:
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         self._loop_depth += 1
-        for i, form in enumerate(node.body):
-            if self._in_tail_context and i == len(node.body) - 1:
+        _fbody = node.body
+        if len(_fbody) > 1:
+            _fbody = [
+                x for i, x in enumerate(_fbody)
+                if i == len(_fbody) - 1 or not isinstance(x, String)
+            ]
+        for i, form in enumerate(_fbody):
+            if self._in_tail_context and i == len(_fbody) - 1:
                 # 尾 foreach 体最后语句 = foreach 的"值"（值上下文）：if 无 else
                 # 补 PUSH_NIL（cache.lsp 尾 foreach 体末 `(if (and ...) (vl-file-
                 # delete ...))` CAD 实测 `JMP32_IFNOT; then; JUMP; PUSH_NIL`）、
@@ -1411,6 +1393,11 @@ class CodeGenerator:
                 continue
             cond = clause[0]
             actions = clause[1:]
+            if len(actions) > 1:
+                actions = [
+                    x for i, x in enumerate(actions)
+                    if i == len(actions) - 1 or not isinstance(x, String)
+                ]
             if isinstance(cond, Symbol) and cond.name.lower() == "t":
                 for action in actions:
                     self._emit_expr(buf, action)
@@ -1476,6 +1463,15 @@ class CodeGenerator:
         # 跳到下一个发出体之后（即其 JUMP 处），链式跳过其余体。
         for k, i in enumerate(reversed(range(n))):
             actions = clauses[i][1:]
+            # CAD 丢弃 cond 子句体中语句位置的裸字符串（分节注释），仅末 form
+            # （返回值位置）的字符串保留——与 `strip_docstring`（defun 体）同规则。
+            # 收集端（cad_symbols Cond 分支）已同步跳过，codegen 必须一致否则
+            # 符号槽错位（grread.lsp `(t "其它情况" (princ gr))` 实测）。
+            if len(actions) > 1:
+                actions = [
+                    x for i, x in enumerate(actions)
+                    if i == len(actions) - 1 or not isinstance(x, String)
+                ]
             buf.label(f"{base}_body_{i}")
             # CAD stub：空体子句（`(cond (x) ...)`，无动作）不发入口 POP——
             # 测试值留在栈顶作为 cond 结果，COND_OR 真时直接落到该子句结束
@@ -1577,6 +1573,11 @@ class CodeGenerator:
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         self._loop_depth += 1
+        if len(body) > 1:
+            body = [
+                x for i, x in enumerate(body)
+                if i == len(body) - 1 or not isinstance(x, String)
+            ]
         for i, form in enumerate(body):
             _last = i == len(body) - 1
             if self._in_tail_context and _last:
@@ -1835,6 +1836,11 @@ class CodeGenerator:
             # 不占局部槽。
             self._emit_al_bind_alist_locals(buf, locals_)
         body = node.body
+        if len(body) > 1:
+            body = [
+                x for i, x in enumerate(body)
+                if i == len(body) - 1 or not isinstance(x, String)
+            ]
         for expr in body[:-1]:
             self._emit_stmt(buf, expr)
             if not isinstance(expr, (Setq, WhileNode, ForeachNode, RepeatNode, IfNode, Cond, Defun, Progn)):

@@ -8,11 +8,36 @@ from compiler.symbol_table import SymbolTable
 _VLISP_CASE_PRESERVE = {
     ":vlax-false", ":vlax-true",
     ":VLR-beginDoubleClick", ":VLR-unknownCommand",
+    ":VLR-commandCancelled", ":VLR-commandEnded",
+    ":VLR-commandFailed", ":VLR-commandWillStart",
     "VLR-Add", "VLR-Command-Reactor", "VLR-Mouse-Reactor", "VLR-Remove",
     "VLAX-FOR", "vlax-3d-point",
     "end", "showhtmlmodalwindow", "sort", "startapp",
     # vlax-for 的 collect 枚举协议内部 SUBR（kernel ui/menu.lsp golden 实测小写）
     "collect-init", "collect-next", "collect-release",
+    # vlax-curve-* 函数：ActiveX 扩展，保留 CamelCase（lib golden 实测）
+    "vlax-curve-getClosestPointTo",
+    "vlax-curve-getClosestPointToProjection",
+    "vlax-curve-getDistAtParam",
+    "vlax-curve-getDistAtPoint",
+    "vlax-curve-getEndParam",
+    "vlax-curve-getEndPoint",
+    "vlax-curve-getFirstDeriv",
+    "vlax-curve-getParamAtPoint",
+    "vlax-curve-getPointAtDist",
+    "vlax-curve-getPointAtParam",
+    "vlax-curve-getSecondDeriv",
+    "vlax-curve-isClosed",
+    "vlax-dump-Object",
+    "vlax-vbDouble", "vlax-vbInteger", "vlax-vbLong",
+    "vlax-vbObject", "vlax-vbString", "vlax-vbVariant",
+    # ac* 常量：AutoCAD 系统常量，保留 CamelCase（lib golden 实测）
+    "acAllViewports", "acDataRow", "acHeaderRow", "acTitleRow",
+    "acHatchPatternTypePreDefined", "acMiddleCenter",
+    # 其他保留大小写（lib golden 实测）
+    "acet-ui-progress", "bpoly", "nextent",
+    "safearray", "safearray-value", "variant",
+    "VLA->E",
 }
 
 # 需独立 0x56 保留大小写块（`56 <name> 00 00`）的机制符号：`/ 局部变量`
@@ -54,10 +79,14 @@ def res_real_str(s: str) -> bytes:
 def _real_fmt(v) -> str:
     """实数常量字符串：CAD 资源流 `3B <ascii>` 按实数解析。`.15g` 对整数值
     （如 2208988800.0）会输出 `2208988800`（无小数点），CAD 加载时当作整数
-    fixnum 报"不适合 fixnum"——须补 `.0` 使其成为合法实数表示。"""
+    fixnum 报"不适合 fixnum"——须补 `.0` 使其成为合法实数表示。
+    科学记数法（含 e/E）也须保留小数点（`1.0e-06` 非 `1e-06`，CAD golden 实测）。"""
     s = f"{v:.15g}"
     if not any(c in s for c in ".eE"):
         s += ".0"
+    elif "e" in s or "E" in s:
+        if "." not in s:
+            s = s.replace("e", ".0e", 1).replace("E", ".0E", 1)
     return s
 
 
@@ -651,11 +680,19 @@ class ResourceBuilder:
                     # `56 vl-ACAD-defun 00 00` 插在源码序第一个命令之前（CAD
                     # large_synthetic 实测 `5b [LGF-TOP-* CMD-090 CMD-060 CMD-030]
                     # 00 56 vl-ACAD-defun 00 00 5b [CMD-000 LGF-119...]`）。命令
-                    # 名按 func_names_all（源码序）首字母 `c:` 判定。
+                    # 名按 func_names_all（源码序）首字母 `c:` 判定。若顶层函数
+                    # 无命令但存在嵌套命令（`(defun f () (defun c:x ...))`），
+                    # 在 module_entries 中找第一个 `c:` 符号（cmd-reactor.lsp
+                    # CAD 实测 vl-ACAD-defun 注册 + C:SWITCHNEA 前插）。
                     for _fn in func_names_all:
                         if str(_fn).lower().startswith("c:"):
                             _vl_first_cmd = str(_fn)
                             break
+                    if _vl_first_cmd is None:
+                        for _et, _ev in module_entries:
+                            if _et == "SYMBOL" and str(_ev).lower().startswith("c:"):
+                                _vl_first_cmd = str(_ev)
+                                break
             mi = 0
             while mi < len(module_entries):
                 entry_type, entry_val = module_entries[mi]

@@ -41,27 +41,94 @@ _VLAX_PROPERTY_FUNCS = frozenset({
 # CamelCase（base-function CAD 实测 `vla-sendcommand`→`vla-SendCommand`、
 # `vla-postcommand`→`vla-PostCommand`）。未收录的走首字母大写 fallback。
 _VLA_METHOD_MAP = {
-    "vla-sendcommand": "vla-SendCommand",
-    "vla-postcommand": "vla-PostCommand",
+    "vla-add": "vla-Add",
+    "vla-add3dpoly": "vla-Add3DPoly",
     "vla-addarc": "vla-AddArc",
     "vla-addcircle": "vla-AddCircle",
     "vla-adddimension": "vla-AddDimension",
     "vla-addellipse": "vla-AddEllipse",
     "vla-addhatch": "vla-AddHatch",
     "vla-addline": "vla-AddLine",
+    "vla-addmenuitem": "vla-AddMenuItem",
     "vla-addmtext": "vla-AddMText",
     "vla-addpolyline": "vla-AddPolyline",
     "vla-addrectangle": "vla-AddRectangle",
+    "vla-addseparator": "vla-AddSeparator",
     "vla-addspline": "vla-AddSpline",
+    "vla-addsubmenu": "vla-AddSubMenu",
     "vla-addtext": "vla-AddText",
+    "vla-addtoolbarbutton": "vla-AddToolbarButton",
+    "vla-appendinnerloop": "vla-AppendInnerLoop",
+    "vla-appenditems": "vla-AppendItems",
+    "vla-appendouterloop": "vla-AppendOuterLoop",
+    "vla-attachtoolbartoflyout": "vla-AttachToolbarToFlyout",
+    "vla-copyobjects": "vla-CopyObjects",
     "vla-delete": "vla-Delete",
     "vla-endundomark": "vla-EndUndoMark",
+    "vla-getattributes": "vla-GetAttributes",
+    "vla-getboundingbox": "vla-GetBoundingBox",
+    "vla-getbulge": "vla-GetBulge",
+    "vla-getinterfaceobject": "vla-GetInterfaceObject",
+    "vla-insertblock": "vla-InsertBlock",
     "vla-insertinmenubar": "vla-InsertInMenuBar",
+    "vla-intersectwith": "vla-IntersectWith",
     "vla-item": "vla-Item",
+    "vla-load": "vla-Load",
+    "vla-offset": "vla-Offset",
+    "vla-open": "vla-Open",
+    "vla-postcommand": "vla-PostCommand",
     "vla-regen": "vla-Regen",
     "vla-removefrommenubar": "vla-RemoveFromMenuBar",
+    "vla-saveas": "vla-SaveAs",
+    "vla-sendcommand": "vla-SendCommand",
+    "vla-setalignment": "vla-SetAlignment",
+    "vla-setbitmaps": "vla-SetBitmaps",
+    "vla-setcolorbookcolor": "vla-SetColorBookColor",
+    "vla-setfont": "vla-SetFont",
+    "vla-settextheight": "vla-SetTextHeight",
     "vla-startundomark": "vla-StartUndoMark",
+    "vla-transformby": "vla-TransformBy",
     "vla-update": "vla-Update",
+    "vla-wblock": "vla-Wblock",
+}
+
+# vlax-* 及其他需保留 CamelCase 的特殊符号（lib golden 实测）。
+# normalize_vla_name 通过此表规范化，_enc_sym 通过 _VLISP_CASE_PRESERVE 编码。
+_SPECIAL_CASE_MAP = {
+    "vlax-curve-getclosestpointto": "vlax-curve-getClosestPointTo",
+    "vlax-curve-getclosestpointtoprojection": "vlax-curve-getClosestPointToProjection",
+    "vlax-curve-getdistatparam": "vlax-curve-getDistAtParam",
+    "vlax-curve-getdistatpoint": "vlax-curve-getDistAtPoint",
+    "vlax-curve-getendparam": "vlax-curve-getEndParam",
+    "vlax-curve-getendpoint": "vlax-curve-getEndPoint",
+    "vlax-curve-getfirstderiv": "vlax-curve-getFirstDeriv",
+    "vlax-curve-getparamatpoint": "vlax-curve-getParamAtPoint",
+    "vlax-curve-getpointatdist": "vlax-curve-getPointAtDist",
+    "vlax-curve-getpointatparam": "vlax-curve-getPointAtParam",
+    "vlax-curve-getsecondderiv": "vlax-curve-getSecondDeriv",
+    "vlax-curve-isclosed": "vlax-curve-isClosed",
+    "vlax-dump-object": "vlax-dump-Object",
+    "vlax-vbdouble": "vlax-vbDouble",
+    "vlax-vbinteger": "vlax-vbInteger",
+    "vlax-vblong": "vlax-vbLong",
+    "vlax-vbobject": "vlax-vbObject",
+    "vlax-vbstring": "vlax-vbString",
+    "vlax-vbvariant": "vlax-vbVariant",
+    ":vlr-commandcancelled": ":VLR-commandCancelled",
+    ":vlr-commandended": ":VLR-commandEnded",
+    ":vlr-commandfailed": ":VLR-commandFailed",
+    ":vlr-commandwillstart": ":VLR-commandWillStart",
+    "acallviewports": "acAllViewports",
+    "acdatarow": "acDataRow",
+    "acheaderrow": "acHeaderRow",
+    "actitlerow": "acTitleRow",
+    "achatchpatterntypepredefined": "acHatchPatternTypePreDefined",
+    "acmiddlecenter": "acMiddleCenter",
+    "nextent": "nextent",
+    "safearray": "safearray",
+    "safearray-value": "safearray-value",
+    "variant": "variant",
+    "vla->e": "VLA->E",
 }
 
 # `vla-get-*`/`vla-put-*` 多词方法名 → CAD 规范 CamelCase（AutoCAD ActiveX
@@ -70,20 +137,38 @@ _VLA_METHOD_MAP = {
 # linetypes→Linetypes、viewports→Viewports 保持 CAD 原生写法）。键为小写
 # 方法名（不含前缀），值含前缀的规范形式。
 _VLA_GET_PROP_MAP = {
-    "modelspace": "vla-get-ModelSpace",
-    "paperspace": "vla-get-PaperSpace",
-    "insertionpoint": "vla-get-InsertionPoint",
-    "objectname": "vla-get-ObjectName",
-    "startpoint": "vla-get-StartPoint",
-    "endpoint": "vla-get-EndPoint",
-    "textstring": "vla-get-TextString",
-    "textstyles": "vla-get-TextStyles",
+    "activedocument": "vla-get-ActiveDocument",
+    "bigfontfile": "vla-get-BigFontFile",
+    "colorindex": "vla-get-ColorIndex",
     "dimstyles": "vla-get-DimStyles",
+    "effectivename": "vla-get-EffectiveName",
+    "elementname": "vla-get-ElementName",
+    "endpoint": "vla-get-EndPoint",
+    "entitycolor": "vla-get-EntityColor",
+    "fontfile": "vla-get-FontFile",
+    "insertionpoint": "vla-get-InsertionPoint",
+    "isxref": "vla-get-IsXRef",
+    "layeron": "vla-get-LayerOn",
+    "linetypes": "vla-get-Linetypes",
     "menubar": "vla-get-MenuBar",
     "menugroups": "vla-get-MenuGroups",
-    "activedocument": "vla-get-ActiveDocument",
-    "linetypes": "vla-get-Linetypes",
+    "modelspace": "vla-get-ModelSpace",
+    "objectname": "vla-get-ObjectName",
+    "paperspace": "vla-get-PaperSpace",
+    "propertyname": "vla-get-PropertyName",
+    "readonly": "vla-get-ReadOnly",
+    "startpoint": "vla-get-StartPoint",
+    "taborder": "vla-get-TabOrder",
+    "tagstring": "vla-get-TagString",
+    "textformat": "vla-get-TextFormat",
+    "textheight": "vla-get-TextHeight",
+    "textstring": "vla-get-TextString",
+    "textstyles": "vla-get-TextStyles",
+    "truecolor": "vla-get-TrueColor",
     "viewports": "vla-get-Viewports",
+    "xscalefactor": "vla-get-XScaleFactor",
+    "yscalefactor": "vla-get-YScaleFactor",
+    "zscalefactor": "vla-get-ZScaleFactor",
 }
 # `vla-put-*` 变体：同一属性名（去掉前缀后）映射到 vla-put- 前缀。
 _VLA_PUT_PROP_MAP = {
@@ -111,6 +196,10 @@ def normalize_vla_name(name):
     """
     if name.lower() in ("vla-addrectangle", "vla-adddimension", "vla-get-distance"):
         return name.upper()
+    # vlax-* 及其他特殊符号：按小写查规范 CamelCase 表
+    mapped = _SPECIAL_CASE_MAP.get(name.lower())
+    if mapped:
+        return mapped
     for prefix in ("vla-get-", "vla-put-", "vla-call-", "vla-add-", "vla-insert-"):
         if name.lower().startswith(prefix):
             method = name[len(prefix):]
@@ -165,9 +254,9 @@ def to_const(node):
     ('STRING', s) / ('LIST', (item, ...)) / ('NIL',) / ('T',)。
     """
     if isinstance(node, Symbol):
-        if node.name == 'T':
+        if node.name.upper() == 'T':
             return ('T',)
-        if node.name == 'nil':
+        if node.name.lower() == 'nil':
             return ('NIL',)
         # quoted vla- 符号同样规范化（base-function `(set 'vla-postcommand
         # vla-sendcommand)` CAD 实测 `'vla-postcommand` → 常量符号
@@ -232,9 +321,14 @@ def to_const(node):
             d = to_const(node.dotted)
             if d is None:
                 return None
-            items = items + (d,)
             # dotted 引用 `'(a . b)`：CAD 以 `2a`(LIST_END) 收尾而非
             # `39 <count>`（t12_quote 实测），需标记以便 _emit_const 正确编码。
+            # 但当 cdr 本身是列表时（如 `'(1 . (255 0 0))`），等价于平列表
+            # `'(1 255 0 0)`，CAD 用 BUILD_LIST 编码（color/aci2rgb 实测）。
+            if isinstance(d, tuple) and d[0] == 'LIST':
+                items = items + d[1]
+                return ('LIST', items)
+            items = items + (d,)
             return ('LIST', items, True)
         if not items:
             # 空列表 `'()` = nil：CAD 用 PUSH_NIL(01) 而非 BUILD_LIST 0
@@ -549,6 +643,37 @@ class CadSymbolCollector:
             for _b in _f.body:
                 self._scan_let_vars(_b, host_rev=_n_fns - 1 - _j)
 
+        # 唯一参数（只在一个函数出现的参数名，非共享）：foreach 循环变量若与
+        # 其同名不独立注册——CAD 复用参数拥有者的槽（cache.lsp `subdir` =
+        # cache-store 参数 + cache-clear-all foreach 变量，CAD 实测共享 fg[46]，
+        # foreach 处无独立槽）。@lisp_u `cmd`（foreach + **共享**参数）才独立
+        # 注册（共享参数槽不特定于某函数）。
+        _arg_count: dict = {}
+        for _f in defuns:
+            for _a in _f.args:
+                _arg_count[_a] = _arg_count.get(_a, 0) + 1
+        self._unique_params = {a for a, c in _arg_count.items() if c == 1}
+        # 共享参数的逆序**最后声明拥有者**（args 声明序，与 `_collect_multi`
+        # 的 `_shared_last` 一致）。嵌套块用它判定参数是否由**当前外层函数**
+        # 的 args 循环注册（string-utils s2la `(str separator)` = 外层参数，
+        # `separator` 的 last=6 == 外层 reversed 6；`str` 的 last=9 ≠ 6）。
+        self._n_funcs = len(defuns)
+        _shared_last_decl: dict = {}
+        for _di, _df in enumerate(reversed(defuns)):
+            for _da in _df.args:
+                if _da in self.shared:
+                    _shared_last_decl[_da] = max(_shared_last_decl.get(_da, -1), _di)
+        self._shared_last_decl = _shared_last_decl
+        # 共享参数 → 逆序最后**参数声明**者（供裸 lambda / kwote lambda 参数
+        # 归属判定：CAD 把共享参数槽注册在参数拥有者 args 循环处，裸/kwote
+        # lambda 宿主不重复收集——atlisp_u `msg` 由 cleanup-dcl 等 6 函数声明，
+        # 裸 lambda `(lambda (msg) ...)` 宿主若抢先收集会占错槽）。
+        self._shared_last = {}
+        for _di, _df in enumerate(reversed(defuns)):
+            for _da in _df.args:
+                if _da in self.shared:
+                    self._shared_last[_da] = max(self._shared_last.get(_da, -1), _di)
+
         if len(defuns) <= 1:
             return self._collect_single(defuns, others, program)
 
@@ -588,36 +713,6 @@ class CadSymbolCollector:
             if isinstance(n, str) and not n.lower().startswith(("vla-", "vlax-")) and not n.startswith(('"', "'", "__")):
                 return n.upper()
             return n
-        # 唯一参数（只在一个函数出现的参数名，非共享）：foreach 循环变量若与
-        # 其同名不独立注册——CAD 复用参数拥有者的槽（cache.lsp `subdir` =
-        # cache-store 参数 + cache-clear-all foreach 变量，CAD 实测共享 fg[46]，
-        # foreach 处无独立槽）。@lisp_u `cmd`（foreach + **共享**参数）才独立
-        # 注册（共享参数槽不特定于某函数）。
-        _arg_count: dict = {}
-        for _f in defuns:
-            for _a in _f.args:
-                _arg_count[_a] = _arg_count.get(_a, 0) + 1
-        self._unique_params = {a for a, c in _arg_count.items() if c == 1}
-        # 共享参数的逆序**最后声明拥有者**（args 声明序，与 `_collect_multi`
-        # 的 `_shared_last` 一致）。嵌套块用它判定参数是否由**当前外层函数**
-        # 的 args 循环注册（string-utils s2la `(str separator)` = 外层参数，
-        # `separator` 的 last=6 == 外层 reversed 6；`str` 的 last=9 ≠ 6）。
-        self._n_funcs = len(defuns)
-        _shared_last_decl: dict = {}
-        for _di, _df in enumerate(reversed(defuns)):
-            for _da in _df.args:
-                if _da in self.shared:
-                    _shared_last_decl[_da] = max(_shared_last_decl.get(_da, -1), _di)
-        self._shared_last_decl = _shared_last_decl
-        # 共享参数 → 逆序最后**参数声明**者（供裸 lambda / kwote lambda 参数
-        # 归属判定：CAD 把共享参数槽注册在参数拥有者 args 循环处，裸/kwote
-        # lambda 宿主不重复收集——atlisp_u `msg` 由 cleanup-dcl 等 6 函数声明，
-        # 裸 lambda `(lambda (msg) ...)` 宿主若抢先收集会占错槽）。
-        self._shared_last = {}
-        for _di, _df in enumerate(reversed(defuns)):
-            for _da in _df.args:
-                if _da in self.shared:
-                    self._shared_last[_da] = max(self._shared_last.get(_da, -1), _di)
         # 预计算顶层 defun 的 locals 结构 → 逆序最后声明者（供 kwote lambda
         # locals 常量归属判定：kwote lambda 的 `(quote (locals))` 若与某顶层
         # defun 的 locals 结构相同，CAD 合并到顶层 defun 的 locals_last 位置，
@@ -2359,7 +2454,13 @@ class CadSymbolCollector:
         elif isinstance(node, WhileNode):
             if node.cond:
                 self._collect_byteorder(node.cond, out, arg_names, in_quote)
-            for expr in node.body:
+            _wbody = node.body
+            if len(_wbody) > 1:
+                _wbody = [
+                    x for i, x in enumerate(_wbody)
+                    if i == len(_wbody) - 1 or not isinstance(x, String)
+                ]
+            for expr in _wbody:
                 self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, Progn):
             for _pi, form in enumerate(node.forms):
@@ -2397,7 +2498,13 @@ class CadSymbolCollector:
                     ):
                         out.append((_v, False))
                 out.append(("collect-next", False))
-                for expr in node.body:
+                _vbody = node.body
+                if len(_vbody) > 1:
+                    _vbody = [
+                        x for i, x in enumerate(_vbody)
+                        if i == len(_vbody) - 1 or not isinstance(x, String)
+                    ]
+                for expr in _vbody:
                     self._collect_byteorder(expr, out, arg_names, in_quote)
                 out.append(("collect-release", False))
                 return
@@ -2438,7 +2545,13 @@ class CadSymbolCollector:
                     and not self._seen(out, _v)
                 ):
                     out.append((_v, False))
-            for expr in node.body:
+            _fbody = node.body
+            if len(_fbody) > 1:
+                _fbody = [
+                    x for i, x in enumerate(_fbody)
+                    if i == len(_fbody) - 1 or not isinstance(x, String)
+                ]
+            for expr in _fbody:
                 self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, RepeatNode):
             # CAD repeat 字节码：count 先求值存局部槽（`_emit_repeat_stub`
@@ -2449,7 +2562,13 @@ class CadSymbolCollector:
             # 逆序注册后 body 字符串低槽）。
             if node.count:
                 self._collect_byteorder(node.count, out, arg_names, in_quote)
-            for expr in node.body:
+            _rbody = node.body
+            if len(_rbody) > 1:
+                _rbody = [
+                    x for i, x in enumerate(_rbody)
+                    if i == len(_rbody) - 1 or not isinstance(x, String)
+                ]
+            for expr in _rbody:
                 self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, Cond):
             # CAD cond 字节码：测试体按源码序发出（各子句条件），结果体按源码
@@ -2474,7 +2593,15 @@ class CadSymbolCollector:
                     else:
                         self._collect_byteorder(cond, out, arg_names, in_quote)
             for clause in reversed(clauses):
-                for item in clause[1:]:
+                _body = clause[1:]
+                # CAD 丢弃 cond 子句体中语句位置的裸字符串（分节注释/说明，
+                # grread.lsp `(t "其它情况" (princ gr))` 实测——"其它情况"、
+                # "按下了键盘按键" 等不注册 STRING 槽）。仅**末 form**（子句
+                # 返回值位置）的字符串保留（`(t "message")` 返回值）。与
+                # `strip_docstring`（defun 体）同规则：非末字符串 = docstring。
+                if len(_body) > 1:
+                    _body = [x for i, x in enumerate(_body) if i == len(_body) - 1 or not isinstance(x, String)]
+                for item in _body:
                     self._collect_byteorder(item, out, arg_names, in_quote)
         elif isinstance(node, ListExpr):
             if node.items and isinstance(node.items[0], LambdaNode):
@@ -2548,9 +2675,15 @@ class CadSymbolCollector:
                 for _l in _lam_locals:
                     if not self._seen(out, _l):
                         out.append((_l, False))
-            for _bi, _b in enumerate(node.body):
+            _lbody = node.body
+            if len(_lbody) > 1:
+                _lbody = [
+                    x for i, x in enumerate(_lbody)
+                    if i == len(_lbody) - 1 or not isinstance(x, String)
+                ]
+            for _bi, _b in enumerate(_lbody):
                 self._collect_byteorder(
-                    _b, out, arg_names, in_quote, _is_tail=(_bi == len(node.body) - 1)
+                    _b, out, arg_names, in_quote, _is_tail=(_bi == len(_lbody) - 1)
                 )
         elif isinstance(node, QuotedExpr):
             if node.kwote:

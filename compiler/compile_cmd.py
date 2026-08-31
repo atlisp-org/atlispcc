@@ -158,6 +158,33 @@ def cmd_compile(
 
     symtab = SymbolTable(package_table=package_table)
     defun_forms = [f for f in program.forms if isinstance(f, Defun)]
+
+    def _iter_defuns(node):
+        """递归遍历所有 Defun 节点（含嵌套 defun）。"""
+        if isinstance(node, Defun):
+            yield node
+            for b in node.body:
+                yield from _iter_defuns(b)
+            return
+        for _child in getattr(node, 'body', None) or []:
+            yield from _iter_defuns(_child)
+        for _child in getattr(node, 'forms', None) or []:
+            yield from _iter_defuns(_child)
+        for _child in getattr(node, 'clauses', None) or []:
+            for _cl in _child or []:
+                yield from _iter_defuns(_cl)
+        if getattr(node, 'then', None) is not None:
+            yield from _iter_defuns(node.then)
+        if getattr(node, 'else_expr', None) is not None:
+            yield from _iter_defuns(node.else_expr)
+        if getattr(node, 'cond', None) is not None:
+            yield from _iter_defuns(node.cond)
+
+    _all_defuns = list(_iter_defuns(program))
+    _has_cmd = any(
+        getattr(f, "is_command", False) or str(f.name).startswith("c:")
+        for f in _all_defuns
+    )
     # 纯 &rest（min=0）：CAD 实测不收集 rest（b4=01 需至少一个必填参数）
     for _defun in defun_forms:
         if _defun.rest and not _defun.args and not _defun.optional:
@@ -478,7 +505,7 @@ def cmd_compile(
             _lam_slot = (
                 2 * len(defun_forms)
                 + top_level_count
-                + (1 if any(getattr(f, "is_command", False) or str(f.name).startswith("c:") for f in defun_forms) else 0)
+                + (1 if _has_cmd else 0)
                 + sum(1 for k in func_offsets if str(k).startswith("-lambda-#TL"))
                 - _i
             )
@@ -745,7 +772,7 @@ def cmd_compile(
     # c: 命令函数：CAD 在模块注册段插入 vl-ACAD-defun 符号并生成命令模块代码。
     # vl-ACAD-defun 仅在模块注册段（resource_gvars）注册，不进符号表（不参与
     # 函数符号槽编址），故 seg0 的 PUSH_VALUE 索引保持不变。
-    n_cmds = 1 if any(getattr(f, "is_command", False) or str(f.name).startswith("c:") for f in defun_forms) else 0
+    n_cmds = 1 if _has_cmd else 0
     resource = ResourceBuilder(symtab, encoding=encoding)
     # 模块注册函数数 = 模块尾块 defun 数（CAD 只把模块代码引用的尾块函数名
     # 注册进模块注册段；atlisp_u 48，其余 416 个库函数名经函数体符号区注册）。
