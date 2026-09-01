@@ -271,6 +271,10 @@ class Parser:
                     else:
                         args.append(a.name)
             self.expect('RPAREN')
+        elif self.peek()[0] == 'SYMBOL' and self.peek()[1].lower() == 'nil':
+            # `nil` 形参表标记 = 0 参函数，`nil` 不进入函数体
+            # （CAD 实测：argc=0、函数体首无 PUSH_NIL，docstring 照常剥离）。
+            self.advance()
         body = []
         while self.peek()[0] != 'RPAREN':
             body.append(self.parse_form())
