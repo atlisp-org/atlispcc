@@ -45,6 +45,13 @@ class QuotedExpr(Node):
     # kwote/-lambda- 机制，区别于 `'X`（quote，注册为资源段常量）。
     # kwote=True 表示来自 `(function ...)` 而非 `'...`。
     kwote: bool = False
+    # 引用包装符号名：'function'（来自 `(function X)`/`#'X`）或 'quote'
+    # （来自 `'X`）。在**引用上下文内**（更大的 quoted 数据里嵌套
+    # `'(function (lambda ...))` 或 `''(...)`），kwote 恒为 False（数据），
+    # CAD 仍按源符号分别注册 FUNCTION/QUOTE 叶子（setup.lsp kernel golden
+    # 用 FUNCTION、text/get-matrix 用 QUOTE 实测），须保留 wrapper 区别。
+    # None = 未显式区分（默认按 kwote 推断）。
+    wrap: Optional[str] = None
 
 
 @dataclass

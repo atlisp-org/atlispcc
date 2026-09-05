@@ -104,6 +104,37 @@ def _hoist_conditional_defuns(forms):
     return out
 
 
+def _lower_top_level_defun_q(forms):
+    """顶层 ``defun-q``（Defun ``quoted=True``）降级为顶层 setq 引用数据。
+
+    CAD 把顶层 ``defun-q`` 编译为纯数据 ``((args...) <docstring> <type>
+    <body...>)``（ini/get golden 实测：21 符号槽、无 LAMBDA 符号、``c:main``
+    空体、seg0 0 字节），而非可调用 SUBR。改写为
+    ``(setq <name> '((args...) <docstring> <type> <body...>))``，复用成熟的
+    顶层 setq 引用常量机制（符号/字符串注册进 seg1 资源流）。仅处理顶层
+    defun-q；defun 体内的 defun-q 仍交给 ``_lower_nested_defuns``（嵌套位置
+    改写为 setq-lambda 数据）。
+    """
+    out = []
+    for f in forms:
+        if isinstance(f, Defun) and getattr(f, "quoted", False):
+            args_list = ListExpr(items=[Symbol(a) for a in f.args])
+            items = [args_list] + list(f.body)
+            out.append(
+                Setq(
+                    pairs=[
+                        (
+                            Symbol(f.name),
+                            QuotedExpr(expr=ListExpr(items=items)),
+                        )
+                    ]
+                )
+            )
+        else:
+            out.append(f)
+    return out
+
+
 def _lower_nested_defuns(forms):
     """把非顶层位置的 defun（条件/嵌套函数定义）改写为 setq 引用的 lambda 数据。
 

@@ -74,12 +74,15 @@ _VLA_METHOD_MAP = {
     "vla-intersectwith": "vla-IntersectWith",
     "vla-item": "vla-Item",
     "vla-load": "vla-Load",
+    "vla-move": "vla-Move",
     "vla-offset": "vla-Offset",
     "vla-open": "vla-Open",
     "vla-postcommand": "vla-PostCommand",
     "vla-regen": "vla-Regen",
     "vla-removefrommenubar": "vla-RemoveFromMenuBar",
+    "vla-rotate": "vla-Rotate",
     "vla-saveas": "vla-SaveAs",
+    "vla-scaleentity": "vla-ScaleEntity",
     "vla-sendcommand": "vla-SendCommand",
     "vla-setalignment": "vla-SetAlignment",
     "vla-setbitmaps": "vla-SetBitmaps",
@@ -120,6 +123,7 @@ _SPECIAL_CASE_MAP = {
     ":vlr-commandwillstart": ":VLR-commandWillStart",
     "acallviewports": "acAllViewports",
     "acdatarow": "acDataRow",
+    "acextendnone": "acExtendNone",
     "acheaderrow": "acHeaderRow",
     "actitlerow": "acTitleRow",
     "achatchpatterntypepredefined": "acHatchPatternTypePreDefined",
@@ -137,24 +141,31 @@ _SPECIAL_CASE_MAP = {
 # linetypes→Linetypes、viewports→Viewports 保持 CAD 原生写法）。键为小写
 # 方法名（不含前缀），值含前缀的规范形式。
 _VLA_GET_PROP_MAP = {
+    "activedimstyle": "vla-get-ActiveDimStyle",
     "activedocument": "vla-get-ActiveDocument",
+    "activelayer": "vla-get-ActiveLayer",
     "bigfontfile": "vla-get-BigFontFile",
     "colorindex": "vla-get-ColorIndex",
+    "customscale": "vla-get-CustomScale",
     "dimstyles": "vla-get-DimStyles",
     "effectivename": "vla-get-EffectiveName",
     "elementname": "vla-get-ElementName",
     "endpoint": "vla-get-EndPoint",
     "entitycolor": "vla-get-EntityColor",
     "fontfile": "vla-get-FontFile",
+    "graphicswinlayoutbackgrndcolor": "vla-get-GraphicsWinLayoutBackgrndColor",
+    "helpstring": "vla-get-HelpString",
     "insertionpoint": "vla-get-InsertionPoint",
     "isxref": "vla-get-IsXRef",
     "layeron": "vla-get-LayerOn",
     "linetypes": "vla-get-Linetypes",
     "menubar": "vla-get-MenuBar",
     "menugroups": "vla-get-MenuGroups",
+    "modelcrosshaircolor": "vla-get-ModelCrosshairColor",
     "modelspace": "vla-get-ModelSpace",
     "objectname": "vla-get-ObjectName",
     "paperspace": "vla-get-PaperSpace",
+    "patternscale": "vla-get-PatternScale",
     "propertyname": "vla-get-PropertyName",
     "readonly": "vla-get-ReadOnly",
     "startpoint": "vla-get-StartPoint",
@@ -165,6 +176,7 @@ _VLA_GET_PROP_MAP = {
     "textstring": "vla-get-TextString",
     "textstyles": "vla-get-TextStyles",
     "truecolor": "vla-get-TrueColor",
+    "twistangle": "vla-get-TwistAngle",
     "viewports": "vla-get-Viewports",
     "xscalefactor": "vla-get-XScaleFactor",
     "yscalefactor": "vla-get-YScaleFactor",
@@ -278,12 +290,13 @@ def to_const(node):
         inner = to_const(node.expr)
         if inner is None:
             return None
-        # quoted lambda 数据（`'(lambda ...)` 或 quoted 内 `(function (lambda
-        # ...))`）：CAD 展开为 `(FUNCTION (LAMBDA ...))`（setup 实测 fg
-        # FUNCTION+LAMBDA），普通 quoted 数据为 `(QUOTE ...)`（i18n `'file`）。
-        if isinstance(node.expr, LambdaNode):
-            return ('LIST', (('SYMBOL', 'function'), inner))
-        return ('LIST', (('SYMBOL', 'QUOTE'), inner))
+        # 引用包装符号：`(quote X)` → QUOTE，`(function X)`/`#'X` → FUNCTION
+        # （均含引用上下文内嵌套的写法）。CAD 分别注册对应符号叶子
+        # （text/get-matrix `'(lambda ...)` 内层 `'(lambda ...)` → QUOTE；
+        # setup.lsp kernel golden `'(... (function (lambda ...)) ...)` →
+        # FUNCTION，实测）。kwote（运行时函数引用）在此前已返回 None。
+        _wrap = node.wrap or ('function' if node.kwote else 'QUOTE')
+        return ('LIST', (('SYMBOL', _wrap), inner))
     if isinstance(node, IfNode):
         # 引用数据里的 `(if ...)`：`if` 是数据符号（CAD 收集 IF 作常量结构，
         # save-mt error-handler `'(if (eq 'file (type fp)) (close fp))` 实测
@@ -1676,8 +1689,16 @@ class CadSymbolCollector:
             all_args = f.args + f.optional + ([f.rest] if f.rest else [])
             arg_names = set(all_args)
             refs = _SeenList()
-            for expr in strip_docstring(f.body):
-                self._collect_byteorder(expr, refs, arg_names, cur_locals=set(f.locals))
+            _body_forms = strip_docstring(f.body)
+            for _i, expr in enumerate(_body_forms):
+                # 末 body form 是函数返回值（尾上下文）：值位置 T/值符号按尾
+                # 上下文收集（activelayer `(if ... (progn ... t) nil)` 返回
+                # `t`，CAD golden 把 T 注册在函数体符号最前；非尾时该 T 被
+                # progn 末 T 省略规则跳过，反被 codegen 资源构建补到末尾错槽）。
+                self._collect_byteorder(
+                    expr, refs, arg_names, cur_locals=set(f.locals),
+                    _is_tail=(_i == len(_body_forms) - 1),
+                )
             seen_forced = set()
             deduped = []
             for name, force in refs:
@@ -2307,9 +2328,9 @@ class CadSymbolCollector:
             else:
                 for a in node.args:
                     self._collect_byteorder(a, out, arg_names, in_quote)
-            if node.name in ('and', 'or'):
-                # CAD 短路 and/or：编译为 JMP16 指令，不注册符号槽
-                # （i18n-cad 实测无 AND/OR 符号）。
+            if node.name.lower() in ('and', 'or'):
+                # CAD 短路 and/or：编译为 COND_AND/COND_OR 指令，不注册符号槽
+                # （i18n-cad 实测无 AND/OR 符号；符号名大小写不敏感，AND/OR 同）。
                 pass
             elif node.name in self.func_names:
                 # 同函数内对同一函数符号的多次引用（quoted `'bar` + 调用
@@ -2488,6 +2509,8 @@ class CadSymbolCollector:
                 # @LISP STRCASE vla-get-Name collect-next G collect-init GROUPS`，
                 # 即 kept 正序 = list_expr → collect-init → var → collect-next →
                 # body → collect-release）。collect-* 为跨函数共享单槽（小写）。
+                if node.list_expr:
+                    self._collect_byteorder(node.list_expr, out, arg_names, in_quote)
                 out.append(("collect-init", False))
                 if node.var is not None:
                     _v = normalize_vla_name(node.var.name)

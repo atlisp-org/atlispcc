@@ -26,7 +26,11 @@ from compiler.ast_nodes import (
 )
 from compiler.codegen import BytecodeBuffer, CodeGenerator
 from compiler.fas_writer import FasWriter
-from compiler.lowering import _flatten_top_level_forms, _hoist_conditional_defuns
+from compiler.lowering import (
+    _flatten_top_level_forms,
+    _hoist_conditional_defuns,
+    _lower_top_level_defun_q,
+)
 from compiler.module_code import _build_cad_module_code
 from compiler.opt import optimize
 from compiler.patch import _patch_usubr_idx
@@ -86,6 +90,9 @@ def cmd_compile(
     # CAD 原生内嵌 DEFUN（n1-n6 实测 `JUMP; DEFUN g; ...; END_DEFUN;
     # PUSH_G <g-obj>; SETQ_G g`），由 codegen `_emit_nested_defun` 发射。
     program.forms = _hoist_conditional_defuns(program.forms)
+    # 顶层 `defun-q`：CAD 编译为纯引用数据（非可调用 SUBR），降级为顶层
+    # `(setq <name> '((args...) <docstring> <type> <body...>))` 走 setq 引用常量。
+    program.forms = _lower_top_level_defun_q(program.forms)
     # 顶层 `(setq X (lambda ...))`：CAD 编译为可调用 SUBR。
     # - 纯顶层文件（无 defun）：走 CAD `-lambda-` 机制（seg0 紧凑 stub +
     #   DEFCODE 注册 + 模块代码 ``PUSH_G <sym>; PUSH_G <-lambda-槽>;

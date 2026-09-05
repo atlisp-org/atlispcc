@@ -89,6 +89,21 @@ def tokenize(source: str) -> List[Token]:
         if m:
             kind = m.lastgroup or ''
             val = m.group()
+            if kind in ('INTEGER', 'REAL'):
+                # 数字后紧跟符号字符（无分隔，如 `2000i`、层名 `123abc`）：
+                # AutoLISP/CAD 把它们整体读作一个符号（system/vers.lsp
+                # `(2000i . 15.1)` CAD golden 注册符号 `2000I`，非 `2000`+`I`）。
+                # 交替顺序先命中 INTEGER/REAL，此处前视下一个字符判断。
+                nxt = m.end()
+                if nxt < len(source) and source[nxt] not in ' \t\r\n()\'";':
+                    m2 = TOKEN_RE.match(source, pos)
+                    # 仅当剩余仍可能被符号规则消费时才重读为 SYMBOL；SYMBOL
+                    # 模式不能匹配空。
+                    sm = re.compile(r'[^\s()\'";]+').match(source, pos)
+                    if sm and sm.end() > pos:
+                        kind = 'SYMBOL'
+                        val = sm.group()
+                        m = sm
             if kind == 'STRING':
                 val = unescape_string(val)
             elif kind == 'SYMBOL' and '.' in val:

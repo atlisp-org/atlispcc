@@ -205,8 +205,20 @@ class CodeGenerator:
         # 函数体内嵌套 defun（`_emit_nested_defun`）深度：>0 时参数按真实
         # 符号槽绑定/读取（嵌套参数非顶部槽）。
         self._nested_defun_depth = 0
+        # 嵌套 lambda（`-lambda-`，`_emit_nested_lambda`）：>0 时体内参数读取
+        # 与嵌套 defun 同规则（真实符号槽，addsupportpath 实测：立即 lambda
+        # 读取与宿主函数同名的参数 `lst` 若走单函数 nsyms 顶部槽公式会错 1，
+        # CAD 用其真实注册槽）。
+        self._in_nested_lambda = False
         # 嵌套函数名兼作外层 `/ 局部`（影子）标志（string-utils s2la）
         self._nested_shadowing = False
+        # 控制流标签/槽命名计数器：所有 `_if_*/_while_*/_foreach_*/...` 名字以
+        # buf.pos() 为基，但嵌套控制流可能在相同 pos 处开始（外层 if 先编译
+        # cond，cond 首 form 是内层 if → 两者基址相同 → 标签名冲突，后 patch
+        # 覆盖先 patch，跳转错位。catchapply.lsp `(if (not (vl-catch-all-apply
+        # (if ...) ...)) ...)` CAD golden 实测 JMP32_IFNOT 8 vs ours 46）。追加
+        # 单调计数器保证全局唯一。
+        self._ctl_seq = 0
         self.current_func_name: str = ""
         self.current_func_args: List[str] = []
         self._tail_entry_label: str = ""
@@ -219,6 +231,7 @@ class CodeGenerator:
         self._func_nested_defuns: dict = {}
         self._defined_funcs: set = set(defined_funcs or [])
         self._func_ref_slots: Dict[str, int] = {}
+        self._ancestor_funcs: List[str] = []
         self._module_mode: bool = False
         # 模块代码（seg1 顶层表达式）编译上下文：与 `_module_mode` 不同，该标志
         # 在 `_emit_stmt`（cond 子句体等语句上下文）清 `_module_mode` 时**保持
@@ -334,6 +347,10 @@ class CodeGenerator:
         finally:
             self._in_stmt_ctx = saved
 
+    def _ctl(self, prefix: str, pos: int = 0) -> str:
+        self._ctl_seq += 1
+        return f"_{prefix}_{self._ctl_seq}_{pos}"
+
     def _is_function_symbol(self, name: str) -> bool:
         """符号是否为本文件定义的函数（模块代码函数别名 setq 用 PUSH_G 判定）。"""
         fo = getattr(self.symtab, "function_offsets", None) or {}
@@ -389,8 +406,8 @@ class CodeGenerator:
                     buf.emit(encode_op_noarg(PUSH_T))
             elif self.stub_format:
                 if name in self.current_func_args and name in self.local_slots:
-                    if self._nested_defun_depth:
-                        # 嵌套 defun 参数读取用真实符号槽（收集器分配）
+                    if self._nested_defun_depth or self._in_nested_lambda:
+                        # 嵌套 defun/lambda 参数读取用真实符号槽（收集器分配）
                         idx = self.symtab.get_or_add(name)
                     elif len(self._defined_funcs) <= 1:
                         # 单函数参数读取逆序（CAD simple3/t13 实测：`+ Z Y X`、
@@ -478,6 +495,11 @@ class CodeGenerator:
                 for item in reversed(node.items):
                     self._emit_expr(buf, item)
                     buf.emit(encode_op_noarg(CONS))
+                return
+            if not node.items:
+                # `()` 空列表 = nil：CAD 仅发射 `PUSH_NIL`（test/clear 实测
+                # `(setq *x* ())` → `01 06 04 00`，无 `BUILD_LIST 0`）。
+                buf.emit(encode_op_noarg(PUSH_NIL))
                 return
             buf.emit(encode_op_noarg(PUSH_NIL))
             for item in reversed(node.items):
@@ -586,14 +608,15 @@ class CodeGenerator:
         if name in UNARY_OP_TO_FAS and len(args) == 1:
             self._emit_unary(buf, name, args[0])
             return
-        if name in ("and", "or"):
+        if name.lower() in ("and", "or"):
+            lname = name.lower()
             if len(args) == 0:
-                if name == "and":
+                if lname == "and":
                     buf.emit(encode_op_noarg(PUSH_T))
                 else:
                     buf.emit(encode_op_noarg(PUSH_NIL))
                 return
-            self._emit_short_circuit(buf, name, args)
+            self._emit_short_circuit(buf, lname, args)
             return
         if name == "list":
             if self.stub_format:
@@ -650,7 +673,13 @@ class CodeGenerator:
                 rep = self.symtab.next_repeat_slot(name)
                 self._func_ref_slots[name] = rep if rep >= 0 else self.symtab.add_force(name)
             idx = self._func_ref_slots[name]
-        elif self.stub_format and name == self.current_func_name:
+        elif self.stub_format and (
+            name == self.current_func_name
+            or (
+                self._in_nested_lambda
+                and any(str(a).upper() == name.upper() for a in self._ancestor_funcs)
+            )
+        ):
             # 递归调用（含尾位置）：CAD 用重复符号槽。**嵌套 defun**（函数体内
             # `(defun inner ...)`）的递归槽已由收集器注册（嵌套块 body refs，
             # version @::pkg-deps-tree-rec 递归 `(deps-tree-rec d ...)`），
@@ -899,8 +928,8 @@ class CodeGenerator:
                     buf.emit(encode_op_u16(SETQ_G, idx))
 
     def _emit_if(self, buf: BytecodeBuffer, node: IfNode):
-        label_else = f"_if_else_{buf.pos()}"
-        label_end = f"_if_end_{buf.pos()}"
+        label_else = self._ctl("if_else", buf.pos())
+        label_end = self._ctl("if_end", buf.pos())
 
         # let body 尾 if 的 end 后 USUBR(2, LET)：仅**最外层** if 加（嵌套 if
         # 的 then/else 内 if 不加——nlp 多 let/嵌套过度）。保存并在进入时清
@@ -1046,8 +1075,8 @@ class CodeGenerator:
             buf.patch_label(label_end, buf.pos())
 
     def _emit_while(self, buf: BytecodeBuffer, node: WhileNode):
-        label_loop = f"_while_loop_{buf.pos()}"
-        label_end = f"_while_end_{buf.pos()}"
+        label_loop = self._ctl("while_loop", buf.pos())
+        label_end = self._ctl("while_end", buf.pos())
 
         if self._in_tail_context and self.stub_format:
             # 尾 while（函数最后语句）：CAD 在 loop 头前压入 PUSH_NIL 占位、
@@ -1111,8 +1140,8 @@ class CodeGenerator:
             self._emit_foreach_stub(buf, node)
             return
         var_name = node.var.name if isinstance(node.var, Symbol) else "item"
-        slot = self._get_local_slot(f"__foreach_list__{buf.pos()}")
-        item_slot = self._get_local_slot(f"__foreach_item__{buf.pos()}")
+        slot = self._get_local_slot(self._ctl("foreach_list", buf.pos()))
+        item_slot = self._get_local_slot(self._ctl("foreach_item", buf.pos()))
 
         # 列表求值是 foreach 的输入（值上下文）：`_value_ctx` 清 `_in_stmt_ctx`，
         # 否则列表为 if 时（dcl @::dcl-run-with-setup `(foreach line (if ...
@@ -1122,8 +1151,8 @@ class CodeGenerator:
             self._emit_expr(buf, node.list_expr or Symbol("nil"))
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
-        label_loop = f"_foreach_loop_{buf.pos()}"
-        label_end = f"_foreach_end_{buf.pos()}"
+        label_loop = self._ctl("foreach_loop", buf.pos())
+        label_end = self._ctl("foreach_end", buf.pos())
 
         buf.label(label_loop)
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
@@ -1180,8 +1209,8 @@ class CodeGenerator:
         buf.emit(encode_op_noarg(PUSH_NIL))
         buf.emit(encode_op_u16(INIT_ARGS, 3))
 
-        label_loop = f"_foreach_stub_loop_{buf.pos()}"
-        label_end = f"_foreach_stub_end_{buf.pos()}"
+        label_loop = self._ctl("foreach_stub_loop", buf.pos())
+        label_end = self._ctl("foreach_stub_end", buf.pos())
         if self._in_tail_context:
             # 尾 foreach（函数最后语句）：CAD 在 loop 头前压入 PUSH_NIL 占位，
             # 体开头 POP 弹掉（i18n-cad update-locale-all 实测 `01 5c 00 00
@@ -1281,8 +1310,8 @@ class CodeGenerator:
         buf.emit(encode_op_noarg(PUSH_NIL))
         buf.emit(encode_op_u16(INIT_ARGS, 3))
 
-        label_loop = f"_vlax_for_stub_loop_{buf.pos()}"
-        label_end = f"_vlax_for_stub_end_{buf.pos()}"
+        label_loop = self._ctl("vlax_for_stub_loop", buf.pos())
+        label_end = self._ctl("vlax_for_stub_end", buf.pos())
         if self._in_tail_context:
             # 尾 vlax-for（kwote lambda 体末，make-menu-cuix）：同 list foreach
             # 的 PUSH_NIL 占位 + 体首 POP 协议。
@@ -1355,20 +1384,26 @@ class CodeGenerator:
         # 短路时栈上保留子表达式值作为结果；全真/有真时 PUSH_T 规范化。
         # 不可用 JMP16_IF/JMP16_IFNOT——CAD stub 运行时该指令序列会出错
         # （i18n mark-locale 的 and/or 实测"函数错误"）。
+        # 参数是 or/and 的短路结果来源（值保留在栈上）：按**值位置尾上下文**
+        # 编译——参数内 setq 补 DUP 保留值（putclosed `(or ... (setq obj ...))`
+        # CAD 实测 `0b`），参数内 if 走值上下文（else-less 补 PUSH_NIL、then
+        # 不 POP），同 if/while 条件、let 体各 form 的既有协议。
         if op_name == "and":
-            label_end = f"_and_end_{buf.pos()}"
+            label_end = self._ctl("and_end", buf.pos())
             for arg in args:
-                self._emit_expr(buf, arg)
+                with self._value_ctx():
+                    self._emit_expr(buf, arg, _tail=True)
                 jmp_pos = buf.pos()
                 buf.emit(encode_op_s32(COND_AND, 0))
                 buf.add_patch(jmp_pos + 1, label_end, 4)
             buf.emit(encode_op_noarg(PUSH_T))
             buf.label(label_end)
         else:  # or
-            label_tail = f"_or_tail_{buf.pos()}"
-            label_end = f"_or_end_{buf.pos()}"
+            label_tail = self._ctl("or_tail", buf.pos())
+            label_end = self._ctl("or_end", buf.pos())
             for arg in args:
-                self._emit_expr(buf, arg)
+                with self._value_ctx():
+                    self._emit_expr(buf, arg, _tail=True)
                 jmp_pos = buf.pos()
                 buf.emit(encode_op_s32(COND_OR, 0))
                 buf.add_patch(jmp_pos + 1, label_tail, 4)
@@ -1384,7 +1419,7 @@ class CodeGenerator:
         if self.stub_format:
             self._emit_cond_stub(buf, node)
             return
-        label_end = f"_cond_end_{buf.pos()}"
+        label_end = self._ctl("cond_end", buf.pos())
         label_next = None
         for i, clause in enumerate(node.clauses):
             if label_next:
@@ -1407,7 +1442,7 @@ class CodeGenerator:
             if actions:
                 jmp_pos = buf.pos()
                 if i < len(node.clauses) - 1:
-                    label_next = f"_cond_next_{buf.pos()}_{i}"
+                    label_next = self._ctl(f"cond_next_{i}", buf.pos())
                 else:
                     label_next = label_end
                 buf.emit(encode_op_u16(JMP16_IFNOT, 0))
@@ -1423,7 +1458,7 @@ class CodeGenerator:
         buf.label(label_end)
 
     def _emit_cond_stub(self, buf: BytecodeBuffer, node: Cond):
-        base = f"_cond_{buf.pos()}"
+        base = self._ctl("cond", buf.pos())
         clauses = [c for c in node.clauses if c]
         n = len(clauses)
         if n == 0:
@@ -1522,8 +1557,8 @@ class CodeGenerator:
         slot = self._get_local_slot("__repeat__")
         self._emit_expr(buf, count_expr)
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
-        label_loop = f"_repeat_loop_{buf.pos()}"
-        label_end = f"_repeat_end_{buf.pos()}"
+        label_loop = self._ctl("repeat_loop", buf.pos())
+        label_end = self._ctl("repeat_end", buf.pos())
         buf.label(label_loop)
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
         jmp_pos = buf.pos()
@@ -1556,8 +1591,8 @@ class CodeGenerator:
             # (repeat 10 ...))` 实测）：同尾 while，loop 头前 PUSH_NIL 占位、
             # JMP32_IFNOT 后 POP 弹掉。
             buf.emit(encode_op_noarg(PUSH_NIL))
-        label_loop = f"_repeat_stub_loop_{buf.pos()}"
-        label_end = f"_repeat_stub_end_{buf.pos()}"
+        label_loop = self._ctl("repeat_stub_loop", buf.pos())
+        label_end = self._ctl("repeat_stub_end", buf.pos())
         buf.label(label_loop)
         buf.emit(encode_op_u16(GET_LOCAL_16, slot))
         buf.emit(encode_op_u8(PUSH_INT8, 0))
@@ -1637,6 +1672,19 @@ class CodeGenerator:
                 _nm = normalize_vla_name(name)
                 if name in skip_reg:
                     idx = self.symtab.name_to_idx.get(self.symtab._normalize_name(_nm), 0xFFFF)
+                elif (
+                    self.stub_format
+                    and not self._module_mode
+                    and name == self.current_func_name
+                ):
+                    # 引用自身（`'xdata:delete`）：CAD 用重复符号槽（同递归调用），
+                    # 不并入函数自身首槽。repeat 槽已由收集器注册（derive_symbol_names
+                    # 把 quoted self-ref 当普通符号二次 yield → 收集循环 add_force），
+                    # next_repeat_slot 命中；未注册时退回 get_or_add（不新增槽，保 nsyms）。
+                    # 不查 _module_code_ctx：该标志模块代码后置位不清除（seg0 亦为 True），
+                    # 用 _module_mode（seg0 为 False）+ current_func_name（模块代码为 ''）界定。
+                    rep = self.symtab.next_repeat_slot(_nm)
+                    idx = rep if rep >= 0 else self.symtab.get_or_add(_nm)
                 else:
                     idx = self.symtab.get_or_add(_nm)
                 buf.emit(encode_op_u16(PUSH_G, idx))
@@ -1817,7 +1865,9 @@ class CodeGenerator:
         saved_slots = self.local_slots
         saved_next = self.next_slot
         saved_loop = self._loop_depth
+        saved_nl = self._in_nested_lambda
         self.current_func_name = "-lambda-"
+        self._in_nested_lambda = True
         # lambda 参数注册为符号槽，读取用 PUSH_VALUE（CAD 实测：i18n 的
         # `opt%`、06_higher_order 的 `n` 均注册 fg 槽 + PUSH_VALUE 引用，
         # 由 `_patch_usubr_idx` 按 gvar_slot(arg)-1 重映射）。
@@ -1828,7 +1878,7 @@ class CodeGenerator:
         # line 229 一致）。
         self.next_slot = len(args)
         self._loop_depth = 0
-        self._emit_init_args(buf, args)
+        self._emit_init_args(buf, args, nested=True)
         if locals_:
             # `/ 局部变量` 与 defun 同协议：`_al-bind-alist` 绑定（CAD
             # atlisp_u C:@F kwote lambda 实测 `PUSH_G <const>; FUNC;
@@ -1861,6 +1911,7 @@ class CodeGenerator:
         self._loop_depth = saved_loop
         self.current_func_args = saved_args
         self.current_func_name = saved_name
+        self._in_nested_lambda = saved_nl
         buf.label(label_after)
         if not self._module_mode:
             # 模块代码（seg1 顶层）里的 kwote 内嵌 `-lambda-` 不进 seg0 函数目录：
@@ -1893,7 +1944,7 @@ class CodeGenerator:
         idx = self.symtab.idx_of(func.name) or self.symtab.get_or_add(normalize_vla_name(func.name))
         buf.emit(encode_defun(idx, 0))
 
-    def _emit_init_args(self, buf: BytecodeBuffer, args: List[str]):
+    def _emit_init_args(self, buf: BytecodeBuffer, args: List[str], nested: bool = False):
         if not args:
             return
         if self.stub_format:
@@ -1904,8 +1955,10 @@ class CodeGenerator:
             # 参数先发射，如 t13 `PUSH_G [4],[3],[2]` = C,B,A）。
             single = len(self._defined_funcs) <= 1
             for i, arg in enumerate(args):
-                if self._nested_defun_depth:
-                    # 嵌套 defun 参数槽 = 真实符号槽（收集器分配，非顶部槽公式）
+                if self._nested_defun_depth or nested:
+                    # 嵌套 defun / lambda 参数槽 = 真实符号槽（收集器分配，非顶部槽
+                    # 公式）。lambda 体读取（PUSH_VALUE）本就用 get_or_add 槽，绑定须
+                    # 与其一致（mode.lsp e1/e2 实测绑定槽须为真实符号槽）。
                     idx = self.symtab.get_or_add(arg)
                 else:
                     src_i = (argc - 1 - i) if single else i
@@ -2097,6 +2150,11 @@ class CodeGenerator:
         self.current_func_name = func.name
         all_args = func.args + func.optional + ([func.rest] if func.rest else [])
         self.current_func_args = all_args
+        # 外层函数名栈（generate_function 压入，恢复时弹出）：嵌套 lambda/defun
+        # 体内调用**宿主**函数是递归（CAD 用递归重复槽）。嵌套 lambda 的
+        # current_func_name 是 `-lambda-`，直接自我比较不会命中（insertpopmenuitems
+        # kwote 回调 `(std:insertpopmenuitems tmp subitems)` CAD golden 用重复槽）。
+        self._ancestor_funcs.append(func.name)
         self._tail_entry_label = f"_tail_entry_{func.name}_{id(func)}"
 
         buf = BytecodeBuffer()
@@ -2173,6 +2231,8 @@ class CodeGenerator:
         self._tail_entry_label = saved_label
         self.local_slots = saved_slots
         self.next_slot = saved_next
+        if self._ancestor_funcs:
+            self._ancestor_funcs.pop()
 
         self._func_nested_lambdas[func.name] = [n for n in self._nested_lambdas if saved_nl_pos <= n[0]]
         del self._nested_lambdas[saved_nl_pos:]

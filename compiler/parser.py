@@ -60,7 +60,7 @@ class Parser:
             return self.parse_list(quoted)
         elif kind == 'QUOTE':
             self.advance()
-            return QuotedExpr(expr=self.parse_form(quoted=True))
+            return QuotedExpr(expr=self.parse_form(quoted=True), wrap='quote')
         elif kind == 'FUNCTION':
             self.advance()
             # `(function X)`：CAD 编译为 kwote 机制（内部 DEFUN/符号引用），
@@ -80,7 +80,7 @@ class Parser:
             # 用 quoted=True（`'(function (lambda ...))` 体是数据列表）。
             _kw = not quoted
             expr = self.parse_form(quoted=(not _kw))
-            return QuotedExpr(expr=expr, kwote=_kw)
+            return QuotedExpr(expr=expr, kwote=_kw, wrap='function')
         elif kind == 'SYMBOL':
             self.advance()
             return Symbol(name=val)
@@ -195,7 +195,8 @@ class Parser:
                 # ...)`）是数据（FUNCTION 符号 + lambda 列表），非 kwote 调用。
                 # kwote 仅当处于函数调用上下文（`(function X)` 作为表达式求值）
                 # 时成立，否则 to_const 失败导致 quoted 数据退化为 BUILD_LIST。
-                return QuotedExpr(expr=expr, kwote=(name == 'function' and not quoted))
+                return QuotedExpr(expr=expr, kwote=(name == 'function' and not quoted),
+                                  wrap='function' if name == 'function' else 'quote')
             else:
                 items, dotted = self._parse_items_until_rparen(quoted)
                 if dotted is not None:
