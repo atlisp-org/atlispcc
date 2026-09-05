@@ -2407,6 +2407,13 @@ class CadSymbolCollector:
             # 与普通函数参数 `reversed(all_args)` 一致——version @::pkg-deps-tree-rec
             # `(name depth)` CAD 实测 `DEPTH NAME`）。
             for _a in _inner_all:
+                # 嵌套 defun 参数**遮蔽外层参数**（同名，from-markdown `(defun
+                # text:from-markdown (str / ...) (defun handle-strong (str / ...)
+                # ...))`、pickset:sort 嵌套 `equal-compare` 参数 fuzz == 外层
+                # fuzz）：该符号槽由外层 args 循环注册（外层参数组末尾），嵌套
+                # 块不重复注册——否则提前到嵌套块（体符号组内），CAD 槽错位。
+                if _a in arg_names:
+                    continue
                 # 共享参数且其 args 声明逆序最后拥有者 == **当前外层函数**
                 #（string-utils s2la `(str separator)` = 外层参数，`separator`
                 # last=6 == 外层 reversed 6）：由外层 args 循环注册（在外层
