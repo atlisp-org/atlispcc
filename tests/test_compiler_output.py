@@ -243,13 +243,20 @@ def test_multi_setq():
 
 @pytest.mark.parametrize('form', ['(exit)', '(quit)'])
 def test_exit_quit_emits_exit_opcode(form):
-    """(exit)/(quit) compile to PUSH_T + EXIT_IF_NOT_ZERO (0x3e), not a USUBR."""
+    """(exit)/(quit) compile to USUBR (0x35) like CAD, not PUSH_T+EXIT_IF_NOT_ZERO.
+
+    CAD golden（ui/button-select.fas `35 00 17 USUBR 0, EXIT`）把 (exit)/(quit)
+    编译成普通 0 参 SUBR 调用（EXIT/QUIT 是普通符号槽）；旧特判发
+    `PUSH_T; EXIT_IF_NOT_ZERO (0x3e)` 比 CAD 短 3~6 字节，导致 dcl/new、ui/*
+    等含 (exit) 的文件 seg0 长度与 golden 不一致（2026-09 修复）。
+    """
     data = _compile_to_fas(f'(defun foo () {form})')
     _, bc, _, _ = _parse_fas(data)
-    # PUSH_T (0x02) followed by EXIT_IF_NOT_ZERO (0x3e)
-    assert b'\x02\x3e' in bc, f'Expected PUSH_T; EXIT_IF_NOT_ZERO, got {bc!r}'
-    # 0x35 = USUBR opcode; exit/quit must not be encoded as one
-    assert b'\x35' not in bc, f'USUBR emitted for {form}: {bc!r}'
+    # (exit)/(quit) 现在编译成真正的 SUBR 调用（stub `35 00 <slot>` USUBR /
+    # 自包含 `51 <argc> <idx>` FUNC，参考 CAD golden），不再发旧的
+    # PUSH_T(0x02)+EXIT_IF_NOT_ZERO(0x3e)。
+    assert b'\x02\x3e' not in bc, f'PUSH_T;EXIT_IF_NOT_ZERO still emitted: {bc!r}'
+    assert 0x35 in bc or 0x51 in bc, f'no SUBR call opcode for {form}: {bc!r}'
 
 
 def test_value_position_if_no_then_pop():

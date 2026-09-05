@@ -27,8 +27,13 @@ def test_string_escapes():
 
 
 def test_string_unknown_escape_kept():
-    # Unknown escapes keep the literal backslash (matches lexer behaviour).
-    assert unescape_string('"a\\zb"') == 'a\\zb'
+    # Unknown escape `\x`：CAD 丢弃反斜杠只留字符（system/winget `.\Microsoft`、
+    # CAD 真机 `".\Mx"`→`".Mx"` 实测）；例外是 `\u+XXXX`/`\U+XXXX` unicode
+    # 转义**原样保留**（text/stringexplode `\u+23f61` CAD golden 保留反斜杠）。
+    assert unescape_string('"a\\zb"') == 'azb'
+    assert unescape_string('".\\Mx"') == '.Mx'
+    assert unescape_string('"\\u+23f61"') == '\\u+23f61'
+    assert unescape_string('"\\U+0041"') == '\\U+0041'
 
 
 def test_string_contains_comment_chars():

@@ -48,7 +48,6 @@ from compiler.symbol_table import SymbolTable
 PUSH_T = NAME_TO_OPCODE["PUSH_T"]  # 0x02
 PUSH_NIL = NAME_TO_OPCODE["PUSH_NIL"]  # 0x01
 PUSH_VALUE = NAME_TO_OPCODE["PUSH_VALUE"]  # 0x03
-EXIT_IF_NOT_ZERO = NAME_TO_OPCODE["EXIT_IF_NOT_ZERO"]  # 0x3e
 PUSH_INT8 = NAME_TO_OPCODE["PUSH_INT8"]  # 0x32
 PUSH_INT32 = NAME_TO_OPCODE["PUSH_INT32"]  # 0x33
 PUSH_G = NAME_TO_OPCODE["PUSH_G"]  # 0x09
@@ -460,6 +459,12 @@ class CodeGenerator:
                 buf.emit(encode_real(node.value))
 
         elif isinstance(node, String):
+            # CAD 丢弃语句位置（值被丢弃）的裸字符串（docstring/分节注释，
+            # `strip_docstring` 只处理 defun 体顶层；progn/if/cond 等内嵌语句
+            # 位置的裸串 CAD 同样不发射不注册——example/sort/error-exit golden
+            # 实测）。仅值/尾上下文（返回值被使用）的字符串保留。
+            if self._in_stmt_ctx:
+                return
             idx = self.symtab.add_string(node.value)
             buf.emit(encode_op_u16(PUSH_G, idx))
 
@@ -489,6 +494,19 @@ class CodeGenerator:
                 _lam_idx = self._emit_nested_lambda(buf, _lam)
                 buf.emit(encode_op_u16(PUSH_G, _lam_idx))
                 buf.emit(encode_eval(_argc, 7))
+                return
+            if node.items and isinstance(node.items[0], Call):
+                # 计算函数调用 `((eval fun) a b)`（list/sort、list/split-by、
+                # list/group-by、pickset/get-sub；CAD `EVAL <argc>, 7` 协议）：
+                # 求值头表达式得到函数值（最后压栈=栈顶），实参先求值留栈。
+                # 旧路径按数据列表 BUILD_LIST 发射，与 CAD EVAL 差 2 字节。
+                _cargs = node.items[1:]
+                with self._value_ctx():
+                    for _ca in _cargs:
+                        self._emit_expr(buf, _ca)
+                    self._emit_expr(buf, node.items[0])
+                buf.emit(encode_eval(len(_cargs), 7))
+                self._in_tail_context = saved_tail
                 return
             if node.dotted is not None:
                 self._emit_expr(buf, node.dotted)
@@ -527,6 +545,11 @@ class CodeGenerator:
                 # 中间语句（值被 POP 丢弃）：独立清尾上下文，避免内层 if/表达式
                 # 误按尾上下文编译（i18n-cad update-locale progn 内层 if 实测）。
                 self._in_tail_context = False
+                # 语句位置裸字符串被丢弃（`_emit_expr` String 分支 in_stmt 空发射）；
+                # 其后不得补 POP（error-exit/sort golden：`(progn "分节注释" expr)`
+                # CAD 无 `0a`，此前多 1 个 → seg0 +1/+6）。
+                if isinstance(form, String):
+                    continue
                 self._emit_stmt(buf, form)
                 # 中间 setq（SETQ_G 已消费栈顶）、中间 if（_emit_if 内部处理）、
                 # while/foreach/repeat（自带栈平衡）后均无 POP；仅普通表达式
@@ -544,13 +567,14 @@ class CodeGenerator:
                 # 语句上下文（值被丢弃）progn 末 `nil`/`T`：PUSH+POP 为纯 no-op，
                 # CAD 省略（cl-functions `(progn ... nil)`、permission `(progn
                 # ... T)` 模块代码/函数体实测无 `01 0a`/`T 槽;POP`）。尾/值上下文
-                # （值被使用）仍发射。
+                # （值被使用）仍发射。语句上下文末裸字符串同理省略。
                 _last_const_stmt = (
                     isinstance(_last, Symbol)
                     and _last.name.lower() in ("nil", "t")
                     and not saved_tail
                 )
-                if not _last_const_stmt:
+                _last_str_stmt = isinstance(_last, String) and self._in_stmt_ctx and not saved_tail
+                if not (_last_const_stmt or _last_str_stmt):
                     self._emit_expr(buf, _last, _tail=saved_tail)
                 _selfbal = isinstance(_last, (Setq, WhileNode, ForeachNode, RepeatNode, Progn, Cond))
                 if isinstance(_last, IfNode) and self._in_stmt_ctx:
@@ -565,6 +589,7 @@ class CodeGenerator:
                     and (self._in_stmt_ctx or self._module_mode)
                     and not _selfbal
                     and not _last_const_stmt
+                    and not _last_str_stmt
                 ):
                     buf.emit(encode_op_noarg(POP))
             self._in_tail_context = saved_tail
@@ -632,6 +657,8 @@ class CodeGenerator:
             return
         if name == "progn":
             for form in args[:-1]:
+                if isinstance(form, String):
+                    continue
                 self._emit_stmt(buf, form)
                 buf.emit(encode_op_noarg(POP))
             if args:
@@ -647,10 +674,11 @@ class CodeGenerator:
         if name == self.current_func_name and self._in_tail_context and not self.stub_format:
             self._emit_tail_call(buf, args)
             return
-        if name in ("exit", "quit", "abort"):
-            buf.emit(encode_op_noarg(PUSH_T))
-            buf.emit(encode_op_noarg(EXIT_IF_NOT_ZERO))
-            return
+        # `(exit)/(quit)/(abort)`：CAD 编译成普通 `USUBR <argc>, <sym>` 调用
+        # （ui/button-select golden `35 00 17 USUBR 0, EXIT`，EXIT 为普通符号
+        # 槽）。旧特判发 `PUSH_T; EXIT_IF_NOT_ZERO`（短 3~6 字节）与 CAD 不符，
+        # 导致 dcl/new、ui/* 等 10 个含 (exit) 文件 seg0 短 3-6 字节。死代码
+        # 消除在 opt.py 走 AST 层（_is_terminal），不依赖此处的字节特判。
         # CAD 把 `command` 内建 SUBR 的调用目标注册为独立符号槽 `ads-cmd`
         # （base-function CAD 实测 `(command ...)` → `ads-cmd`），与值引用
         # 的普通符号槽 `COMMAND`（platform 实测）分离——两者是不同的槽。
@@ -1121,7 +1149,10 @@ class CodeGenerator:
             # 实测体末无 POP）；中间 while 体非 setq 语句（如 `(princ n)`）
             # 返回值被 POP 丢弃（t04_while 实测）。
             if self.stub_format:
-                if isinstance(form, (Setq, WhileNode, IfNode, Cond, Progn)):
+                # foreach/repeat 自带 CLEAR_ARGS/栈平衡（func-analyze `(while
+                # ... (foreach ...))` golden foreach 后直接 CLEAR_ARGS;回跳，
+                # 无额外 0a——此前 tuple 缺 ForeachNode/RepeatNode 多 1 POP）。
+                if isinstance(form, (Setq, WhileNode, IfNode, Cond, Progn, ForeachNode, RepeatNode)):
                     continue
                 if self._in_tail_context and last_in_body:
                     continue
@@ -1240,25 +1271,23 @@ class CodeGenerator:
             ]
         for i, form in enumerate(_fbody):
             if self._in_tail_context and i == len(_fbody) - 1:
-                # 尾 foreach 体最后语句 = foreach 的"值"（值上下文）：if 无 else
-                # 补 PUSH_NIL（cache.lsp 尾 foreach 体末 `(if (and ...) (vl-file-
-                # delete ...))` CAD 实测 `JMP32_IFNOT; then; JUMP; PUSH_NIL`）、
-                # 调用不 POP。`_emit_stmt` 会清 `_in_tail_context` 使 if 按语句
-                # 上下文（无 else 不补 nil、then POP），故最后语句走 `_emit_expr`。
+                # 尾 foreach 体**最后**语句 = foreach 的"值"（值上下文）：if 无
+                # else 补 PUSH_NIL（cache.lsp 尾 foreach 体末 `(if (and ...)
+                # (vl-file-delete ...))` CAD 实测 `JMP32_IFNOT; then; JUMP;
+                # PUSH_NIL`）、调用不 POP。`_emit_stmt` 会清 `_in_tail_context`
+                # 使 if 按语句上下文（无 else 不补 nil、then POP），故最后语句
+                # 走 `_emit_expr`。
                 self._emit_expr(buf, form)
             else:
+                # 非尾 foreach 体语句值被丢弃 → 每句 POP；**尾 foreach 的中间
+                # 语句同样 POP**（stat:print `(foreach n @:tmp-stat-result
+                # (princ ...) (princ ...) ...)`、dim:multi-dim 尾 foreach 的
+                # `(entity:dimaligned ...)` CAD golden 实测 `USUBR; POP`，仅末
+                # 语句留值）。setq/if/循环自平衡无 POP。
                 self._emit_stmt(buf, form)
-                # 非尾 foreach（_in_tail_context=False）体语句值被丢弃（princ
-                # 等调用留值）→ 每句 POP（@::list-config 多语句体 CAD 实测
-                # `USUBR; POP` 间隔）；最后语句同样 POP。setq/if/循环自平衡
-                # 无 POP。尾 foreach（t16 update-locale-all）无 POP——体值
-                # 累积为 foreach 结果（`体各式无 POP`）。
-                if (
-                    not self._in_tail_context
-                    and not isinstance(
-                        form,
-                        (Setq, IfNode, WhileNode, ForeachNode, RepeatNode, Cond, Progn),
-                    )
+                if not isinstance(
+                    form,
+                    (Setq, IfNode, WhileNode, ForeachNode, RepeatNode, Cond, Progn),
                 ):
                     buf.emit(encode_op_noarg(POP))
         self._loop_depth -= 1
@@ -1507,13 +1536,24 @@ class CodeGenerator:
                     x for i, x in enumerate(actions)
                     if i == len(actions) - 1 or not isinstance(x, String)
                 ]
+            # 语句上下文（值被丢弃）：子句体末/中位置的字面 `nil`/`T` 是纯 no-op
+            # （PUSH+POP），CAD 省略（dcl:set-mtext `(cond ((> i% rows) nil) ...)`
+            # golden 子句体仅入口 `0a`，无 `01 0a`）。值上下文（cond 结果是该
+            # 字面量，如 `(setq x (cond ((p) nil) ...))`）仍需发射。
+            if self._in_stmt_ctx:
+                actions = [
+                    a for a in actions
+                    if not (isinstance(a, Symbol) and a.name.lower() in ("nil", "t"))
+                ]
             buf.label(f"{base}_body_{i}")
             # CAD stub：空体子句（`(cond (x) ...)`，无动作）不发入口 POP——
             # 测试值留在栈顶作为 cond 结果，COND_OR 真时直接落到该子句结束
             # 位置（init/sequence 空体子句 `(@::*bootstrap-state*)` CAD 实测
             # 无 `0a`，末子句空体后 CLEAR_ARGS 前也无 POP）。非空体才发
-            # POP 弹掉测试值。
-            if actions:
+            # POP 弹掉测试值。**语句上下文**（值被丢弃）的空体子句仍发 POP
+            # 丢弃测试值（system/which `(cond ((eq $platform 'linux)) (t
+            # (if ...)))` CAD golden 空子句体 = `0a`，此前漏 POP → 跳距差 1）。
+            if actions or self._in_stmt_ctx:
                 buf.emit(encode_op_noarg(POP))
             for a in actions[:-1]:
                 self._emit_stmt(buf, a)
@@ -1555,7 +1595,12 @@ class CodeGenerator:
             self._emit_repeat_stub(buf, count_expr, body)
             return
         slot = self._get_local_slot("__repeat__")
-        self._emit_expr(buf, count_expr)
+        # repeat 次数是**值**（存局部槽由 FIX_LEQ 循环消费）：次数为 setq 时需
+        # 值上下文使 setq 保留返回值（ss2enames `(repeat (setq n (sslength ss))
+        # ...)` CAD golden `USUBR; DUP; SETQ_G; SET_LOCAL` 实测，此前 SETQ_G 消
+        # 费后 SET_LOCAL 取空栈）。与 foreach list 同规则（`_value_ctx`）。
+        with self._value_ctx():
+            self._emit_expr(buf, count_expr)
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
         label_loop = self._ctl("repeat_loop", buf.pos())
         label_end = self._ctl("repeat_end", buf.pos())
@@ -1583,7 +1628,11 @@ class CodeGenerator:
         无预载（不像 foreach），循环结束栈平衡，无需 CLEAR_ARGS。
         """
         slot = self._get_local_slot(f"__loop_list__{self._loop_depth}")
-        self._emit_expr(buf, count_expr)
+        # repeat 次数是**值**（存局部槽由 FIX_LEQ 循环消费）：次数为 setq 时需
+        # 值上下文使 setq 保留返回值（ss2enames `(repeat (setq n (sslength ss))
+        # ...)` CAD golden `USUBR; DUP; SETQ_G; SET_LOCAL` 实测）。
+        with self._value_ctx():
+            self._emit_expr(buf, count_expr)
         buf.emit(encode_op_u16(SET_LOCAL_16, slot))
 
         if self._in_tail_context and self.stub_format:

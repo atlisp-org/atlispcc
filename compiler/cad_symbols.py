@@ -2321,6 +2321,16 @@ class CadSymbolCollector:
                         and isinstance(_a.expr, Symbol)
                     ):
                         _ap = _a.expr.name
+                        # 属性名与**本函数参数同名**（regexp-match/regexp-replace
+                        # `(defun ... (str pattern) ... (vlax-put-property reg
+                        # 'pattern pattern) ...)`：'pattern 既是 ActiveX 属性名
+                        # 又是实参 pattern）时**不在此收集**——参数由拥有者
+                        # args 循环注册在参数组（CAD golden PATTERN 在表末参数
+                        # 组，此前在此收集使槽位提前到函数体组、后续槽错位）。
+                        # 属性名经 `_ci_ref_key` 与同名参数/普通符号合并，由
+                        # 参数组那条注册（保留唯一槽）。
+                        if _ap in arg_names:
+                            continue
                         if not self._seen(out, _ap):
                             out.append((_ap, False))
                     else:
@@ -2377,9 +2387,19 @@ class CadSymbolCollector:
             # 外层 locals 区再注册 _al-bind-alist + const（SEEN/R 双槽）。
             _collect_args = set(_inner_all) | set(arg_names)
             _inner_refs = _SeenList()
-            _inner_body = node.body
-            while len(_inner_body) > 1 and isinstance(_inner_body[0], String):
-                _inner_body = _inner_body[1:]
+            # 嵌套 defun 体同样丢弃语句位置（非末 form）的裸字符串（docstring/
+            # 分节注释）：error-exit 的 `(defun *error* ...)` 体中间串、dbx
+            # `dbx-clean-att`、dcl-subdialog `sub-dialog` 的 `"2..6. ..."` 均被
+            # CAD 丢弃不注册（此前只剥**开头**连续 docstring，中间串泄漏进符号
+            # 表 → nsyms +N、后续槽错位）。规则同顶层 `strip_docstring`：仅
+            # 体末 form（返回值位置）的字符串保留。
+            if len(node.body) > 1:
+                _inner_body = [
+                    x for i, x in enumerate(node.body)
+                    if i == len(node.body) - 1 or not isinstance(x, String)
+                ]
+            else:
+                _inner_body = list(node.body)
             for _ie in _inner_body:
                 self._collect_byteorder(_ie, _inner_refs, _collect_args, in_quote,
                                         cur_locals=set(_inner_locals))
@@ -2484,11 +2504,19 @@ class CadSymbolCollector:
             for expr in _wbody:
                 self._collect_byteorder(expr, out, arg_names, in_quote)
         elif isinstance(node, Progn):
+            # 语句位置（值被丢弃）的裸字符串不注册：progn **中间 form**（非末
+            # form，无论值/语句上下文其值都被丢弃）CAD 一律丢弃（error-exit
+            # `(progn "这是一个未定义的函数。在这里异常退出." (mmma))` 首 form、
+            # sort 各 `(progn "前者为偶时" ...)` 实测）。末 form 若为字符串可能
+            # 是返回值/实参值（保留，下同 codegen 值上下文），不在此丢弃。
+            _n_forms = len(node.forms)
             for _pi, form in enumerate(node.forms):
-                _f_tail = _is_tail and (_pi == len(node.forms) - 1)
+                if _pi < _n_forms - 1 and isinstance(form, String):
+                    continue
+                _f_tail = _is_tail and (_pi == _n_forms - 1)
                 if (
                     not _f_tail
-                    and _pi == len(node.forms) - 1
+                    and _pi == _n_forms - 1
                     and isinstance(form, Symbol)
                     and form.name.lower() in ("t", "nil")
                 ):

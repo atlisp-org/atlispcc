@@ -11,7 +11,11 @@ TOKEN_SPEC = [
     ('FUNCTION', r"#'"),
     ('DOT', r'\.'),
     ('STRING', r'"[^"\\]*(?:\\.[^"\\]*)*"'),
-    ('REAL', r'-?\d+\.\d+(?:[eE][+-]?\d+)?'),
+    # 实数：小数点形式和/或科学计数法。AutoLISP 允许无小数点的指数实数
+    # （`1e-6`/`1E6`，CAD golden 注册 REAL `1.0e-06`，compiler/cad_symbols.py
+    # 对拍），此前只匹配带小数点的形式导致 `1e-6` 被读成 SYMBOL `1E-6`。
+    # 纯整数（`2000`、`1+`/`1-` 等）仍留给 INTEGER/特判，避免 INTEGER 死分支。
+    ('REAL', r'-?\d+(?:\.\d+(?:[eE][+-]?\d+)?|[eE][+-]?\d+)'),
     ('INTEGER', r'-?\d+'),
     ('SYMBOL', r'[^\s()\'";]+'),
 ]
@@ -33,7 +37,16 @@ def _unescape_match(m: "re.Match[str]") -> str:
     ch = m.group(1)
     if ch in _STRING_ESCAPES:
         return _STRING_ESCAPES[ch]
-    return '\\' + ch
+    # CAD 转义规则（真机实测）：
+    #  - 未知转义 `\x` 丢弃反斜杠只留字符：`".\Mx"` → `".Mx"`
+    #    （system/winget.lsp `.\Microsoft`，此前保留反斜杠与 golden 差 1 字符）。
+    #  - 例外：`\u+XXXX`/`\U+XXXX` 形式的 unicode 转义**原样保留**反斜杠
+    #    （text/stringexplode.lsp `\u+23f61` CAD golden 保留 `\`）。
+    if ch in ('u', 'U'):
+        nxt = m.string[m.end():m.end() + 2]
+        if nxt[:1] == '+' and nxt[1:2] and nxt[1] in '0123456789abcdefABCDEF':
+            return '\\' + ch
+    return ch
 
 
 def unescape_string(s: str) -> str:
