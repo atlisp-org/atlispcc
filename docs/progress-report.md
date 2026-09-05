@@ -1,8 +1,52 @@
 # atlispcc 项目进度报告
 
-> 生成日期：2026-08-29
+> 生成日期：2026-09-05
 > 分支：main
 > 本文档为滚动进度报告；历史周期记录保留于下方，最新周期见第 0 节。
+
+---
+
+## 0. 本周期（2026-09-05，v0.1.35）摘要
+
+| 指标 | 数值 |
+|------|------|
+| 测试用例 | **458 用例**（458 passed + 1 empty-skip 占位） |
+| lib byte-identity（`../lib/src` 862 文件） | **836 / 862（97.0%）**，DIFF 26（基线 786/76，+50 转正） |
+| kernel byte-identity | **67/67 逐字节一致**（seg0 + seg1 + nsyms，DIFF=0） |
+| @lisp_u byte-identity | **100% 逐字节一致** |
+| run_tests.sh | py_compile + pytest + disasm→asm 往返 38 + compile_src 16 全绿 |
+
+### 本周期成果
+
+1. **lib 全量 byte-identity 786 → 836**：逐 CAD golden 对拍修复 15+ 类根因，全部
+   锁入回归（pytest 458+1 绿，改动收敛在 `compiler/{codegen,cad_symbols,lexer}.py`）：
+   - **词法**：REAL 支持无小数点指数（`1e-6`→REAL `1.0e-06`）；未知转义 `\M`→`M`
+     丢弃反斜杠（system/winget），`\u+XXXX`/`\U+XXXX` 原样保留（stringexplode）
+   - **codegen**：`(exit)/(quit)/(abort)` 改普通 `USUBR`（非 `PUSH_T;EXIT_IF_NOT_ZERO`）；
+     裸字符串语句任意语句位置丢弃（progn/嵌套 defun，codegen+cad_symbols 两侧一致）；
+     计算函数调用 `((eval f) a b)`→`EVAL argc,7`（list:sort 族）+ 尾上下文泄漏修复；
+     尾 foreach 中间语句 POP（stat/print 族）；repeat 次数为 setq 值上下文 DUP
+     （ss2enames）；cond 空体子句语句上下文 POP（system:which）；cond 子句字面
+     nil/T 省略（dcl:set-mtext/ini:parse）；while 体 foreach/repeat 不补 POP
+     （func-analyze/ui:table）
+   - **cad_symbols**：嵌套 defun 参数遮蔽外层参数不重复注册（from-markdown/pickset:sort
+     族）；嵌套 defun 体裸串按 strip_docstring；ActiveX 属性名==本函数参数不提前收集
+     （regexp-match/set-backcolor）；**参数排除大小写不敏感**（`_argname_set` 原形/
+     小写/大写三份，change-textstyle `fontname` vs `FONTNAME` 族）
+2. **对拍基建编码对齐**：`scripts/batch_compare.py` ours 阶段加 `--encoding gbk`
+   ——CAD 按系统 ACP(GBK) 写盘，Linux 默认 ansi→utf-8 载荷在中文 CAD 加载会乱码且
+   解码级比较掩盖字节差；改后与 CAD golden 逐字节对齐（hannumber2number 消除伪差转正）。
+3. **版本/提交**：`9b0f992`(→820)、`67b1672`(→832)、`b0318ab`(gbk)、`e979fb8`(→836)
+   已推送 main。
+
+### 剩余 26 个 DIFF（语义等价，全部定位）
+- **reg=Y(7)**：模块代码 funcobj 槽（make-circle/dcl-subdialog/utils-index/dcl-cell）、
+  getbox 少 2 DUP、defun-q 空壳头（ini/get、m/linear-interpolation）
+- **reg=N(19)**：kwote/`-lambda-` 装配序（matrix/ui:dyndraw/sort-with-dxf/rfc1123/refgeom）、
+  `_al-bind-alist` 尾组位（m/sort-by-curve/string:sort-by-number/convexhull）、vla-* 属性
+  实参序（std/addmenu）、嵌套 C: 命令 `vl-ACAD-defun`（cmd-reactor）、getkword1 前缀串序、
+  asilisp T 槽、vlax 大小写（read-stream/inters）、defun-q `/ locals`（parse-ini/number2chinese）
+  等——每条为独立次序/栈规则，需 CAD probe + 全套回归收敛。
 
 ---
 

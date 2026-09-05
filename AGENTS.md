@@ -114,10 +114,32 @@ Makefile 快捷目标：`make test`（pytest）、`make check`（一键全量检
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，456 用例：454 passed + 2 skipped）：
+**测试文件在 `tests/` 目录下**（pytest 风格，458 用例：458 passed + 1 empty-skip 占位）：
 - `test_parser.py`（21）、`test_lexer.py`（11）、`test_symbol_table.py`（10）、`test_analyzer.py`（9）、`test_cli.py`（28）、`test_compile_decompile.py`（74）、`test_compiler_output.py`（75）、`test_optimizer.py`（32）、`test_linker.py`（13）、`test_assembler.py`（8）、`test_disasm.py`（9）、`test_resource_stream.py`（25）、`test_packages.py`（4）、`test_vlx_builder.py`（3）、`test_variadic_args.py`（17）、`test_zelx.py`（5）、`test_diagnostics.py`（20）、`test_atlisp_u_byte_identity.py`（70：atlisp_u 全量 byte-identity + roundtrip + **kernel 67 文件 × CAD golden 参数化**）。
 
 一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。
+
+### lib byte-identity（2026-09-05，v0.1.35）
+
+`../lib/src` 全量 862 文件对拍：**IDENTICAL 836 / DIFF 26**（基线 786/76，+50 转正）。
+**`make test-lib` 的 ours 阶段必须 `--encoding gbk`**（scripts/batch_compare.py 已加：
+CAD 按系统 ACP=GBK 写盘，Linux 默认 ansi→utf-8 载荷在中文 CAD 加载乱码，且解码级比较
+掩盖字节差）。emoji 等 GBK 无法编码字符仍走 `\U+XXXX` 转义。剩余 26 个 DIFF 均为
+**语义等价**的符号槽次序/栈平衡微规则，逐一 CAD 真机对拍取证收敛（见 git log）。
+
+本批固化的通用规则（改动相关逻辑时须保持）：
+- **词法**：REAL 支持无小数点指数 `1e-6`；未知转义 `\M`→`M` 丢弃反斜杠，`\u+XXXX`/`\U+XXXX` 原样保留
+- **`(exit)/(quit)/(abort)`** = 普通 `USUBR <argc>, <sym>` 调用（非 `PUSH_T;EXIT_IF_NOT_ZERO`）
+- **裸字符串语句**：任意语句位置（值被丢弃）整体丢弃——不发射、不注册（codegen + cad_symbols
+  两侧一致；progn 中间/末 form、嵌套 defun 体均含）
+- **cond**：语句上下文空体子句发 POP 丢弃测试值；子句体字面 `nil`/`T` 是 no-op 省略；
+  尾 foreach 中间语句照常 POP（仅末语句留尾值）；while 体 foreach/repeat 不再补 POP
+- **repeat 次数为 setq**：次数是值，需 `_value_ctx` 使内层 setq `DUP;SETQ_G` 保留
+- **计算函数调用 `((eval f) a b)`** → `EVAL <argc>, 7`（非 BUILD_LIST）；分支早 `return` 须恢复 `_in_tail_context`
+- **嵌套 defun**：形参遮蔽外层参数时不重复注册（槽归外层参数组末尾）；体语句裸串按 strip_docstring 丢弃
+- **ActiveX 属性名/实参==本函数参数**（vlax-* args[1] 与 vla-put-* 实参）：不提前收集
+- **参数排除大小写不敏感**：AutoLISP 符号大小写不敏感（`_argname_set` 含原形/小写/大写），
+  声明 `fontname` 引用 `FONTNAME` 仍须排除归参数组
 
 手动测试文件 `tests/test_*.lsp` 也在该目录；CAD 兼容矩阵源文件 `tests/compile_src/01_math.lsp`…`16_i18n.lsp` 是编译/往返测试的 fixture（16 份），源码与 CAD golden `.fas` 分开存放（`tests/compile_src/*.lsp` + `tests/cad/*_cad.fas`），由 `scripts/cad_verify.py` 编译加载验证。`tools/validate.py` 的 `SYMBOL_RE` 允许 `&`/`@`/`%`（`&optional`/`&rest`、`@::pkg`、`opt%` 等合法 AutoLISP 符号）。
 
