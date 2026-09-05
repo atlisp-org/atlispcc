@@ -138,8 +138,12 @@ def ours_compile_all(src_dir, ours_dir):
             skip += 1
             print(f"  [SKIP] {rel}")
             continue
+        # CAD 按系统 ACP（中文=GBK）写字符串；atlispcc 在 Linux 默认 ansi→utf-8，
+        # 产物与 CAD golden 字节不等（解码级相等掩盖、且 utf-8 载荷在中文 CAD
+        # 加载会乱码）。显式 --encoding gbk 使 ours 与 CAD golden 逐字节对齐
+        # （kernel 对拍同此）。emoji 等 GBK 无法编码字符走 \U+XXXX 转义。
         r = subprocess.run(
-            [sys.executable, "-m", "compiler.cli", "compile", src, out],
+            [sys.executable, "-m", "compiler.cli", "compile", "--encoding", "gbk", src, out],
             capture_output=True, text=True, cwd=ROOT)
         if r.returncode == 0:
             ok += 1
