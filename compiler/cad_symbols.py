@@ -240,6 +240,23 @@ def normalize_vla_name(name):
     return name
 
 
+def _argname_set(params) -> "set":
+    """参数名集合（含大小写变体）。
+
+    AutoLISP 符号大小写不敏感，源码可能在引用处与声明用不同大小写
+    （entity/change-textstyle 声明 `fontname` 但在 `(vla-put-FontFile ...
+    FONTNAME)`/`(strcat ... FONTNAME)` 用大写 FONTNAME）。收集端参数
+    排除若仅按原始大小写匹配会漏排除 → 参数被提前注册进函数体符号区
+    （CAD 参数槽在表末参数组）。返回原形+小写+大写三份。
+    """
+    s = set()
+    for a in params:
+        s.add(a)
+        s.add(a.lower())
+        s.add(a.upper())
+    return s
+
+
 def strip_docstring(body):
     """CAD 丢弃 defun 体中语句位置的裸字符串（docstring/分节注释）。
 
@@ -763,7 +780,7 @@ class CadSymbolCollector:
         for _jf, f in enumerate(defuns):
             self._cur_source_idx = _jf
             refs = _SeenList()
-            arg_names = set(f.args)
+            arg_names = _argname_set(f.args)
             body = strip_docstring(f.body)
             for _bi, expr in enumerate(body):
                 self._collect_byteorder(
@@ -1687,7 +1704,7 @@ class CadSymbolCollector:
         #    FIB 槽；fact 递归一次 1 个重复槽）。
         for f in reversed(defuns):
             all_args = f.args + f.optional + ([f.rest] if f.rest else [])
-            arg_names = set(all_args)
+            arg_names = _argname_set(all_args)
             refs = _SeenList()
             _body_forms = strip_docstring(f.body)
             for _i, expr in enumerate(_body_forms):
