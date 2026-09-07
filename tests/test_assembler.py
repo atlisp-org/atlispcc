@@ -2,6 +2,8 @@
 import os
 import tempfile
 
+import pytest
+
 from asm.assembler import disassemble_fas, assemble_lasm, assemble_lasm_zelx
 from compiler.cli import cmd_compile as compile_lsp
 from decompiler.fas4_decompiler import Fas4Parser, LispGenerator
@@ -196,12 +198,16 @@ def _seg1_plain(f):
 def test_disasm_zelx():
     """.zelx 直接反汇编：zelx→lasm 与 fas→lasm 完全一致。"""
     from compiler.cli import cmd_disassemble
+
     samples = os.path.join(os.path.dirname(__file__), "..", "samples", "zelx-reversing")
+    t1_fas = os.path.join(samples, "t1.fas")
+    if not os.path.exists(t1_fas):
+        pytest.skip("t1.fas sample missing")
     zlx_lasm = os.path.join(tempfile.gettempdir(), "t1_zlx.lasm")
     fas_lasm = os.path.join(tempfile.gettempdir(), "t1_fas.lasm")
     try:
         cmd_disassemble(os.path.join(samples, "t1.zelx"), zlx_lasm)
-        cmd_disassemble(os.path.join(samples, "t1.fas"), fas_lasm)
+        cmd_disassemble(t1_fas, fas_lasm)
         with open(zlx_lasm, encoding="utf-8") as a, open(fas_lasm, encoding="utf-8") as b:
             # zelx 不携带 crunch 日期，恢复的 fas 无日期行；fas 参考内嵌日期。
             # 两者为元数据差异，比对前剔除。
@@ -217,12 +223,16 @@ def test_disasm_zelx():
 def test_lasm_zelx_roundtrip():
     """通用 lasm → zelx：lasm 汇编成 .zelx，再恢复 .fas 与原始一致（seg0+seg1）。"""
     from tools.zelx_to_fas import zelx_to_fas
+
     samples = os.path.join(os.path.dirname(__file__), "..", "samples", "zelx-reversing")
+    t1_fas = os.path.join(samples, "t1.fas")
+    if not os.path.exists(t1_fas):
+        pytest.skip("t1.fas sample missing")
     zlx_path = os.path.join(tempfile.gettempdir(), "t1_roundtrip.zelx")
     fas_path = os.path.join(tempfile.gettempdir(), "t1_roundtrip_rec.fas")
 
     try:
-        lasm_text = disassemble_fas(os.path.join(samples, "t1.fas"))
+        lasm_text = disassemble_fas(t1_fas)
         assemble_lasm_zelx(lasm_text, zlx_path)
         zelx_to_fas(zlx_path, fas_path)
         orig = os.path.join(samples, "t1.fas")

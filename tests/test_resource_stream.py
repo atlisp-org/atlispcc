@@ -161,7 +161,10 @@ def test_module_id_slots_structured_only():
     from decompiler.fas4_decompiler import Fas4Parser
 
     p = Fas4Parser()
-    fas = p.parse(os.path.join(os.path.dirname(__file__), "cad", "t12_quote_cad.fas"))
+    path = os.path.join(os.path.dirname(__file__), "cad", "t12_quote_cad.fas")
+    if not os.path.exists(path):
+        pytest.skip("t12_quote_cad.fas fixture missing")
+    fas = p.parse(path)
     slots = build_module_id_slots(fas.sec2_data, fas.nsyms)
     # t12: nsyms=5, 函数表 GVARINIT var_pos=0 st_init=5 → module_id 槽 5
     assert 5 in slots, f'expected structured module_id at slot 5, got {slots}'

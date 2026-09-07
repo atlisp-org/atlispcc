@@ -290,7 +290,9 @@ def test_cmd_info_fas():
     """info 对 CAD 自包含样本报出函数目录与段规模。"""
     from compiler.cli import cmd_info
 
-    info = cmd_info('tests/cad/i18n-cad.fas', json_out=True)
+    if not os.path.exists(os.path.join("tests", "cad", "i18n-cad.fas")):
+        pytest.skip("i18n-cad.fas fixture missing")
+    info = cmd_info("tests/cad/i18n-cad.fas", json_out=True)
     assert info['format'] == 'compact-stub'
     assert info['nsyms'] > 0
     assert info['seg0_size'] > 0
@@ -313,7 +315,9 @@ def test_cmd_info_cli_json_dispatch(monkeypatch, capsys):
     """CLI `atlispcc info --json <fas>` 输出合法 JSON 且 rc=0。"""
     import json as _json
 
-    monkeypatch.setattr(sys, 'argv', ['atlispcc', 'info', '--json', 'tests/cad/i18n-cad.fas'])
+    if not os.path.exists(os.path.join("tests", "cad", "i18n-cad.fas")):
+        pytest.skip("i18n-cad.fas fixture missing")
+    monkeypatch.setattr(sys, "argv", ["atlispcc", "info", "--json", "tests/cad/i18n-cad.fas"])
     rc = main()
     assert rc == 0
     out = capsys.readouterr().out

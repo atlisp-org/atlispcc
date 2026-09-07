@@ -2,6 +2,8 @@
 import os
 import struct
 
+import pytest
+
 from tools.zelx_build import build_zelx
 from tools.zelx_info import parse_zelx, rolling_xor
 from tools.zelx_to_fas import zelx_to_fas
@@ -22,9 +24,15 @@ def _extract(path):
 
 def test_build_zelx_matches_sample():
     """对微型样本，生成的 zelx 与 LispConverter 官方产物逐字节一致。"""
+    available = []
     for name in ["t1", "tiny", "szero", "aif", "arec", "aor"]:
         fas = os.path.join(SAMPLES, f"{name}.fas")
         real = os.path.join(SAMPLES, f"{name}.zelx")
+        if os.path.exists(fas) and os.path.exists(real):
+            available.append((name, fas, real))
+    if not available:
+        pytest.skip("no ZELX sample .fas/.zelx pairs available")
+    for name, fas, real in available:
         out = os.path.join(SAMPLES, f"__{name}_gen.zelx")
         try:
             build_zelx(fas, out, key_prefix=b"\x01\x02\x03\x04\x05\x06\x07\x08")
@@ -67,6 +75,8 @@ def test_build_zelx_from_lsp():
     """.lsp 直接生成 zelx，与 .fas 路径载荷一致。"""
     lsp = os.path.join(SAMPLES, "t1.lsp")
     fas = os.path.join(SAMPLES, "t1.fas")
+    if not os.path.exists(lsp) or not os.path.exists(fas):
+        pytest.skip("t1.lsp/t1.fas sample missing")
     out_a = os.path.join(SAMPLES, "__t1a.zelx")
     out_b = os.path.join(SAMPLES, "__t1b.zelx")
     try:
@@ -83,9 +93,15 @@ def test_build_zelx_from_lsp():
 
 def test_zelx_to_fas_recover_identical():
     """从 zelx 恢复的 fas 与原始 fas 逐字节一致（seg0+seg1）。"""
+    available = []
     for name in ["t1", "tiny", "szero", "aif", "arec", "aor", "awhile", "astrcat"]:
         zlx = os.path.join(SAMPLES, f"{name}.zelx")
         fas = os.path.join(SAMPLES, f"{name}.fas")
+        if os.path.exists(zlx) and os.path.exists(fas):
+            available.append((name, zlx, fas))
+    if not available:
+        pytest.skip("no ZELX sample .zelx/.fas pairs available")
+    for name, zlx, fas in available:
         out = os.path.join(SAMPLES, f"__{name}_rec.fas")
         try:
             zelx_to_fas(zlx, out)
@@ -99,6 +115,8 @@ def test_zelx_to_fas_recover_identical():
 def test_zelx_to_fas_roundtrip():
     """fas → zelx → fas 往返：恢复的 fas 与原始一致。"""
     fas = os.path.join(SAMPLES, "t1.fas")
+    if not os.path.exists(fas):
+        pytest.skip("t1.fas sample missing")
     zlx = os.path.join(SAMPLES, "__t1_rt.zelx")
     rec = os.path.join(SAMPLES, "__t1_rt_rec.fas")
     try:

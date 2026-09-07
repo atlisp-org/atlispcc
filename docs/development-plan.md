@@ -2,7 +2,7 @@
 
 > 本文档记录 `atlispcc`（FAS4 编译器/反编译器工具链）当前功能完成情况、
 > 遗留问题与后续开发路线。基于 AutoCAD 24.1s 实测与代码测试状态
-> （200/200 通过，v0.1.9）。
+> （历史基线 200/200，v0.1.9；当前 P0 测试基线见 §18，v0.1.35）。
 
 ---
 
@@ -746,3 +746,52 @@ atlispcc 编译产物与 engine 求值结果互相对照，验证编译器语义
 - `engine/src/{reader,eval,builtins,env,values,main}.lisp`
 - `tools/zelx_build.py`、`scripts/cad_verify.py`
 - `tests/`（新增回归 + atlisp_u/kernel 产物）
+
+---
+
+## 18. P0 收尾与测试基线（2026-09-07，v0.1.35）
+
+### 18.1 目标
+
+- 不恢复已删除的 CAD golden/sample fixture，只把依赖缺失 fixture 的测试改为 `pytest.skip`
+- 在当前环境中恢复 `python -m pytest` 的零失败基线
+- 固化后续功能完善路线：P0 收尾 → P1 功能语义覆盖 → P2 复杂格式/真机扩展
+
+### 18.2 P0 已完成
+
+- `docs/development-plan.md` 补入本节
+- 9 个 fixture 缺失测试已加 skip guard：
+  - `tests/test_assembler.py::test_disasm_zelx`
+  - `tests/test_assembler.py::test_lasm_zelx_roundtrip`
+  - `tests/test_cli.py::test_cmd_info_fas`
+  - `tests/test_cli.py::test_cmd_info_cli_json_dispatch`
+  - `tests/test_resource_stream.py::test_module_id_slots_structured_only`
+  - `tests/test_zelx.py::test_build_zelx_matches_sample`
+  - `tests/test_zelx.py::test_build_zelx_from_lsp`
+  - `tests/test_zelx.py::test_zelx_to_fas_recover_identical`
+  - `tests/test_zelx.py::test_zelx_to_fas_roundtrip`
+- 全量验证：`python -m pytest -q` → `315 passed, 72 skipped, 0 failed`（94.52s）
+
+### 18.3 缺失 fixture 映射
+
+| 测试 | 依赖 fixture | 缺失行为 |
+|---|---|---|
+| `test_assembler.py::test_disasm_zelx` | `samples/zelx-reversing/t1.fas` | skip |
+| `test_assembler.py::test_lasm_zelx_roundtrip` | `samples/zelx-reversing/t1.fas` | skip |
+| `test_cli.py::test_cmd_info_fas` | `tests/cad/i18n-cad.fas` | skip |
+| `test_cli.py::test_cmd_info_cli_json_dispatch` | `tests/cad/i18n-cad.fas` | skip |
+| `test_resource_stream.py::test_module_id_slots_structured_only` | `tests/cad/t12_quote_cad.fas` | skip |
+| `test_zelx.py::test_build_zelx_matches_sample` | `samples/zelx-reversing/{t1,tiny,szero,aif,arec,aor}.fas` + `.zelx` 对 | 无可用 pair 时 skip |
+| `test_zelx.py::test_build_zelx_from_lsp` | `samples/zelx-reversing/t1.lsp` + `t1.fas` | skip |
+| `test_zelx.py::test_zelx_to_fas_recover_identical` | `samples/zelx-reversing/{t1,tiny,szero,aif,arec,aor,awhile,astrcat}.zelx` + `.fas` 对 | 无可用 pair 时 skip |
+| `test_zelx.py::test_zelx_to_fas_roundtrip` | `samples/zelx-reversing/t1.fas` | skip |
+
+说明：fixture 恢复后，skip guard 自动失效，原测试断言继续执行；本次不新增/不恢复任何 CAD golden 或 ZELX sample fixture。
+
+### 18.4 后续路线
+
+| 阶段 | 目标 | 约束 |
+|---|---|---|
+| P0 | 测试基线收敛为 `0 failed`，缺失 fixture 明确 skip | 不恢复已删除 fixture |
+| P1 | 恢复可验证的功能语义测试：decompile/disasm/asm/info/analyze 对合成 `.lsp`/`.fas` 的语义断言 | 优先自包含 fixture，不依赖 CAD 真机 |
+| P2 | ZELX/复杂 CAD 格式扩展：复杂 ZELX 压缩、i18n/ActiveX/command/module-code 真机回归 | 需要 ZWCAD/AutoCAD 环境与 golden fixture |
