@@ -1,5 +1,7 @@
 # atlispcc — Atlisp Compiler Collection（FAS4 编译器套件）
 
+**简体中文** | [English](README.en.md)
+
 `atlispcc`（**A**uto**L**ISP **C**ompiler **C**ollection 的缩写）是一个 CLI 编译器套件，用于将 AutoLISP (`.lsp`) 编译为 FAS4 字节码 (`.fas`)，反编译 FAS4 回 Lisp，链接多个 FAS 文件，以及验证 Lisp 语法。输出与 AutoCAD 编译器的紧凑 stub 格式兼容，可在 CAD 中加载执行。
 
 ## 特性
@@ -188,7 +190,7 @@ atlispcc info tests/cad/t01_math_cad.fas
 atlispcc info tests/cad/i18n-cad.fas --json
 ```
 
-FAS 输出：格式（`named-fas4`/compact）、`nsyms`、seg0/seg1 大小、资源段
+FAS 输出：格式（`compact` / `selfcontained`）、`nsyms`、seg0/seg1 大小、资源段
 解密大小与条目数、XOR 密钥长度、函数目录（catalog）、符号/字符串数、尾部标记。
 ZELX 输出：`.zelx` 四段（X/Y/Z/sub）大小、payload 大小与密钥长度、payload 熵。
 

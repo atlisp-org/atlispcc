@@ -3,6 +3,12 @@
 本文件记录 atlispcc 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/)，
 版本号遵循 [SemVer](https://semver.org/)。
 
+## [Unreleased]
+
+### Documentation
+
+- Added `README.en.md` (English) and a language switcher in both READMEs.
+
 ## [0.2.1] — 2026-11-01
 
 ### Performance

@@ -276,6 +276,7 @@ ANSI-C LCG `state' = 1103515245·state + 12345`，输出 `(state' & 0xFFFF) % n`
 ## 文档
 
 - `README.md` — 使用者文档（安装、CLI 用法、工作流、工具参考）
+- `README.en.md` — 英文版 README（两份顶部互链）
 - `docs/lasm.md` — LASM 汇编语言参考（disasm/asm）
 - `docs/compilation-process.md` — 编译过程说明（.lsp → .fas 各阶段详解）
 - `docs/development.md` — 架构详解、代码规范、调试指南
