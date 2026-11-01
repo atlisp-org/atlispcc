@@ -628,6 +628,45 @@ INIT_DONE、`0x35`/`0x51` FUNC_REF）不属于字节码 OPCODES 表，由
 
 ---
 
+## 附录：Autodesk 官方编译器模块中的完整操作码宽度矩阵
+
+> 来源：`vl.crx` 解码器 `sub_18005C2D0` 的处理器宽度，并用 `vllib.dll` 中
+> 32 个 Type 1212 编译器模块的 `.fsl` 反汇编交叉核对（47 个宽度 32/32 吻合）。
+>
+> **atlispcc 的解码器不按此表行走**：CAD 用户产物（`tests/cad/**/*.fas`）
+> 反汇编的 `UNK_` 计数为 0，说明 `asm/opcodes.py` 已覆盖实际出现的操作码；
+> 而紧凑检测（`is_compact_stub`）依赖 `UNK_` 前缀计数，给保留操作码命名会
+> 改变启发式。本表仅作格式资料与将来分析 `vllib` 模块的参考。
+
+未在 `asm/opcodes.py` 中定义、但 Autodesk 官方解码器有处理器的字节（**宽度 = 操作数字节数**）：
+
+| 操作码 | 名称 | 自包含宽度 | 说明 |
+|---|---|---|---|
+| `04` | RESERVED_04 | 2 | 未解读 |
+| `08` | SET_LOCAL_U8 | 1 | `locals[u8] = pop()`（`5d` 的字节形式） |
+| `0f` | RESERVED_0F | 2 | 无条件 `s16` 相对跳转（JUMP16） |
+| `10`–`13`、`17`、`1a`、`1b`、`1d`、`22`、`27`、`2b`–`31`、`36`、`38`、`41`、`42`、`44`、`52`–`54`、`58`、`59`、`65`、`66` | RESERVED_xx | 0 或 2 | 有处理器、语义未解读 |
+| `25` | TYPEP | 1 | 类型测试，操作数为 `lnode` 类型 id（`02` cons / `03` symbol / `04` string / `0b` closure / `0c` box …） |
+| `26` | EQ | 0 | 对象同一性（数字走值比较，其它指针比较） |
+| `2f` | RESERVED_2F | **3** | `2f <u24>`；紧凑布局为 1 字节 |
+| `40` | RESERVED_40 | 6 + body | `40 <u16 count> <u32 size> <size bytes>`（整条 `7 + size` 字节） |
+| `43` | GVARINIT | 4 | 资源段建表；atlispcc 在资源流解析中已处理 |
+| `45` | VLA_CALL | 5 | VLA/command 构造 |
+| `55` | STRING_POOL | 变长 | 资源段字符串池；atlispcc 已处理 |
+| `56` / `5b` | SYMBOL_POOL / _ALT | 变长 | 资源段符号块（`56` 保留大小写）；atlispcc 已处理 |
+| `5a` | VLA_PROP | 5 | `5a argc:u8 idx:s32` |
+| `5f` / `60` | SKIP5 / SKIP5_ALT | 5 | 承载/尾调用 |
+| `61` | BIND_JMP | 5 | `61 argc:u8 target:u32`，绑参后跳绝对偏移 |
+| `64` | CLEAR_LOCAL_U8 | 1 | `locals[u8] = 0`（`5e` 的字节形式） |
+
+九处在两种布局下宽度不同：`03 19 2f 35 40 51 5a 61 64`
+（`PUSH_VALUE` 2 / `CLEAR_ARGS` 2 / `USUBR` 4 / `FUNC` 5 / `VLA_PROP` 5 /
+`BIND_JMP` 5 / `CLEAR_LOCAL_U8` 1 / `RESERVED_40` 6 / `RESERVED_2F` 3 —— 均为
+自包含布局的操作数字节数；紧凑 stub 下 `PUSH_VALUE` 1、`CLEAR_ARGS` 3、
+`USUBR` 2、`FUNC` 2）。
+
+---
+
 ## 交叉引用
 
 | 文档 | 说明 |

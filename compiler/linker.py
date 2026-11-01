@@ -219,7 +219,7 @@ def _extract_functions(fas) -> List[Tuple[str, int]]:
 
 
 def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
-             encoding: str = 'ansi') -> str:
+             encoding: str = 'ansi', date=None, salt=None) -> str:
     if len(input_paths) < 2:
         raise ValueError("Need at least 2 input .fas files to link")
 
@@ -572,7 +572,7 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
     # 函数注册（实测 2 函数 → 6，而 count_resource_records 仅 4）。
     min_items = 2 * len(func_offsets) + 2
     sec2_items = max(count_resource_records(seg1), min_items)
-    writer = FasWriter(symtab)
+    writer = FasWriter(symtab, date=date, salt=salt)
     writer.write(output_path, seg0, seg1, sec2_items=sec2_items,
                  nsyms=nsyms, compact=True)
 

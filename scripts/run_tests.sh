@@ -113,9 +113,14 @@ PYEOF
 )
   echo "$RT_OUT"
   RT_OK=$(echo "$RT_OUT" | grep -oE 'OK=[0-9]+' | cut -d= -f2 | tail -1 || echo 0)
+  RT_SKIP=$(echo "$RT_OUT" | grep -oE 'SKIP=[0-9]+' | cut -d= -f2 | tail -1 || echo 0)
   RT_FAIL=$(echo "$RT_OUT" | grep -oE 'FAIL=[0-9]+' | cut -d= -f2 | tail -1 || echo 0)
   if [ "$RT_FAIL" -eq 0 ] && [ "$RT_OK" -gt 0 ]; then
     log "往返验证通过 ($RT_OK 文件字节一致)"
+    PASS=$((PASS+1))
+  elif [ "$RT_FAIL" -eq 0 ] && [ "$RT_OK" -eq 0 ] && [ "$RT_SKIP" -eq 0 ]; then
+    # golden .fas 不进版本库（由 CAD 真机重新生成），公开检出时没有语料。
+    warn "无 golden 语料（tests/cad/*_cad.fas 未生成为 CAD 产物），跳过往返验证"
     PASS=$((PASS+1))
   else
     err "往返验证失败 ($RT_FAIL 个不一致)"
@@ -128,21 +133,24 @@ fi
 # ── 4. compile_src 编译自检（结构断言替代 CAD golden byte-identity）─────────
 echo "==> [4/4] tests/compile_src 编译 + 反编译结构自检"
 ID_STATE=$("$PY" - <<'PYEOF'
-import glob, os, sys, tempfile
-from contextlib import redirect_stdout
+import glob, io, os, sys, tempfile
+from contextlib import redirect_stderr, redirect_stdout
 
 from compiler.cli import cmd_compile
 from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub
 
 ok, fail = [], []
+verify_warnings = 0
 for src in sorted(glob.glob('tests/compile_src/*.lsp')):
     name = os.path.basename(src)[:-4]
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, 'o.fas')
         try:
+            err = io.StringIO()
             with open(os.devnull, "w") as devnull:
-                with redirect_stdout(devnull):
+                with redirect_stdout(devnull), redirect_stderr(err):
                     cmd_compile(src, out)
+            verify_warnings += err.getvalue().count("verify: WARN")
             p = Fas4Parser().parse(out)
             if not p.bytecode or p.nsyms == 0:
                 fail.append((name, 'empty seg0/nsyms'))
@@ -160,7 +168,7 @@ for src in sorted(glob.glob('tests/compile_src/*.lsp')):
             fail.append((name, str(e)[:60]))
             continue
     ok.append(name)
-print(f"OK={len(ok)} FAIL={len(fail)}")
+print(f"OK={len(ok)} FAIL={len(fail)} WARN={verify_warnings}")
 print("ok: " + (", ".join(ok) if ok else "-"))
 print("fail: " + (", ".join(f"{f}: {e}" for f, e in fail) if fail else "-"))
 PYEOF

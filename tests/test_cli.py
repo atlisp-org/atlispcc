@@ -5,8 +5,8 @@ import tempfile
 import pytest
 
 sys.path.insert(0, '.')
-from compiler.cli import cmd_compile, cmd_decompile, cmd_validate, cmd_link, main
-from compiler.vlx_builder import build_vlx
+from compiler.cli import cmd_compile, cmd_decompile, cmd_validate, cmd_link, cmd_info, main
+from compiler.vlx_builder import VlxLoadSpec, VlxMember, build_vlx, pack_vlx
 from compiler.linker import link_fas
 from decompiler.fas4_decompiler import Fas4Parser
 
@@ -231,20 +231,58 @@ def test_cmd_link_roundtrip():
 
 
 def test_build_vlx_container():
+    from compiler.vlx_builder import parse_vlx
+
     f1 = cmd_compile('(defun main () 1)', _tmp('vlx_a.fas'))
     out = _tmp('app.vlx')
     try:
-        result = build_vlx([f1], out, exports=['main'], package_name='app')
+        result = build_vlx([f1], out, exports=['main'])
         assert os.path.exists(result)
         with open(result, 'rb') as fh:
             data = fh.read()
-        assert data[:12] == b'VXL_FIRM\x00\x00\x00\x00'
-        assert b'_VLX' in data
-        assert b'vl-doc-export' in data
+        assert data[:12].startswith(b'VRTLIB-1')
+        archive = parse_vlx(data)
+        assert archive.load().tag == 1240
+        assert archive.load().name == b'LOAD'
+        assert b'_VLX' in [member.name for member in archive.members()]
+        assert b'vl-doc-export' not in data  # 导出桩是编译后的 FAS，不含源码文本
     finally:
         for p in (f1, out):
             if os.path.exists(p):
                 os.unlink(p)
+
+
+def test_main_unpack_vlx_list(monkeypatch, capsys):
+    vlx = _tmp('unpack.vlx')
+    try:
+        with open(vlx, 'wb') as fh:
+            fh.write(pack_vlx([
+                VlxMember.load(VlxLoadSpec().render()),
+                VlxMember.fas4('app.fas', b'FASBYTES'),
+            ]))
+        monkeypatch.setattr(sys, 'argv', ['atlispcc', 'unpack-vlx', vlx, '--list'])
+        assert main() == 0
+        assert 'APP.FAS' in capsys.readouterr().out
+    finally:
+        if os.path.exists(vlx):
+            os.unlink(vlx)
+
+
+def test_info_reads_vlx_container():
+    vlx = _tmp('info.vlx')
+    try:
+        with open(vlx, 'wb') as fh:
+            fh.write(pack_vlx([
+                VlxMember.load(VlxLoadSpec().render()),
+                VlxMember.fas4('app.fas', b'FASBYTES'),
+            ]))
+        info = cmd_info(vlx)
+        assert info['format'] == 'vrtlib-1'
+        assert info['load']['tag'] == 1240
+        assert [member['name'] for member in info['members']] == ['APP.FAS']
+    finally:
+        if os.path.exists(vlx):
+            os.unlink(vlx)
 
 
 def test_main_compile_dispatch(monkeypatch, capsys):
@@ -513,3 +551,41 @@ def test_vlax_for_expanded_to_foreach():
     finally:
         if os.path.exists(out):
             os.unlink(out)
+
+
+def test_main_invalid_build_options(monkeypatch, capsys):
+    out = _tmp('badopt.fas')
+    for argv in (
+        ['atlispcc', 'compile', '(defun f () 1)', out, '--salt', 'hex:012'],
+        ['atlispcc', 'compile', '(defun f () 1)', out, '--date', '2026-11-01'],
+    ):
+        monkeypatch.setattr(sys, 'argv', argv)
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+        assert excinfo.value.code == 2
+    assert not os.path.exists(out)
+
+
+def test_main_unpack_vlx_stub_and_verify(monkeypatch, tmp_path, capsys):
+    vlx = tmp_path / 'app.vlx'
+    vlx.write_bytes(pack_vlx([
+        VlxMember.load(VlxLoadSpec().render()),
+        VlxMember.fas4('app.fas', b'FAS'),
+    ]))
+    stub = tmp_path / 'load.lsp'
+    monkeypatch.setattr(sys, 'argv', ['atlispcc', 'unpack-vlx', str(vlx), '--stub', str(stub)])
+    assert main() == 0
+    assert '(load "APP.FAS")' in stub.read_text(encoding='utf-8')
+
+
+def test_main_build_vlx_from_prv(monkeypatch, tmp_path, capsys):
+    src = tmp_path / 'core.lsp'
+    src.write_text('(defun core () 1)', encoding='utf-8')
+    prv = tmp_path / 'app.prv'
+    prv.write_text(
+        '(PRV-DEF (:target . "out.vlx") (:load-file-list (:lsp "core.lsp")))',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(sys, 'argv', ['atlispcc', 'build-vlx', '--prv', str(prv)])
+    assert main() == 0
+    assert (tmp_path / 'out.vlx').exists()

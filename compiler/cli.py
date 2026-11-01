@@ -44,6 +44,7 @@ from compiler.fas_writer import FasWriter
 from compiler.analyzer import analyze
 from compiler.linker import link_fas
 from compiler.vlx_builder import build_vlx
+from compiler.info_cmd import cmd_info
 from decompiler.fas4_decompiler import Fas4Parser, Disassembler, ControlFlowAnalyzer, LispGenerator, is_compact_stub, use_short_subr
 from tools.validate import validate_file
 
@@ -123,7 +124,7 @@ def cmd_disassemble(source: str, output: str = "") -> str:
     return output
 
 
-def cmd_assemble(source: str, output: str = "") -> str:
+def cmd_assemble(source: str, output: str = "", date=None, salt=None) -> str:
     """汇编 .lasm → .fas。"""
     from asm.assembler import assemble_lasm
 
@@ -131,7 +132,7 @@ def cmd_assemble(source: str, output: str = "") -> str:
         from core.fas_core import decode_source_text
         text = decode_source_text(f.read())
     output = output or source.replace(".lasm", ".fas")
-    assemble_lasm(text, output)
+    assemble_lasm(text, output, date=date, salt=salt)
     print(f"Assembled to {output}")
     return output
 
@@ -201,120 +202,29 @@ def cmd_analyze(
     return 0
 
 
-def cmd_info(source: str, json_out: bool = False) -> dict:
-    """FAS/ZELX 快速概览 — 文件头/段规模/函数目录/符号/字符串，不触发完整反编译。
-
-    实现复用 core/fas_core.parse_fas4（与 tools/fas-analyzer.py 同源），
-    .zelx 输入走 tools.zelx_info.parse_zelx 解密载荷。
-    """
-    from core.fas_core import parse_fas4
-    from core.fas_core import parse_resource_stream, build_mvar_tables, build_function_catalog
-
-    if source.lower().endswith(".zelx"):
-        from tools.zelx_info import parse_zelx
-
-        z = parse_zelx(source)
-        import collections
-        import math
-
-        entropy = sum(
-            (-v / len(z["payload"])) * math.log2(v / len(z["payload"]))
-            for v in collections.Counter(z["payload"]).values()
-        )
-        info = {
-            "file": source,
-            "format": "zelx",
-            "size": z["size"],
-            "zelx": {
-                "X": z["X"],
-                "Y": z["Y"],
-                "Z": z["Z"],
-                "sub": list(z["sub"]),
-                "payload_size": z["seg2len"],
-                "key_len": z["key_len"],
-                "payload_entropy": round(entropy, 3),
-            },
-        }
-        if not json_out:
-            print(f"file size      : {z['size']}")
-            print(f"ZAS header X   : {z['X']}  Y: {z['Y']}  Z(seg1 len): {z['Z']}")
-            print(f"seg2 sub-hdr   : [len={z['sub'][0]}][{z['sub'][1]}][{z['sub'][2]}]")
-            print(f"payload len    : {z['seg2len']}")
-            print(f"key len        : {z['key_len']}")
-            print(f"payload entropy: {entropy:.3f}")
-        return info
-
-    parsed = parse_fas4(source)
-    nsyms = parsed["nsyms"]
-    bytecode = parsed["bytecode"]
-    seg0_total = len(bytecode)
-    seg1_enc = parsed["res_data_encrypted"]
-    seg1_dec = parsed["res_data_decrypted"]
-    key = parsed["key"]
-    res_items = parsed["res_items"]
-    trailer = parsed["trailer"]
-
-    # 格式类型：紧凑 stub / 自包含。沿用 fas-analyzer 的启发式。
-    fmt = "compact-stub"
-    if seg1_dec:
-        resource_items, symbols, strings = parse_resource_stream(seg1_dec)
-        resource_gvars, function_gvars = build_mvar_tables(seg1_dec, nsyms)
-        catalog = build_function_catalog(resource_gvars, function_gvars)
-    else:
-        resource_items, symbols, strings = [], [], []
-        catalog = []
-
-    info = {
-        "file": source,
-        "size": os.path.getsize(source),
-        "format": fmt,
-        "nsyms": nsyms,
-        "seg0_size": seg0_total,
-        "seg1_size": len(seg1_enc),
-        "seg1_decrypted_size": len(seg1_dec),
-        "items": res_items,
-        "key_size": len(key) if key else 0,
-        "func_count": len(catalog),
-        "catalog": catalog,
-        "symbol_count": len(symbols),
-        "string_count": len(strings),
-        "trailer": trailer,
-    }
-    if not json_out:
-        print(f"=== FAS4 概览 ===")
-        print(f"文件      : {source}")
-        print(f"大小      : {os.path.getsize(source)} bytes")
-        print(f"格式      : {fmt}")
-        print(f"nsyms     : {nsyms}")
-        print(f"Seg0      : {seg0_total} bytes")
-        print(f"Seg1      : {len(seg1_enc)} bytes (encrypted) / {len(seg1_dec)} bytes (decrypted)")
-        print(f"items     : {res_items}")
-        print(f"XOR key   : {len(key) if key else 0} bytes")
-        if trailer:
-            print(f"尾部      : {trailer[:60]}")
-        if catalog:
-            print(f"\n函数目录  : {len(catalog)} 条目")
-            for name, off in catalog[:15]:
-                print(f"  {name:30s} @ {off}")
-            if len(catalog) > 15:
-                print(f"  ... ({len(catalog) - 15} more)")
-        if symbol_count := info["symbol_count"]:
-            print(f"\n符号      : {symbol_count}")
-            for s in symbols[:20]:
-                print(f"  {s}")
-            if symbol_count > 20:
-                print(f"  ... ({symbol_count - 20} more)")
-        if strings:
-            print(f"\n字符串    : {len(strings)}")
-            for s in strings[:10]:
-                print(f"  {s!r}")
-            if len(strings) > 10:
-                print(f"  ... ({len(strings) - 10} more)")
-    return info
+def cmd_link(inputs: list, output: str, verbose: bool = False, encoding: str = "ansi",
+             date=None, salt=None) -> str:
+    return link_fas(inputs, output, verbose, encoding=encoding, date=date, salt=salt)
 
 
-def cmd_link(inputs: list, output: str, verbose: bool = False, encoding: str = "ansi") -> str:
-    return link_fas(inputs, output, verbose, encoding=encoding)
+def _validate_build_options(parser_obj, args) -> None:
+    """校验 ``--date`` / ``--salt``，非法值走 argparse 的干净报错（退出码 2）。"""
+    date = getattr(args, "date", "")
+    salt = getattr(args, "salt", "")
+    if not date and not salt:
+        return
+    from compiler.fas_writer import normalize_date, parse_salt_spec
+
+    if salt:
+        try:
+            parse_salt_spec(salt)
+        except ValueError as exc:
+            parser_obj.error(str(exc))
+    if date:
+        try:
+            normalize_date(date)
+        except ValueError as exc:
+            parser_obj.error(str(exc))
 
 
 def main():
@@ -354,6 +264,18 @@ def main():
         help="skip post-compile verification (checks for bytecode that could "
         "crash CAD with access violation 0xC0000005)",
     )
+    p_compile.add_argument(
+        "--date",
+        default="",
+        help="pin the FAS trailer build stamp (M/D/YY) for reproducible builds "
+        "(default: today)",
+    )
+    p_compile.add_argument(
+        "--salt",
+        default="",
+        help="container salt: 'deterministic' (fixed 01..08), 'seed:<n>', "
+        "'hex:<bytes>', or a plain integer seed; default: Autodesk-style random",
+    )
 
     # decompile
     p_decompile = sub.add_parser("decompile", aliases=["d"], help="Decompile .fas → .lsp")
@@ -362,8 +284,12 @@ def main():
 
     # info: quick overview without full decompile
     p_info = sub.add_parser("info", help="Quick overview of a .fas/.zelx file (header, segments, function catalog)")
-    p_info.add_argument("source", help="input .fas or .zelx file")
+    p_info.add_argument("source", help="input .fas / .zelx / .vlx file")
     p_info.add_argument("--json", action="store_true", help="print machine-readable JSON instead of text")
+    p_info.add_argument(
+        "--encoding", default="ansi",
+        help="encoding for VLX member names / LOAD spec (default: ansi=system codepage)",
+    )
 
     # analyze: call-graph / dependency analysis (.lsp or .fas)
     p_analyze = sub.add_parser("analyze", help="Call graph / dependency analysis of a .lsp or .fas file")
@@ -424,6 +350,13 @@ def main():
     p_asm.add_argument("source", help="input .lasm file")
     p_asm.add_argument("output", nargs="?", default="", help="output file (optional)")
     p_asm.add_argument("--zelx", action="store_true", help="assemble to ZWCAD .zelx")
+    p_asm.add_argument(
+        "--date", default="", help="pin the FAS build stamp (M/D/YY) for reproducible builds"
+    )
+    p_asm.add_argument(
+        "--salt", default="",
+        help="container salt: 'deterministic', 'seed:<n>', 'hex:<bytes>', or an integer seed",
+    )
 
     # link
     p_link = sub.add_parser("link", help="Link multiple .fas files into one")
@@ -435,20 +368,69 @@ def main():
         default="ansi",
         help="string/symbol encoding for linked FAS output (default: ansi=system codepage)",
     )
+    p_link.add_argument(
+        "--date", default="", help="pin the FAS build stamp (M/D/YY) for reproducible builds"
+    )
+    p_link.add_argument(
+        "--salt", default="",
+        help="container salt: 'deterministic', 'seed:<n>', 'hex:<bytes>', or an integer seed",
+    )
 
     # build-vlx
-    p_vlx = sub.add_parser("build-vlx", help="Build VLX container from .fas files")
-    p_vlx.add_argument("inputs", nargs="+", help="input .fas files")
+    p_vlx = sub.add_parser("build-vlx", help="Build a VRTLIB-1 .vlx from .fas/.dcl members or a .prv")
+    p_vlx.add_argument("inputs", nargs="*", help="input .fas/.dcl/.txt members")
+    p_vlx.add_argument("--prv", default="", help="Visual LISP application file (.prv) instead of inputs")
     p_vlx.add_argument("-o", "--output", default="", help="output .vlx file")
-    p_vlx.add_argument("--export", nargs="*", default=[], help="exported function names for namespace isolation")
-    p_vlx.add_argument("--package", default="", help="VLX package/application name")
+    p_vlx.add_argument("--export", nargs="*", default=[], help="functions exported to the host namespace (vl-doc-export)")
+    p_vlx.add_argument(
+        "--encoding",
+        default="ansi",
+        help="encoding for the LOAD spec text and member names (default: ansi=system codepage)",
+    )
+    p_vlx.add_argument(
+        "--no-protected", dest="protected", action="store_false",
+        help="write (:protected) instead of (:protected . T) in the LOAD spec",
+    )
+    p_vlx.add_argument(
+        "--no-active-x", dest="active_x", action="store_false",
+        help="write (:active-x) instead of (:active-x . T) in the LOAD spec",
+    )
+    p_vlx.add_argument(
+        "--no-separate-namespace", dest="separate_namespace", action="store_false",
+        help="write (:separate-namespace) instead of the dotted T form",
+    )
+    p_vlx.add_argument(
+        "--workdir", default="", help="directory for compiled intermediates (default: temp dir)"
+    )
+    p_vlx.add_argument(
+        "--date", default="", help="pin the FAS build stamp (M/D/YY) for reproducible builds"
+    )
+    p_vlx.add_argument(
+        "--salt", default="",
+        help="container salt: 'deterministic', 'seed:<n>', 'hex:<bytes>', or an integer seed",
+    )
 
-    # project: compile every :FILES source listed in pkg.lsp
+    # unpack-vlx: extract VRTLIB-1 members
+    p_unvlx = sub.add_parser("unpack-vlx", help="Extract the members of a VRTLIB-1 .vlx")
+    p_unvlx.add_argument("source", help="input .vlx file")
+    p_unvlx.add_argument("-o", "--outdir", default="", help="output directory (default: next to the .vlx)")
+    p_unvlx.add_argument("--encoding", default="ansi", help="encoding used for member names (default: ansi)")
+    p_unvlx.add_argument("--list", action="store_true", help="list members without writing files")
+    p_unvlx.add_argument(
+        "--no-verify", dest="verify", action="store_false",
+        help="skip the structural check (LOAD record / alignment / duplicate names)",
+    )
+    p_unvlx.add_argument(
+        "--stub", default="",
+        help="write a Lisp loader ((load \"NAME\") ...) to this path",
+    )
+
+    # project: compile every :FILES source listed in pkg.lsp (or a VLISP .prj)
     p_project = sub.add_parser(
         "project",
-        help="Compile all Lisp sources listed in a package's pkg.lsp (CI friendly)",
+        help="Compile all sources of a pkg.lsp package or a Visual LISP .prj project",
     )
-    p_project.add_argument("source", help="pkg.lsp path or package directory")
+    p_project.add_argument("source", help="pkg.lsp / package directory / .prj project file")
     p_project.add_argument("-o", "--outdir", default="", help="output directory (default: next to each source)")
     p_project.add_argument(
         "-O",
@@ -473,6 +455,13 @@ def main():
     p_project.add_argument("--stop-on-error", action="store_true", help="stop at the first failure")
     p_project.add_argument("--json", action="store_true", help="print the report as JSON")
     p_project.add_argument("--report", default="", help="write the JSON report to this path")
+    p_project.add_argument(
+        "--date", default="", help="pin the FAS build stamp (M/D/YY) for reproducible builds"
+    )
+    p_project.add_argument(
+        "--salt", default="",
+        help="container salt: 'deterministic', 'seed:<n>', 'hex:<bytes>', or an integer seed",
+    )
 
     args = parser.parse_args()
 
@@ -481,6 +470,7 @@ def main():
         return 0
 
     if args.command in ("compile", "c"):
+        _validate_build_options(p_compile, args)
         cmd_compile(
             args.source,
             args.output,
@@ -489,6 +479,8 @@ def main():
             encoding=args.encoding,
             report_json=args.report,
             verify=args.verify,
+            date=args.date or None,
+            salt=args.salt or None,
         )
         return 0
 
@@ -497,7 +489,7 @@ def main():
         return 0
 
     if args.command == "info":
-        info = cmd_info(args.source, json_out=args.json)
+        info = cmd_info(args.source, json_out=args.json, encoding=args.encoding)
         if args.json:
             print(json.dumps(info, indent=2, ensure_ascii=False))
         return 0
@@ -525,7 +517,12 @@ def main():
             assemble_lasm_zelx(text, output)
             print(f"Assembled to {output}")
         else:
-            cmd_assemble(args.source, args.output)
+            cmd_assemble(
+                args.source,
+                args.output,
+                date=args.date or None,
+                salt=args.salt or None,
+            )
         return 0
 
     if args.command in ("validate", "v"):
@@ -555,21 +552,80 @@ def main():
         if not output:
             base = args.inputs[-1].rsplit(".", 1)[0]
             output = f"{base}_linked.fas"
-        cmd_link(args.inputs, output, args.verbose, args.encoding)
+        _validate_build_options(p_link, args)
+        cmd_link(args.inputs, output, args.verbose, args.encoding,
+                 date=args.date or None, salt=args.salt or None)
         return 0
 
     if args.command == "build-vlx":
+        _validate_build_options(p_vlx, args)
+        if args.prv:
+            from compiler.prv import run_prv
+
+            return run_prv(
+                args.prv,
+                output=args.output,
+                workdir=args.workdir,
+                encoding=args.encoding,
+                date=args.date or None,
+                salt=args.salt or None,
+            )
+        if not args.inputs:
+            p_vlx.error("either input files or --prv is required")
         output = args.output
         if not output:
             base = args.inputs[-1].rsplit(".", 1)[0]
             output = f"{base}.vlx"
-        result = build_vlx(args.inputs, output, exports=args.export, package_name=args.package)
+        result = build_vlx(
+            args.inputs,
+            output,
+            exports=args.export,
+            protected=args.protected,
+            active_x=args.active_x,
+            separate_namespace=args.separate_namespace,
+            encoding=args.encoding,
+            date=args.date or None,
+            salt=args.salt or None,
+        )
         print(f"Built {result}")
+        return 0
+
+    if args.command == "unpack-vlx":
+        from compiler.vlx_builder import make_load_stub, read_vlx, unpack_vlx, verify_vlx
+
+        archive = read_vlx(args.source)
+        if args.verify:
+            issues = verify_vlx(archive)
+            if issues:
+                for issue in issues:
+                    print(f"verify: {issue}", file=sys.stderr)
+                print("VLX verification FAILED", file=sys.stderr)
+                return 1
+        if args.stub:
+            stub = make_load_stub(archive, args.encoding)
+            with open(args.stub, "w", encoding="utf-8") as handle:
+                handle.write(stub)
+            print(f"Wrote load stub {args.stub}")
+        if args.list:
+            for index, member in enumerate(archive.members()):
+                print(
+                    f"{index}: {member.display_name(args.encoding)}  tag={member.tag}  "
+                    f"size={len(member.payload)}"
+                )
+            return 0
+        outdir = args.outdir or os.path.join(
+            os.path.dirname(os.path.abspath(args.source)),
+            os.path.splitext(os.path.basename(args.source))[0] + '_members',
+        )
+        written = unpack_vlx(args.source, outdir, encoding=args.encoding)
+        for path in written:
+            print(f"Extracted {path}")
         return 0
 
     if args.command == "project":
         from compiler.project_cmd import run_project
 
+        _validate_build_options(p_project, args)
         return run_project(
             args.source,
             outdir=args.outdir,
@@ -580,6 +636,8 @@ def main():
             stop_on_error=args.stop_on_error,
             json_out=args.json,
             report_path=args.report,
+            date=args.date or None,
+            salt=args.salt or None,
         )
 
     parser.print_help()

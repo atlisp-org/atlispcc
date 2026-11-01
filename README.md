@@ -8,11 +8,14 @@
 - **反编译** `.fas → .lsp`（支持自包含 / 紧凑 stub 两种布局）
 - **反汇编 / 汇编** `.fas ↔ .lasm`（互为逆操作）
 - **多文件链接** `.fas` 合并，自动重排符号/函数索引并修复交叉引用
-- **VLX 容器** 打包 FAS 文件，支持独立命名空间隔离
+- **VLX 容器** 按 Autodesk 官方 **VRTLIB-1** 布局打包 `.fas` / `.dcl` / 文本成员
+  （`LOAD` 记录 + 4 字节对齐记录表 + 16 字节文件尾），可解包、可 `info` 查看；
+  `--export` 编译 `_VLX` 导出桩
 - **语法验证** 括号平衡、defun 结构、符号合法性等检查
 - **CL 风格包系统** 编译期名混淆（`pkg|name`），不改变 FAS4 格式
-- **包级批量编译** `project` 子命令按 `pkg.lsp` 的 `:FILES` 编译全部 Lisp 源，
-  资源文件自动跳过，输出 JSON 报告（CI / Agent 可直接消费）
+- **包级批量编译** `project` 子命令按 `pkg.lsp` 的 `:FILES` 或 Visual LISP
+  `.prj` 的 `:OWN-LIST` 编译全部 Lisp 源，资源文件自动跳过，输出 JSON 报告
+  （CI / Agent 可直接消费）；`:MERGED` 工程自动链接为单个模块
 - **大型 @lisp 包支持** 顶层 `(progn ...)` 包裹、条件/嵌套 defun、
   多 kwote 回调（`(function (lambda ...))`）与 >256 符号大文件
   （5 字节 USUBR / 6 字节 FUNC 宽格式）均可编译，产物在 CAD 完整加载运行
@@ -47,13 +50,14 @@ atlispcc disasm <input.fas> [output.lasm]                        # 反汇编 FAS
  atlispcc asm <input.lasm> [output.fas]                           # 汇编 .lasm → FAS
  atlispcc validate <input.lsp>                                     # 验证
  atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]          # 链接 FAS
- atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]   # 构建 VLX 容器
+ atlispcc build-vlx <input...> -o output.vlx [--export ...]      # 构建 VRTLIB-1 VLX
+ atlispcc unpack-vlx <input.vlx> [-o DIR] [--list]               # 解包 VLX 成员
  atlispcc zelx <input.lsp|input.fas> [output.zelx]                # 构建 ZWCAD ZELX
  atlispcc unzelx <input.zelx> [output.fas]                        # ZELX 恢复为 FAS
- atlispcc info <input.fas|input.zelx> [--json]                    # 快速概览：头/段/函数目录
+ atlispcc info <input.fas|input.zelx|input.vlx> [--json]          # 快速概览：头/段/函数目录
  atlispcc analyze [-f text|dot|mermaid|json] [-o OUT] [--no-cc] <lsp|fas>  # 调用图/依赖分析
  atlispcc roundtrip <input.lsp> [-O {0,1,2,3}] [--keep]           # 往返冒烟测试
- atlispcc project <pkg.lsp|包目录> [-o OUTDIR] [-O 0..3] [--json]  # 按 :FILES 批量编译
+ atlispcc project <pkg.lsp|包目录|file.prj> [-o OUTDIR] [-O 0..3] [--json]  # 批量编译
 ```
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
@@ -100,6 +104,25 @@ atlispcc compile --analyze -O3 input.lsp output.fas
 - 尾递归函数检测
 - 每个函数的参数数、局部变量、调用关系
 - 开启优化时输出优化前后对比
+
+#### 可复现构建（--date / --salt）
+
+FAS4 尾部密钥 = **盐（6~10 字节）+ 15 字节 `;fas4 crunch` 标记**，盐由 Autodesk 官方
+ANSI-C LCG（`random&`）生成：字节域 `1..255`（永不出现 `0x00`）、相邻不重复、
+输出为抽取顺序的逆序。默认用当前时间播种，因此两次构建的 crunched 字节不同；
+需要逐字节一致的产物时：
+
+```sh
+atlispcc compile app.lsp app.fas --date 2/3/26 --salt deterministic
+atlispcc compile app.lsp app.fas --date 2/3/26 --salt seed:12345
+atlispcc compile app.lsp app.fas --salt hex:0102030405
+```
+
+- `--date M/D/YY` 钉住尾部 `$;A<M>/<D>/<YY>` 时间戳（默认当天）
+- `--salt deterministic` 使用固定盐 `01 02 … 08`
+- `--salt seed:<n>` 用该种子生成 Autodesk 官方形状的盐（可复现）
+- `--salt hex:<bytes>` 直接指定盐字节
+- 同一源码 + 同一 `--date`/`--salt` ⇒ **逐字节相同的 `.fas`**（`tests/test_fas_trailer.py` 锁定）
 
 #### 编译报告（--report）
 
@@ -250,34 +273,68 @@ atlispcc link lib.fas program.fas -o combined.fas
 # 在 CAD: (load "combined.fas") 后调用 lib/program 中的全部函数
 ```
 
-### build-vlx — 构建 VLX 容器
+### build-vlx — 构建 VRTLIB-1 VLX 容器
 
-将 FAS 文件打包为 VLX 容器，支持独立命名空间隔离：
+把 `.fas` / `.dcl` / 文本成员打包为 Autodesk 官方 **VRTLIB-1** 容器：
 
 ```sh
-atlispcc build-vlx app.fas lib.fas -o app.vlx --export main setup
+atlispcc build-vlx app.fas -o app.vlx
+atlispcc build-vlx app.fas res/dlg.dcl readme.txt -o app.vlx --export main setup
+atlispcc build-vlx app.fas -o app.vlx --no-separate-namespace --no-protected
+atlispcc build-vlx --prv app.prv              # 按 VLIDE 的 .prv 规范打包
+atlispcc unpack-vlx app.vlx -o dist/app       # 解包成员（默认结构校验）
+atlispcc unpack-vlx app.vlx --stub load.lsp   # 生成 (load "…") 加载桩
+atlispcc info app.vlx                         # 查看 LOAD 规格与成员表
 ```
 
-- 自动生成 `_VLX` 元数据条目（含 `vl-doc-export` 调用）
-- 加载 VLX 时 CAD 运行时创建隔离命名空间，仅导出的函数可被外部访问
-- VLX 格式基于逆向工程，标记为实验性
+容器布局（与 AutoCAD `PRV`/`KLB` 产物逐字节一致）：
 
-### project — 包级批量编译（CI / Agent）
+```
+"VRTLIB-1" + u32 文件尾偏移
+记录 #0  u32 total, u16 tag=1240, u8 len, "LOAD", LOAD 规格文本
+记录 #n  u32 total, u16 tag,    u8 len, NAME,  payload   （各自 4 字节对齐）
+u32 0 + "VRTLIB-1" + u32 0                               （16 字节文件尾）
+```
 
-读取 `pkg.lsp` 里的 `:FILES`，把其中的 Lisp 源文件（无扩展名或 `.lsp`）
-逐个编译，资源文件（`.pat` / `.dwg` / `.txt` …）自动跳过：
+- 记录 tag：`1330` = `.fas`，`1350` = `.dcl`，`1335` = 文本，`1340` = `.dvb`
+- 成员名 = `basename` 大写化（DBCS 双字节整体保留）；payload 与独立文件逐字节相同
+- LOAD 规格 = `((:protected . T) (:active-x . T) (:separate-namespace . T) (:load-file-list (:fas "app.fas") …))`
+- `--export` 额外编译 `_VLX` 导出桩（`(vl-doc-export 'main)`）并排进 LOAD 清单
+- 文本/`.dvb` 成员只作为随包资源携带，不进 LOAD 清单
+- `--prv <file>`：读 Visual LISP 应用规范，`:lsp` 现场编译、`:prj` 先编译工程、
+  `:require-file-list` 作为随包资源；`:target` 决定默认输出（`-o` 优先）
+- `--date` / `--salt` 同样适用于打包（`--prv` 时传给内部编译/链接）
+
+### project — 包级 / 工程级批量编译（CI / Agent）
+
+读取 `pkg.lsp` 里的 `:FILES`，或 Visual LISP 工程文件 `.prj` 的 `:OWN-LIST`，
+把其中的 Lisp 源文件逐个编译，资源文件（`.pat` / `.dwg` / `.txt` …）自动跳过：
 
 ```sh
 atlispcc project packages/at-landscape
 atlispcc project packages/at-landscape -o dist/at-landscape -O2
 atlispcc project packages/at-landscape --json --report build-report.json
 atlispcc project packages/at-landscape --dry-run     # 只列文件
+atlispcc project myapp.prj                           # Visual LISP 工程
 ```
 
-- 单个文件失败不会中断整批（`--stop-on-error` 可改为遇到错误即停）
+`.prj` 支持：
+
+```lisp
+(VLISP-PROJECT-LIST
+  :NAME "demo"
+  :OWN-LIST ("src/a.lsp" "src/b" "src")     ; 目录递归收集 *.lsp，无扩展名补 .lsp
+  :PROJECT-KEYS (:BUILD (:OPTIMIZE :LINK) :SAFE-MODE T :MERGED T :MSGLEVEL 1)
+  :FAS-DIRECTORY "./build")                  ; -o 优先
+```
+
+- `:MERGED T` 且产出 ≥2 个模块时，自动用链接器合成 `<NAME>.fas`
+- `:BUILD (:OPTIMIZE …)` 且未显式给 `-O` 时按 `-O1` 编译
+- `:REQUIRE` / `:LOAD` 的顺序依赖会追加到 `:OWN-LIST` 之后编译
+- 单文件失败不会中断整批（`--stop-on-error` 可改为遇到错误即停）
 - 退出码：全部成功 0；有编译错误/缺文件 1
 - `--json` 输出 `summary`（ok/error/missing/skipped）与逐文件 `status/bytes/elapsed_ms/log`
-- 适合放进 CI 或由 Agent 调用，不需要打开 CAD
+
 
 ### zelx — 构建 ZWCAD ZELX
 
@@ -356,12 +413,16 @@ make cad-test    # 或: python scripts/cad_verify.py
 | command 交互调用 | ✅ | `(t23-created-circle-p)` → T（画圆→断言→自清理） |
 | `*error*` 错误处理 | ✅ | `(t24-handler-test)` → "handler-ran"（t24_star_error 真机用例） |
 | **多文件链接** | ✅ | `atlispcc link` 输出与 CAD 直接编译逐字节一致，CAD 真机全部函数可调用（含跨文件交叉引用、多参数、重名冲突） |
+| **VLX（VRTLIB-1）** | ✅ | `atlispcc build-vlx` 产物在 CAD `(load "app.vlx")` 成功；`--export` 的函数在宿主命名空间可用（`(SUBR 42)`），未导出函数保持隔离 |
 
 > 单函数文件（`fun.lsp`）与 CAD 编译器输出解密后逐字节一致。
 > `CAD_T_SERIES_IDENTICAL` 锁入 **6 项** byte-identity（andor/and2/or2/andval + chinese + qsingle，
 > 原 t0X 源已迁移至 `tests/compile_src/`，其 golden 由结构断言覆盖）；i18n 拆分件 byte-identity 回归。
 > 链接输出与 `tests/cad/link/*_cad.fas` **3 份 CAD golden** 逐字节一致。
 > CAD 真机验证 **25/25**（`scripts/cad_verify.py`，t01-t24 + i18n）。
+> **VLX 容器真机验证**（2026-11，AutoCAD 24.1s）：`python scripts/cad_verify_vlx.py`
+> 生成探针 VLX → `(load "…/probe.vlx")` → 断言 `(type vlx-probe)`=SUBR、调用返回 42、
+> 未导出函数为 nil（独立命名空间隔离生效）。
 >
 > **@lisp kernel 全量对拍**（2026-08-27）：`../kernel/src/` 下全部 **67 个 `.lsp`**
 > 与 AutoCAD 24.1s 真机产物（`(vlisp-compile 'st ...)`）**逐字节一致**（seg0 + seg1 +
@@ -435,6 +496,7 @@ atlispcc validate output.lsp
 - `tools.lisp_converter_auto` — ZWCAD LispConverter.exe GUI 自动化（样本生产）
 - `tools.cad_probe` — MCP CAD 交互辅助（开发调试）
 - `tools.cad_dialog_killer` — 自动关闭 CAD 模态对话框（alert 等，避免阻塞 MCP 会话）；`python -m tools.cad_dialog_killer <pid> [--watch]`
+- `scripts/cad_verify.py` / `scripts/cad_verify_vlx.py` — CAD 真机验证（编译产物断言 / VRTLIB-1 VLX 加载与命名空间导出）
 - `tools.analyze_rosetta` — Rosetta 代码分析
 
 用法与输出说明见 `docs/development.md`。
@@ -475,6 +537,7 @@ make clean       # 清理构建产物与缓存
 - `docs/cad-stub-format.md` — AutoCAD 紧凑 stub 格式规范与兼容实现（核心）
 - `docs/fas-format.md` — FAS4 二进制文件格式详解
 - `docs/opcodes.md` — 操作码参考
+- `docs/vlx-format.md` — VLX（VRTLIB-1）容器格式、LOAD 规格与校验规则
 - `docs/lasm.md` — LASM 汇编语言参考（disasm/asm 文本格式）
 - `docs/compilation-process.md` — 编译过程说明（.lsp → .fas 各阶段详解）
 - `docs/development.md` — 开发者说明（架构、管线、测试、代码规范）

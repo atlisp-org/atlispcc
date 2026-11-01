@@ -68,6 +68,8 @@ def cmd_compile(
     encoding: str = "ansi",
     report_json: str = "",
     verify: bool = True,
+    date=None,
+    salt=None,
 ) -> str:
     if os.path.exists(source):
         from core.fas_core import decode_source_text
@@ -201,9 +203,12 @@ def cmd_compile(
                 f"a required param, e.g. (defun {_defun.name} (x &rest {_defun.rest}))",
                 file=sys.stderr,
             )
-    from compiler.cad_symbols import derive_symbol_names, is_const_entry
+    from compiler.cad_symbols import collect_symbols, is_const_entry
 
-    for sym in derive_symbol_names(program):
+    # 符号收集跑一遍即可：names / module_reg_count / module_reg_func_count
+    # 都来自同一次 collect_program（大文件三次全量收集是主要编译开销）。
+    _symbols = collect_symbols(program)
+    for sym in _symbols.names:
         if not defun_forms and top_lambda_binds and sym == "kwote":
             # 纯顶层含顶层 `(set/setq 'sym (lambda ...))`（CAD `-lambda-` 机制）：
             # 收集器对 kwote 标记误收 `kwote` 符号（CAD 无此槽，顶层 lambda
@@ -298,7 +303,7 @@ def cmd_compile(
         # 引用**函数体**符号（高槽位）会严重高估（atlisp_u 实测 3036 vs
         # 实际 342），导致模块代码函数注册 `PUSH_G b` 槽超出 gvar 表、
         # CAD 不执行模块代码。
-        top_level_count = max(0, _mrc(program) - len(defun_forms))
+        top_level_count = max(0, _mrc(program, _symbols) - len(defun_forms))
     else:
         # 纯顶层文件：无函数体符号污染，`max(顶层槽)+1` 与 golden 一致
         # （setqa/setcmp/p01 实测）。含顶层 `(set/setq 'sym (lambda ...))`
@@ -306,7 +311,7 @@ def cmd_compile(
         # 会被 `-lambda-` 第二区体符号膨胀，`-lambda-` 槽位偏移。CAD 的
         # `-lambda-` 槽 = 模块注册段符号数 + 3（fasext）、+2（vlx）。
         if top_lambda_binds:
-            top_level_count = max(0, _mrc(program))
+            top_level_count = max(0, _mrc(program, _symbols))
         elif _top_slots:
             top_level_count = max(_top_slots) + 1
         else:
@@ -783,7 +788,7 @@ def cmd_compile(
     resource = ResourceBuilder(symtab, encoding=encoding)
     # 模块注册函数数 = 模块尾块 defun 数（CAD 只把模块代码引用的尾块函数名
     # 注册进模块注册段；atlisp_u 48，其余 416 个库函数名经函数体符号区注册）。
-    _mr_func_count = _mrfc(program)
+    _mr_func_count = _mrfc(program, _symbols)
     # 顶层 kwote lambda（setup `(if @::*uris* (mapcar (function (lambda ...))
     # ...))` 的 `-lambda-#TL` DEFUN）：作为 func-obj 在 DEFCODE 区注册，占用
     # 模块 rg 空间一个额外槽。nsyms（len(entries)-module_reg_count+1）与 b 槽
@@ -1253,7 +1258,7 @@ def cmd_compile(
                 sys.exit(2)
         except ImportError:
             pass  # 模块缺失时不阻断（验证是增强项）
-    writer = FasWriter(symtab)
+    writer = FasWriter(symtab, date=date, salt=salt)
     writer.write(output, seg0, seg1, sec2_items=sec2_items, nsyms=fas_nsyms, compact=True)
     print(f"Compiled to {output}")
 

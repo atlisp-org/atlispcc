@@ -472,6 +472,9 @@ class CadSymbolCollector:
     def __init__(self):
         self.names = []
         self._name_set = set()
+        # `_in_name_set` 的大小写不敏感索引：普通符号（非字符串、非 vla-/vlax-）
+        # 的 upper() 形式。`_name_set` 仍按原样用于精确大小写判定。
+        self._upper_set = set()
         self._const_set = set()
         self.shared = set()
         self.func_names = set()
@@ -512,12 +515,21 @@ class CadSymbolCollector:
             if not force and name.lower() == 'nil':
                 return
             if not self._in_name_set(name):
-                self.names.append(name)
-                self._name_set.add(name)
+                self._register_name(name)
             return
         if force or not self._in_name_set(name):
-            self.names.append(name)
-            self._name_set.add(name)
+            self._register_name(name)
+
+    def _register_name(self, name) -> None:
+        """append + 同步 `_name_set`（精确）与 `_upper_set`（大小写不敏感）。"""
+        self.names.append(name)
+        self._name_set.add(name)
+        if (
+            isinstance(name, str)
+            and not name.startswith('"')
+            and not name.lower().startswith(("vla-", "vlax-"))
+        ):
+            self._upper_set.add(name.upper())
 
     def _in_name_set(self, name) -> bool:
         """_name_set 大小写不敏感检查（非 vla-/vlax- 符号）。CAD 符号槽全大写、
@@ -530,14 +542,7 @@ class CadSymbolCollector:
             and not name.startswith('"')
             and not name.lower().startswith(("vla-", "vlax-"))
         ):
-            nk = name.upper()
-            return any(
-                isinstance(s, str)
-                and not s.startswith('"')
-                and not s.lower().startswith(("vla-", "vlax-"))
-                and s.upper() == nk
-                for s in self._name_set
-            )
+            return name.upper() in self._upper_set
         return name in self._name_set
 
     @staticmethod
@@ -3070,29 +3075,39 @@ class CadSymbolCollector:
             pass
 
 
-def derive_symbol_names(program):
+def collect_symbols(program) -> CadSymbolCollector:
+    """跑一遍符号收集，返回收集器（供一次编译复用 names / 两个计数）。
+
+    `derive_symbol_names` / `module_reg_count` / `module_reg_func_count` 各自
+    跑一遍 `collect_program` 会让大文件编译做三次全量收集；调用方可用本函数
+    取一次结果后传 ``collector=`` 复用。
+    """
+    coll = CadSymbolCollector()
+    coll.collect_program(program)
+    return coll
+
+
+def derive_symbol_names(program, collector: "CadSymbolCollector | None" = None):
     """返回与 CAD 一致的符号槽顺序列表。
 
     字符串以 ``"value"`` 形式表示（含引号），符号为普通名字。
     """
-    coll = CadSymbolCollector()
-    coll.collect_program(program)
+    coll = collector if collector is not None else collect_symbols(program)
     return coll.names
 
 
-def module_reg_count(program) -> int:
+def module_reg_count(program, collector: "CadSymbolCollector | None" = None) -> int:
     """模块注册域符号数：函数名 + 顶层表达式符号。
 
     模块注册区宽 = n_funcs + top_level_count。由收集器 _register_module
     实际注册数推导，避免 `max(顶层符号槽)+1-n_funcs` 在顶层表达式引用
     函数体符号时的高估（atlisp_u 实际 844 = 502 函数 + 342 顶层符号）。
     """
-    coll = CadSymbolCollector()
-    coll.collect_program(program)
+    coll = collector if collector is not None else collect_symbols(program)
     return coll.module_reg_count
 
 
-def module_reg_func_count(program) -> int:
+def module_reg_func_count(program, collector: "CadSymbolCollector | None" = None) -> int:
     """模块注册域函数名数（模块尾块 defun 数）。
 
     CAD 只把模块代码引用的尾块函数名注册进模块注册段（atlisp_u = 48，
@@ -3100,6 +3115,5 @@ def module_reg_func_count(program) -> int:
     resource_builder 的 module_func_count，截断模块注册块的函数名；
     codegen/top_level_count 仍按全部 defun 数（len(defun_forms)）计算。
     """
-    coll = CadSymbolCollector()
-    coll.collect_program(program)
+    coll = collector if collector is not None else collect_symbols(program)
     return coll.module_reg_func_count

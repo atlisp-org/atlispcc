@@ -4,7 +4,7 @@
 
 **atlispcc** = **A**uto**LISP** **C**ompiler **C**ollection，FAS4 字节码编译器套件：`.lsp` ↔ `.fas`（兼容 AutoLISP 的 CAD 平台）。
 
-`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持十三个子命令：
+`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持十四个子命令：
 
 ```
 atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]    # 编译 Lisp → FAS
@@ -13,13 +13,15 @@ atlispcc disasm <input.fas> [output.lasm]                  # 反汇编 FAS → �
 atlispcc asm <input.lasm> [output.fas]                     # 汇编 .lasm → FAS
 atlispcc validate <input.lsp>                              # 语法验证
 atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]    # 多文件链接
-atlispcc build-vlx <input.fas>... -o output.vlx [--export ...]  # VLX 容器
+atlispcc build-vlx <input...> -o output.vlx [--export ...]  # VRTLIB-1 VLX 容器
+atlispcc build-vlx --prv app.prv [-o out.vlx]               # 按 .prv 规范打包
+atlispcc unpack-vlx <input.vlx> [-o DIR] [--list] [--stub FILE]  # 解包/校验 VLX
 atlispcc zelx <input.lsp|input.fas> [output.zelx]          # ZWCAD ZELX（逆向 LispConverter）
 atlispcc unzelx <input.zelx> [output.fas]                  # 从 .zelx 恢复 .fas
-atlispcc info <input.fas|input.zelx> [--json]              # 快速概览（头/段/函数目录）
+atlispcc info <input.fas|input.zelx|input.vlx> [--json]    # 快速概览（头/段/函数目录）
 atlispcc analyze [-f text|dot|mermaid|json] [-o OUT] [--no-cc] <lsp|fas>  # 调用图/依赖分析
 atlispcc roundtrip <input.lsp> [-O {0,1,2,3}] [--keep]     # 编译往返冒烟自检
-atlispcc project <pkg.lsp|包目录> [-o OUTDIR] [--json]     # 按 :FILES 批量编译（CI）
+atlispcc project <pkg.lsp|包目录|file.prj> [-o OUTDIR] [--json]  # 按 :FILES/:OWN-LIST 批量编译
 ```
 
 子命令别名：`compile→c`、`decompile→d`、`validate→v`、`disasm→disassemble`、`asm→assemble`。无子命令时默认为 compile。
@@ -68,10 +70,15 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | `compiler/dep_analysis.py` | 调用图/依赖分析图模型与 text/dot/mermaid 格式（analyze） |
 | `compiler/roundtrip.py` | 编译往返冒烟（裸内存管线，roundtrip） |
 | `compiler/project_cmd.py` | pkg.lsp `:FILES` 批量编译（project），逐文件状态 + JSON 报告 |
+| `compiler/prj.py` | Visual LISP `.prj` 解析与批量编译（`:OWN-LIST`/`:PROJECT-KEYS`/`:MERGED` 链接） |
+| `compiler/prv.py` | Visual LISP `.prv` 应用规范解析 → VLX 打包（`:load-file-list`/`:require-file-list`/开关/`:target`） |
+| `compiler/batch.py` | 批量编译单文件记录（`compile_one`/`compile_batch`），project/prj/prv 共用 |
+| `compiler/sexpr.py` | 配置文件 S 表达式读取助手（关键字/真值/字符串列表），prj/prv 共用 |
+| `compiler/info_cmd.py` | `info` 子命令实现（FAS/ZELX/VLX 概览） |
 | `asm/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
 | `asm/opcodes.py` | 操作码定义与编码函数（codegen/linker/汇编共用） |
 | `compiler/linker.py` | 多文件 FAS 链接器 |
-| `compiler/vlx_builder.py` | VLX 容器构建器 |
+| `compiler/vlx_builder.py` | VRTLIB-1 `.vlx` 打包/解包（记录表 + LOAD 规格 + 16 字节文件尾） |
 | `tools/validate.py` | 生成的 `.lsp` 语法验证器 |
 
 工具脚本（`tools/decrypt_fas4.py`、`tools/fas-split.py`、`tools/fas-analyzer.py`、`tools/crack_key.py` 等）使用 `core/fas_core.py`。ZELX 工具（`tools/zelx_info.py`/`zelx_diff.py`/`zelx_build.py`）基于逆向 LispConverter.exe，格式见 `docs/zelx-format.md`。
@@ -116,8 +123,8 @@ Makefile 快捷目标：`make test`（pytest）、`make check`（一键全量检
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，458 用例：458 passed + 1 empty-skip 占位）：
-- `test_parser.py`（21）、`test_lexer.py`（11）、`test_symbol_table.py`（10）、`test_analyzer.py`（9）、`test_cli.py`（28）、`test_compile_decompile.py`（74）、`test_compiler_output.py`（75）、`test_optimizer.py`（32）、`test_linker.py`（13）、`test_assembler.py`（8）、`test_disasm.py`（9）、`test_resource_stream.py`（25）、`test_packages.py`（4）、`test_vlx_builder.py`（3）、`test_variadic_args.py`（17）、`test_zelx.py`（5）、`test_diagnostics.py`（20）、`test_atlisp_u_byte_identity.py`（70：atlisp_u 全量 byte-identity + roundtrip + **kernel 67 文件 × CAD golden 参数化**）。
+**测试文件在 `tests/` 目录下**（pytest 风格，当前 378 passed + 72 skipped；skip 多为需要 CAD golden `.fas` 语料的用例——golden 不进版本库）：
+- `test_parser.py`（21）、`test_lexer.py`（11）、`test_symbol_table.py`（10）、`test_analyzer.py`（9）、`test_cli.py`（28）、`test_compile_decompile.py`（74）、`test_compiler_output.py`（75）、`test_optimizer.py`（32）、`test_linker.py`（13）、`test_assembler.py`（8）、`test_disasm.py`（9）、`test_resource_stream.py`（25）、`test_packages.py`（4）、`test_variadic_args.py`（17）、`test_zelx.py`（5）、`test_diagnostics.py`（20）、`test_atlisp_u_byte_identity.py`（70：atlisp_u 全量 byte-identity + roundtrip + **kernel 67 文件 × CAD golden 参数化**）、`test_project_cmd.py`、`test_prj.py`（`.prj` 解析/展开/`:MERGED`/退出码）、`test_prv.py`（`.prv` 开关/成员/`:target`/缺文件）、`test_vlx_builder.py`（VRTLIB-1 记录布局/对齐/LOAD 规格/解包/校验/加载桩/编码）、`test_fas_trailer.py`（Autodesk 官方盐 LCG/`--date`/`--salt` 可复现/`asm` 透传）。
 
 一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。
 
@@ -183,6 +190,71 @@ CAD 按系统 ACP=GBK 写盘，Linux 默认 ansi→utf-8 载荷在中文 CAD 加
 - **CLI 与裸管线的顶层表达式差异**：`compiler.cli.cmd_compile`（CLI）把顶层表达式编译进 seg1 **模块代码**（CAD 标准），而 `tests/test_compile_decompile.py` 内的裸内存管线把它们留在 seg0 字节码。两者反编译结果不同。写往返测试时二选一保持一致，**不要**混用两个管线的 `compile_and_decompile`。
 - **黄金比对（golden）fixture 必须是 CAD 重新编译的产物**：`D:/atlisp-test/cad_t*.fas`（7月31）版本戳 `;A7/31/26` 与当前输出 `;A8/4/26` 不同，整文件比对必然失败。`tests/cad/` 内 `*_cad.fas`（8月3-4 重新编译）可用作 byte-identity golden。
 - **t-series golden 覆盖现状**：源文件已迁移至 `tests/compile_src/`（16 份），golden `.fas` 保留在 `tests/cad/`（18 份）。`test_t_series_byte_identity` 对 6 份仍有效 golden 逐字节比对 + 16 份 compile_src 结构断言。另含 `t22_activex_cad.fas`（vla-/vlax- ActiveX）锁入同一回归。
+
+## VLX 容器（VRTLIB-1）与可复现构建
+
+`compiler/vlx_builder.py` 写的是 Autodesk 官方 VRTLIB-1 布局（原 `VXL_FIRM` 自造容器已移除）：
+
+```
+"VRTLIB-1" + u32 LE 文件尾偏移(= 文件长度 - 16)
+记录 #0  u32 total(7+name+payload), u16 tag=1240, u8 name_len, "LOAD", LOAD 规格
+记录 #n  u32 total, u16 tag(1330 .fas / 1350 .DCL / 1335 txt / 1340 dvb), u8 name_len,
+         NAME(大写化，DBCS 双字节整体保留), payload（与独立产物逐字节相同）
+各记录 4 字节对齐（0x00 填充）；文件尾 u32 0 + "VRTLIB-1" + u32 0
+```
+
+- LOAD 规格 = `((:protected . T) (:active-x . T) (:separate-namespace . T) (:load-file-list …))`；
+  `nil` → 裸键 `(:x)`，`T` → 点对 `(:x . T)`；条目键 `:fas` / `:DCL`
+- `build_vlx(exports=[...])` 额外编译 `_VLX` 导出桩（`(vl-doc-export 'name)`）并排进 LOAD 清单
+- `parse_vlx` / `unpack_vlx` / `read_vlx` 为逆操作；`atlispcc info <file.vlx>` 打印规格与成员表
+- `verify_vlx` 校验记录 #0=(1240,"LOAD")、tag 合法、重名、空 payload、4 字节对齐；
+  `unpack_vlx` 拒绝 `.`/`..`/含路径分隔符/NUL 的成员名（防目录穿越）
+- `make_load_stub` 生成 `(load "NAME")` 加载桩（`unpack-vlx --stub`）
+- 容器不重新加密成员 payload（FAS 字节原样放入）；成员名与 LOAD 规格按 `--encoding`
+- `VlxBuilder.build` 首位不是 LOAD 记录时自动补一条（否则 CAD 不加载）
+- `.prv` 打包见 `compiler/prv.py`：`:lsp` 现场编译、`:prj` 先编译工程（`:MERGED` 取合并产物）、
+  `:lsp/:fas/:dcl` 进 LOAD 清单，`:require-file-list` 只作资源；`:target` 与 `-o` 决定输出
+
+**真机验证**（2026-11，AutoCAD 24.1s）：`python scripts/cad_verify_vlx.py`
+生成探针 VLX 并在 CAD 中 `(load "w:/…/probe.vlx")`，断言
+`(type vlx-probe)`=SUBR、`(vlx-probe)`=42、未导出函数为 nil —— 容器布局、
+`:load-file-list`、独立命名空间与 `_VLX` 导出桩（`vl-doc-export`）均实测通过。
+脚本用 `--host`（默认 `http://192.168.1.53:8110`）/`--local-dir`/`--remote-dir`
+覆盖环境；共享目录只对**已存在**的文件做内容刷新时才立即可见，新文件可能被
+目录缓存挡住（`findfile` 返回 nil 时脚本以退出码 3 提示）。
+
+尾部盐（`compiler/fas_writer.py`）按 Autodesk 官方 `random&` 规则生成：
+ANSI-C LCG `state' = 1103515245·state + 12345`，输出 `(state' & 0xFFFF) % n`；
+盐长 `6 + random&(5)`（6..10），每字节 `1 + random&(255)`（**不含 0x00**、相邻不重复），
+输出为抽取顺序的逆序。`--date M/D/YY` 钉住 `$;A<M>/<D>/<YY>`，
+`--salt deterministic|seed:<n>|hex:<bytes>` 使构建可复现（同源码同参数逐字节一致）。
+
+## Visual LISP `.prj` 工程
+
+`atlispcc project <file.prj>`（`compiler/prj.py`）读 `(VLISP-PROJECT-LIST :KEY value …)`：
+
+- `:OWN-LIST`：目录递归 `*.lsp`（名字排序）/ 无扩展名补 `.lsp` / 显式路径原样；
+  缺文件只告警（记入 `missing` 状态，退出码 1），不中断
+- `:REQUIRE` → `:LOAD` 追加在 `:OWN-LIST` 之后；非 `.lsp` 成员跳过
+- `:PROJECT-KEYS`：`:BUILD (:STANDARD)` / `(:OPTIMIZE [:LINK] [:LOCALIZE])`、
+  `:SAFE-MODE`、`:MERGED`、`:MSGLEVEL`（0..2 钳制）
+- `:FAS-DIRECTORY` 为输出目录（`-o` 优先）；`:MERGED T` 且 ≥2 模块 → 链接为 `<NAME>.fas`
+- 未显式 `-O` 时 `:OPTIMIZE` 映射为 `-O1`
+
+## 性能基线（2026-11）
+
+以 `tests/atlisp_u.lsp`（312 KB → 195 KB `.fas`）为基准，以下优化已固化，
+改动相关路径时须保持：
+
+| 位置 | 规则 | 实测 |
+|---|---|---|
+| `compiler/cad_symbols.py` `_in_name_set` | 普通符号用 `_upper_set` 做 O(1) 大小写不敏感判定；`_register_name` 同步 `_name_set`（精确）与 `_upper_set` | 原线性扫描 + 逐项 `lower/startswith`，596 万次 genexpr |
+| `compiler/cad_symbols.py` `collect_symbols` | 一次 `collect_program` 供 `names` / `module_reg_count` / `module_reg_func_count` 复用（`collector=` 参数） | 原三次全量收集；编译 13.0 s → 7.6 s |
+| `asm/assembler.py` `_resolve_sym_safe` | 预计算 `symbol_counts` 传入 `_fmt_inst`，不再逐指令 `list.count` | 反汇编 195 KB 4.3 s → 1.1 s |
+| `asm/assembler.py` `_detect_compact` | 返回检测阶段已反汇编的指令表（`(compact, {short_subr: insts})`），`disassemble_fas` 复用 | 原第三次全量反汇编 |
+| `compiler/fas_writer.py` `build_trailer` | `return_ciphertext=True` 复用校验用密文，写盘不再二次加密 | `_rolling_xor` 约 236 ms/512 KB |
+
+产物不变：优化前后 seg0/seg1/nsyms 逐字节一致（`/tmp/big.fas` 对拍）。
 
 ## 文档
 

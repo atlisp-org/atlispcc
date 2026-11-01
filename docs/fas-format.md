@@ -80,13 +80,24 @@ t11→`01 00`），落在 `total_size` 统计之外、终止符之前。`FasWrit
 
 ```
 <key_len:1>       # 密钥总长度（21~26）
-<key>             # 随机前缀 + "\n;fas4 crunch\n;"（15 字节固定标记）
+<key>             # 盐（6~10 字节）+ "\n;fas4 crunch\n;"（15 字节固定标记）
 $;                # 分隔
 A<M>/<D>/<YY>     # 编译日期，如 A8/1/26（无前导零）
 ```
 
 - `CRUNCH_MARKER = b"\n;fas4 crunch\n;"`（15 字节）位于密钥**末尾**，是密钥定位锚点。
-- 密钥总长默认 23（含标记），与 AutoCAD 一致。前 `23-15=8` 字节为随机前缀。
+- 密钥总长默认 23（含标记）：盐长 8。盐长本身由 `6 + random&(5)` 抽取，范围 6~10。
+- **盐的生成规则**（Autodesk 官方 `random&`，ANSI-C LCG）：
+  ```
+  state' = (1103515245 · state + 12345) mod 2^32
+  below(n) = (state' & 0xFFFF) mod n          # 0 .. n-1
+  byte = 1 + below(255)                       # 域 1..255，永不出现 0x00
+  ```
+  相邻字节不重复；整串按抽取顺序**逆序**写出（`list->string` 的 cons 链表）。
+  每次构建用 `time(NULL)` 播种，因此两次构建的 crunched 字节不同。
+- 可复现构建（`atlispcc compile/link/project/asm --date M/D/YY --salt ...`）：
+  `deterministic` = 固定盐 `01 02 … 08`；`seed:<n>` = 指定 LCG 种子；
+  `hex:<bytes>` = 直接指定盐；同参数产物逐字节一致。
 - `find_key()`：定位 `CRUNCH_MARKER`，向前 6~11 字节回溯，校验密钥长度字节（`key_start - 1` == 密钥长）。
 
 ---

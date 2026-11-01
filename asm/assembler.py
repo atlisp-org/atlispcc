@@ -26,8 +26,11 @@ def _disasm_op_name(opcode: int) -> str:
     return OPCODE_TO_NAME.get(opcode, f"UNK_{opcode:02x}")
 
 
-def _detect_compact(fas) -> bool:
+def _detect_compact(fas):
     """健壮的紧凑 stub 检测（disasm/asm 往返专用）。
+
+    返回 ``(compact, instructions)``：``instructions[short_subr]`` 是检测过程中
+    已经反汇编出的指令表，供 :func:`disassemble_fas` 复用，避免第三次全量反汇编。
 
     反编译器共享的 ``is_compact_stub`` 对多函数紧凑 stub 会误判为自包含
     （UNK 平局且 function_catalog 非空时退回自包含）。这里用
@@ -40,7 +43,7 @@ def _detect_compact(fas) -> bool:
 
     bc = fas.bytecode
     if not bc:
-        return False
+        return False, {}
     sym_count = len(getattr(fas, "symbol_slots", []) or [])
     nsyms = getattr(fas, "nsyms", 0)
 
@@ -72,7 +75,7 @@ def _detect_compact(fas) -> bool:
         i3 = Disassembler(short_subr=True).disassemble(bc, 0, sym_count=sym_count or None)
         i6 = Disassembler(short_subr=False).disassemble(bc, 0, sym_count=sym_count or None)
     except Exception:
-        return is_compact_stub(bc, fas.function_catalog, sym_count)
+        return is_compact_stub(bc, fas.function_catalog, sym_count), {}
 
     def _unk(insts) -> int:
         return sum(1 for i in insts if i.op_name.startswith("UNK_"))
@@ -89,14 +92,14 @@ def _detect_compact(fas) -> bool:
         # argc 编码；用宽解析的 DEFUN 头判定。
         r = _defuns_argc(i6)
         if r is not None:
-            return r
+            return r, {True: i3, False: i6}
     elif c6 > 0 and c3 == 0:
-        return True  # 短解析干净：小文件 stub
+        return True, {True: i3, False: i6}  # 短解析干净：小文件 stub
 
     r = _defuns_argc(i3)
     if r is not None:
-        return r
-    return is_compact_stub(bc, fas.function_catalog, sym_count)
+        return r, {True: i3, False: i6}
+    return is_compact_stub(bc, fas.function_catalog, sym_count), {True: i3, False: i6}
 
 
 def _resolve_sym(symbols: List[str], idx: int) -> str:
@@ -105,15 +108,25 @@ def _resolve_sym(symbols: List[str], idx: int) -> str:
     return f"[{idx}]"
 
 
-def _resolve_sym_safe(symbols: List[str], idx: int, sym_types: Optional[List[str]] = None) -> str:
+def _resolve_sym_safe(
+    symbols: List[str],
+    idx: int,
+    sym_types: Optional[List[str]] = None,
+    symbol_counts: Optional[dict] = None,
+) -> str:
     """解析符号操作数：名字唯一时输出名字，重复（递归/跨函数引用）或 REAL 槽
-    输出 ``[idx]``，保证 .lasm 重新汇编时字节可逆。"""
+    输出 ``[idx]``，保证 .lasm 重新汇编时字节可逆。
+
+    ``symbol_counts`` 为 ``name -> 出现次数``（一次性预计算），避免逐指令
+    ``list.count`` 的 O(n²) 扫描。
+    """
     if 0 <= idx < len(symbols):
         typ = sym_types[idx] if sym_types else None
         if typ == "REAL":
             return f"[{idx}]"
         name = symbols[idx]
-        if symbols.count(name) == 1:
+        count = symbol_counts.get(name, 0) if symbol_counts is not None else symbols.count(name)
+        if count == 1:
             return name
     return f"[{idx}]"
 
@@ -162,6 +175,7 @@ def _fmt_inst(
     sym_types: Optional[List[str]] = None,
     compact: bool = False,
     bytecode: Optional[bytes] = None,
+    symbol_counts: Optional[dict] = None,
 ) -> str:
     """Format one instruction as a .lasm line.
 
@@ -196,14 +210,14 @@ def _fmt_inst(
         return _line(f"{name} {sym}, {off}")
     # FUNC/USUBR: second operand is a symbol index
     if name in ("FUNC", "USUBR") and len(ops) >= 2:
-        sym = _resolve_sym_safe(symbols, ops[1], sym_types)
+        sym = _resolve_sym_safe(symbols, ops[1], sym_types, symbol_counts)
         rest = [str(ops[0]), sym]
         if len(ops) > 2:
             rest.extend(str(o) for o in ops[2:])
         return _line(f'{name} {", ".join(rest)}')
     # PUSH_VALUE/PUSH_G/SETQ_G/PUSH_G_ALT: first operand is a symbol index
     if name in ("PUSH_VALUE", "PUSH_G", "PUSH_G_ALT", "SETQ_G") and ops:
-        sym_info = _resolve_sym_safe(symbols, ops[0], sym_types)
+        sym_info = _resolve_sym_safe(symbols, ops[0], sym_types, symbol_counts)
         rest = [sym_info]
         rest.extend(str(o) for o in ops[1:3])
         return _line(f'{name} {", ".join(rest)}')
@@ -222,13 +236,16 @@ def disassemble_fas(fas_path: str) -> str:
 
     parser = Fas4Parser()
     fas = parser.parse(fas_path)
-    compact = _detect_compact(fas)
+    compact, detected = _detect_compact(fas)
     # 大文件（nsyms>256）紧凑 stub 用宽格式 USUBR/FUNC（5/6 字节），
     # 须以 short_subr=False 解析；小文件用 3 字节短格式。
     wide = compact and getattr(fas, "nsyms", 0) > 256
-    disasm = Disassembler(short_subr=not wide)
-    instructions = disasm.disassemble(fas.bytecode, fas.nsyms,
-                                      sym_count=len(fas.symbol_slots) if compact else None)
+    short_subr = not wide
+    instructions = detected.get(short_subr)
+    if instructions is None:
+        disasm = Disassembler(short_subr=short_subr)
+        instructions = disasm.disassemble(fas.bytecode, fas.nsyms,
+                                          sym_count=len(fas.symbol_slots) if compact else None)
     cfa = ControlFlowAnalyzer(instructions, fas.function_catalog,
                               function_names=extract_stub_function_names(fas))
     functions = cfa.find_functions()
@@ -259,6 +276,10 @@ def disassemble_fas(fas_path: str) -> str:
         symbols = fas.symbols
         sym_types = ["SYMBOL"] * len(symbols)
 
+    symbol_counts = {}
+    for sym in symbols:
+        symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
+
     lines.append(".symbols")
     for idx, sym in enumerate(symbols):
         typ = sym_types[idx] if idx < len(sym_types) else "SYMBOL"
@@ -270,7 +291,8 @@ def disassemble_fas(fas_path: str) -> str:
         fname = func.name if func.name and func.name != "c:init" else "__init__"
         lines.append(f".function {fname}, {func.sym_idx}")
         for inst in func.instructions:
-            lines.append(_fmt_inst(inst, symbols, sym_types, compact=compact, bytecode=fas.bytecode))
+            lines.append(_fmt_inst(inst, symbols, sym_types, compact=compact,
+                                   bytecode=fas.bytecode, symbol_counts=symbol_counts))
         lines.append(".end_function")
         lines.append("")
 
@@ -296,8 +318,11 @@ def _detect_format(functions: List[Tuple[str, int, List[str]]]) -> str:
     return "compact"
 
 
-def assemble_lasm(lasm_text: str, output_path: str) -> str:
-    """Assemble .lasm text into a FAS4 binary file."""
+def assemble_lasm(lasm_text: str, output_path: str, date=None, salt=None) -> str:
+    """Assemble .lasm text into a FAS4 binary file.
+
+    ``date``/``salt`` 透传给容器尾部的可复现构建选项（同 ``compile``）。
+    """
     # === Pass 1: parse structure ===
     symbols_list: List[str] = []
     symbol_types: List[str] = []
@@ -359,8 +384,10 @@ def assemble_lasm(lasm_text: str, output_path: str) -> str:
 
     fmt = fmt_dir if fmt_dir in ("compact", "selfcontained") else _detect_format(functions)
     if fmt == "compact":
-        return _assemble_compact(output_path, symbols_list, symbol_types, functions, nsyms_dir)
-    return _assemble_selfcontained(output_path, symbols_list, symbol_types, functions, nsyms_dir)
+        return _assemble_compact(output_path, symbols_list, symbol_types, functions,
+                                 nsyms_dir, date=date, salt=salt)
+    return _assemble_selfcontained(output_path, symbols_list, symbol_types, functions,
+                                   nsyms_dir, date=date, salt=salt)
 
 
 def assemble_lasm_zelx(lasm_text: str, output_path: str) -> str:
@@ -415,7 +442,8 @@ def _register_slot(symtab: SymbolTable, typ: str, display: str) -> int:
 def _assemble_selfcontained(output_path: str, symbols_list: List[str],
                             symbol_types: List[str],
                             functions: List[Tuple[str, int, List[str]]],
-                            nsyms_dir: Optional[int] = None) -> str:
+                            nsyms_dir: Optional[int] = None,
+                            date=None, salt=None) -> str:
     """自包含格式汇编：符号表直接编址，total_size = len(seg0_payload)。"""
     symtab = SymbolTable()
     for i, sym in enumerate(symbols_list):
@@ -462,7 +490,7 @@ def _assemble_selfcontained(output_path: str, symbols_list: List[str],
     seg0 = bytes(all_bc)
     resource = ResourceBuilder(symtab)
     seg1 = resource.build(func_offsets)
-    writer = FasWriter(symtab)
+    writer = FasWriter(symtab, date=date, salt=salt)
     # 支持 .nsyms 指令覆盖（纯顶层 selfcontained 的 nsyms = 模块注册符号数）。
     if nsyms_dir is not None:
         writer.write(output_path, seg0, seg1, nsyms=nsyms_dir)
@@ -473,7 +501,7 @@ def _assemble_selfcontained(output_path: str, symbols_list: List[str],
 
 def _assemble_compact(output_path: str, symbols_list: List[str], symbol_types: List[str],
                       functions: List[Tuple[str, int, List[str]]],
-                      nsyms_dir: Optional[int]) -> str:
+                      nsyms_dir: Optional[int], date=None, salt=None) -> str:
     """紧凑 stub 汇编：与 CAD 编译器一致的符号槽/加密/stub 布局。
 
     - 符号按资源注册顺序（symbol_slots）编址，entries = 全部槽 - 末尾函数注册名
@@ -531,7 +559,7 @@ def _assemble_compact(output_path: str, symbols_list: List[str], symbol_types: L
     if sec2_items < min_items:
         sec2_items = min_items
 
-    writer = FasWriter(symtab)
+    writer = FasWriter(symtab, date=date, salt=salt)
     writer.write(output_path, bytes(seg0), seg1, sec2_items=sec2_items,
                  nsyms=fas_nsyms, compact=True)
     return output_path

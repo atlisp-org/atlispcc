@@ -12,15 +12,9 @@ printing / exit-code behaviour used by ``atlispcc project``.
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import os
-import sys
-import time
 from typing import Any, Dict, List, Optional, Tuple
-
-from compiler.compile_cmd import cmd_compile
 
 __all__ = ["compile_project", "run_project", "parse_pkg_manifest"]
 
@@ -187,6 +181,8 @@ def compile_project(
     verify: bool = True,
     dry_run: bool = False,
     stop_on_error: bool = False,
+    date=None,
+    salt=None,
 ) -> Dict[str, Any]:
     """Compile every Lisp source listed in a package manifest.
 
@@ -203,6 +199,8 @@ def compile_project(
             "encoding": encoding,
             "verify": verify,
             "dry_run": dry_run,
+            "date": date or "",
+            "salt": salt or "",
         },
         "summary": {"total": 0, "ok": 0, "error": 0, "missing": 0, "skipped": 0},
         "files": [],
@@ -223,6 +221,8 @@ def compile_project(
         report["error"] = "no :FILES entries found in pkg.lsp"
         return report
 
+    from compiler.batch import compile_one
+
     if outdir:
         os.makedirs(outdir, exist_ok=True)
 
@@ -238,64 +238,24 @@ def compile_project(
             )
             continue
 
-        src = item["source"]
-        base = os.path.splitext(os.path.basename(src))[0]
-        out = os.path.join(outdir, base + ".fas") if outdir else os.path.splitext(src)[0] + ".fas"
-        record: Dict[str, Any] = {
-            "entry": entry,
-            "source": src,
-            "output": out,
-            "status": "pending",
-            "bytes": 0,
-            "elapsed_ms": 0,
-        }
-
-        if not os.path.isfile(src):
-            record["status"] = "missing"
-            report["summary"]["missing"] += 1
-            report["files"].append(record)
-            if stop_on_error:
-                break
-            continue
-
-        if dry_run:
-            record["status"] = "would-compile"
+        record = compile_one(
+            entry,
+            item["source"],
+            outdir,
+            opt_level=opt_level,
+            encoding=encoding,
+            verify=verify,
+            dry_run=dry_run,
+            date=date,
+            salt=salt,
+        )
+        status = str(record["status"])
+        if status == "would-compile":
             report["summary"]["skipped"] += 1
-            report["files"].append(record)
-            continue
-
-        started = time.time()
-        stdout_buf, stderr_buf = io.StringIO(), io.StringIO()
-        try:
-            with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
-                cmd_compile(
-                    src,
-                    out,
-                    opt_level=opt_level,
-                    encoding=encoding,
-                    verify=verify,
-                )
-            if not os.path.isfile(out):
-                raise RuntimeError("compiler reported success but output file is missing")
-            record["status"] = "ok"
-            record["bytes"] = os.path.getsize(out)
-            report["summary"]["ok"] += 1
-        except SystemExit as exc:
-            record["status"] = "error"
-            record["error"] = f"compiler exited with code {exc.code}"
-            report["summary"]["error"] += 1
-        except Exception as exc:
-            record["status"] = "error"
-            record["error"] = str(exc)
-            report["summary"]["error"] += 1
-        finally:
-            record["elapsed_ms"] = int((time.time() - started) * 1000)
-            log = (stdout_buf.getvalue() + stderr_buf.getvalue()).strip()
-            if log:
-                record["log"] = log[-4000:]
-
+        else:
+            report["summary"][status] += 1
         report["files"].append(record)
-        if record["status"] == "error" and stop_on_error:
+        if status == "error" and stop_on_error:
             break
 
     return report
@@ -340,8 +300,26 @@ def run_project(
     stop_on_error: bool = False,
     json_out: bool = False,
     report_path: str = "",
+    date=None,
+    salt=None,
 ) -> int:
     """Compile a package and print the report. Returns a shell exit code."""
+    if str(source).lower().endswith('.prj'):
+        from compiler.prj import run_prj
+
+        return run_prj(
+            source,
+            outdir=outdir,
+            opt_level=opt_level,
+            encoding=encoding,
+            verify=verify,
+            dry_run=dry_run,
+            stop_on_error=stop_on_error,
+            json_out=json_out,
+            report_path=report_path,
+            date=date,
+            salt=salt,
+        )
     report = compile_project(
         source,
         outdir=outdir,
@@ -350,6 +328,8 @@ def run_project(
         verify=verify,
         dry_run=dry_run,
         stop_on_error=stop_on_error,
+        date=date,
+        salt=salt,
     )
     if report_path:
         with open(report_path, "w", encoding="utf-8") as f:
