@@ -123,8 +123,8 @@ Makefile 快捷目标：`make test`（pytest）、`make check`（一键全量检
 
 ## 测试
 
-**测试文件在 `tests/` 目录下**（pytest 风格，当前 378 passed + 72 skipped；skip 多为需要 CAD golden `.fas` 语料的用例——golden 不进版本库）：
-- `test_parser.py`（21）、`test_lexer.py`（11）、`test_symbol_table.py`（10）、`test_analyzer.py`（9）、`test_cli.py`（28）、`test_compile_decompile.py`（74）、`test_compiler_output.py`（75）、`test_optimizer.py`（32）、`test_linker.py`（13）、`test_assembler.py`（8）、`test_disasm.py`（9）、`test_resource_stream.py`（25）、`test_packages.py`（4）、`test_variadic_args.py`（17）、`test_zelx.py`（5）、`test_diagnostics.py`（20）、`test_atlisp_u_byte_identity.py`（70：atlisp_u 全量 byte-identity + roundtrip + **kernel 67 文件 × CAD golden 参数化**）、`test_project_cmd.py`、`test_prj.py`（`.prj` 解析/展开/`:MERGED`/退出码）、`test_prv.py`（`.prv` 开关/成员/`:target`/缺文件）、`test_vlx_builder.py`（VRTLIB-1 记录布局/对齐/LOAD 规格/解包/校验/加载桩/编码）、`test_fas_trailer.py`（Autodesk 官方盐 LCG/`--date`/`--salt` 可复现/`asm` 透传）。
+**测试文件在 `tests/` 目录下**（pytest 风格，当前 390 passed + 72 skipped；skip 多为需要 CAD golden `.fas` 语料的用例——golden 不进版本库）：
+- `test_parser.py`（21）、`test_lexer.py`（11）、`test_symbol_table.py`（10）、`test_analyzer.py`（9）、`test_cli.py`（28）、`test_compile_decompile.py`（74）、`test_compiler_output.py`（75）、`test_optimizer.py`（32）、`test_linker.py`（13）、`test_assembler.py`（8）、`test_disasm.py`（9）、`test_resource_stream.py`（25）、`test_packages.py`（4）、`test_variadic_args.py`（17）、`test_zelx.py`（5）、`test_diagnostics.py`（20）、`test_atlisp_u_byte_identity.py`（70：atlisp_u 全量 byte-identity + roundtrip + **kernel 67 文件 × CAD golden 参数化**）、`test_project_cmd.py`、`test_layout.py`（紧凑/自包含布局判定）、`test_prj.py`（`.prj` 解析/展开/`:MERGED`/退出码）、`test_prv.py`（`.prv` 开关/成员/`:target`/缺文件）、`test_vlx_builder.py`（VRTLIB-1 记录布局/对齐/LOAD 规格/解包/校验/加载桩/编码）、`test_fas_trailer.py`（Autodesk 官方盐 LCG/`--date`/`--salt` 可复现/`asm` 透传）。
 
 一键运行全部检查：`./scripts/run_tests.sh`（py_compile + pytest + disasm→asm 往返 + byte-identity 状态）。
 
@@ -207,6 +207,10 @@ CAD 按系统 ACP=GBK 写盘，Linux 默认 ansi→utf-8 载荷在中文 CAD 加
   `nil` → 裸键 `(:x)`，`T` → 点对 `(:x . T)`；条目键 `:fas` / `:DCL`
 - `build_vlx(exports=[...])` 额外编译 `_VLX` 导出桩（`(vl-doc-export 'name)`）并排进 LOAD 清单
 - `parse_vlx` / `unpack_vlx` / `read_vlx` 为逆操作；`atlispcc info <file.vlx>` 打印规格与成员表
+- `detect_layout(fas)` / `detect_layout_bytes(bytecode, catalog, symbol_slots)`：
+  紧凑 stub/自包含判定（`5c` vs `05` 局部变量指令 + DEFUN 头 + UNK 兜底），
+  `use_short_subr` / `Fas4Decompiler.decompile` / `_detect_stub_format` /
+  `linker._fas_is_stub` / `info` 统一使用；`is_compact_stub` 仅作兜底与旧调用方
 - `verify_vlx` 校验记录 #0=(1240,"LOAD")、tag 合法、重名、空 payload、4 字节对齐；
   `unpack_vlx` 拒绝 `.`/`..`/含路径分隔符/NUL 的成员名（防目录穿越）
 - `make_load_stub` 生成 `(load "NAME")` 加载桩（`unpack-vlx --stub`）
@@ -220,8 +224,11 @@ CAD 按系统 ACP=GBK 写盘，Linux 默认 ansi→utf-8 载荷在中文 CAD 加
 `(type vlx-probe)`=SUBR、`(vlx-probe)`=42、未导出函数为 nil —— 容器布局、
 `:load-file-list`、独立命名空间与 `_VLX` 导出桩（`vl-doc-export`）均实测通过。
 脚本用 `--host`（默认 `http://192.168.1.53:8110`）/`--local-dir`/`--remote-dir`
-覆盖环境；共享目录只对**已存在**的文件做内容刷新时才立即可见，新文件可能被
-目录缓存挡住（`findfile` 返回 nil 时脚本以退出码 3 提示）。
+覆盖环境；默认探针目录是共享盘上的隐藏目录 `~/atlisp/packages/.atlispcc_vlx_probe`
+（`packages/*/` 扫描不会碰到它，且目录要长期保留——SMB 对新建目录项缓存很慢）。
+加载前会 `vl-unload-vlx` 卸载同名应用（重复验证同一文件名时 CAD 报「已加载重复
+LISP 应用程序」），COM 忙（`RPC_E_SERVERCALL_RETRYLATER`）与「无活动文档」自动重试；
+`findfile` 仍看不到时用 `--remote-file probe.vlx` 复用已可见文件名、`--wait N` 重试。
 
 尾部盐（`compiler/fas_writer.py`）按 Autodesk 官方 `random&` 规则生成：
 ANSI-C LCG `state' = 1103515245·state + 12345`，输出 `(state' & 0xFFFF) % n`；
@@ -239,7 +246,10 @@ ANSI-C LCG `state' = 1103515245·state + 12345`，输出 `(state' & 0xFFFF) % n`
 - `:PROJECT-KEYS`：`:BUILD (:STANDARD)` / `(:OPTIMIZE [:LINK] [:LOCALIZE])`、
   `:SAFE-MODE`、`:MERGED`、`:MSGLEVEL`（0..2 钳制）
 - `:FAS-DIRECTORY` 为输出目录（`-o` 优先）；`:MERGED T` 且 ≥2 模块 → 链接为 `<NAME>.fas`
+  （与源模块同名时改名为 `<NAME>_merged.fas` 并记入 `diagnostics`）
 - 未显式 `-O` 时 `:OPTIMIZE` 映射为 `-O1`
+- `.prv` 打包报告：`build-vlx --prv x.prv --json`（`target`/`members`/`switches`/`errors`），
+  无 `--prv` 时使用 `--json/--report` 直接报错
 
 ## 性能基线（2026-11）
 
@@ -249,12 +259,19 @@ ANSI-C LCG `state' = 1103515245·state + 12345`，输出 `(state' & 0xFFFF) % n`
 | 位置 | 规则 | 实测 |
 |---|---|---|
 | `compiler/cad_symbols.py` `_in_name_set` | 普通符号用 `_upper_set` 做 O(1) 大小写不敏感判定；`_register_name` 同步 `_name_set`（精确）与 `_upper_set` | 原线性扫描 + 逐项 `lower/startswith`，596 万次 genexpr |
-| `compiler/cad_symbols.py` `collect_symbols` | 一次 `collect_program` 供 `names` / `module_reg_count` / `module_reg_func_count` 复用（`collector=` 参数） | 原三次全量收集；编译 13.0 s → 7.6 s |
+| `compiler/cad_symbols.py` `collect_symbols` | 一次 `collect_program` 供 `names` / `module_reg_count` / `module_reg_func_count` 复用（`collector=` 参数） | 原三次全量收集 |
+| `compiler/cad_symbols.py` `_SeenList.upper` / `_shared_upper` | `_seen` 与共享参数判定改用 upper 集合；共享参数的 ci 映射在符号循环外构建一次 | 原每次 `any(...)` 全表扫描 / 每符号重建 set |
+| `compiler/symbol_table.py` `_ci_index` / `is_builtin` | `get_or_add` 的大小写回退与 stub 重复槽判定走预建索引（`has_case_insensitive`）；`_BUILTIN_UPPER` 模块级预计算 | 原每次全表扫描；`is_builtin` 原每次重建 152 项集合 |
+| `compiler/module_code.py` `_mid_*` | 提升 defun 的跳过数与 mid 计数改为前缀和，`_has_mid` 不再切片求和 | 原每次 O(i) 扫描 |
+| `compiler/patch.py` `_res_slot_of` | 末次出现位置（精确 + 大小写不敏感）预建映射 | 原每次线性扫描 symbol_slots |
 | `asm/assembler.py` `_resolve_sym_safe` | 预计算 `symbol_counts` 传入 `_fmt_inst`，不再逐指令 `list.count` | 反汇编 195 KB 4.3 s → 1.1 s |
 | `asm/assembler.py` `_detect_compact` | 返回检测阶段已反汇编的指令表（`(compact, {short_subr: insts})`），`disassemble_fas` 复用 | 原第三次全量反汇编 |
 | `compiler/fas_writer.py` `build_trailer` | `return_ciphertext=True` 复用校验用密文，写盘不再二次加密 | `_rolling_xor` 约 236 ms/512 KB |
+| `decompiler/fas4_decompiler.py` `is_compact_stub` | 缓存键不再包含 `sym_count`（内部判定不使用它），跨调用命中 | 反编译 195 KB 1.93 s → 1.63 s |
 
-产物不变：优化前后 seg0/seg1/nsyms 逐字节一致（`/tmp/big.fas` 对拍）。
+汇总：`atlisp_u` 编译 **13.0 s → 2.96 s**，反汇编 **4.3 s → 1.1 s**，
+反编译 **1.93 s → 1.63 s**，全量测试 **94 s → 27 s**。
+产物不变：优化前后 seg0/seg1/nsyms 逐字节一致（`/tmp/big*.fas` 对拍）。
 
 ## 文档
 

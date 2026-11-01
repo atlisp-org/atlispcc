@@ -149,8 +149,12 @@ def build_trailer(
         raise ValueError(f"salt len must be in {AUTODESK_SALT_MIN}..{AUTODESK_SALT_MAX} (got {salt_len})")
     if salt is not None and not salt:
         raise ValueError("salt must be non-empty")
-    if salt is not None and not 1 <= len(salt) <= 255 - len(CRUNCH_MARKER):
-        raise ValueError(f"salt of {len(salt)} bytes does not fit the key length byte")
+    if salt is not None and not AUTODESK_SALT_MIN <= len(salt) <= AUTODESK_SALT_MAX:
+        # 读取端按 6..10 回溯定位密钥；其它长度写出的产物无法被 find_key 识别。
+        raise ValueError(
+            f"salt must be {AUTODESK_SALT_MIN}..{AUTODESK_SALT_MAX} bytes "
+            f"(got {len(salt)})"
+        )
 
     stamp = normalize_date(date).encode("ascii")
     fixed = salt is not None

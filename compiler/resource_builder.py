@@ -39,6 +39,9 @@ _VLISP_CASE_PRESERVE = {
     "safearray", "safearray-value", "variant",
     "VLA->E",
 }
+# `_enc_sym` 每个符号都要做大小写规范化；线性扫描 53 项在编译大文件时成为热点，
+# 改为模块级小写 → 规范形式的映射。
+_CASE_PRESERVE_LOWER = {str(name).lower(): name for name in _VLISP_CASE_PRESERVE}
 
 # 需独立 0x56 保留大小写块（`56 <name> 00 00`）的机制符号：`/ 局部变量`
 # 助手、kwote、command 调用目标，以及 vlax-for 的 collect 内部 SUBR
@@ -406,9 +409,9 @@ class ResourceBuilder:
         # vlax-3d-point/startapp 等，@lisp_u golden 实测）。按小写匹配，用 CAD
         # 规范形式。优先于 vla-/vlax- 分支（VLAX-FOR 需大写、vlax-3d-point
         # 需小写，均与源码大小写不同）。
-        for _canon in _VLISP_CASE_PRESERVE:
-            if s.lower() == _canon.lower():
-                return _canon.encode(self.encoding, errors="replace")
+        _canon = _CASE_PRESERVE_LOWER.get(s.lower())
+        if _canon is not None:
+            return _canon.encode(self.encoding, errors="replace")
         if s.lower().startswith(("vla-", "vlax-")):
             return s.encode(self.encoding, errors="replace")
         return s.upper().encode(self.encoding, errors="replace")

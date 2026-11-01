@@ -34,7 +34,11 @@ def _fas_is_stub(fas) -> bool:
         from decompiler.fas4_decompiler import LispGenerator
         return LispGenerator(fas).is_stub_format
     except Exception:
-        return is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots))
+        from decompiler.fas4_decompiler import detect_layout_bytes
+
+        return detect_layout_bytes(
+            fas.bytecode, fas.function_catalog, fas.symbol_slots
+        ) == "compact"
 
 _DATA_TYPES = {"SYMBOL", "STRING", "INT8", "INT32", "REAL"}
 

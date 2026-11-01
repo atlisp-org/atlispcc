@@ -464,6 +464,13 @@ def build_vlx(
         records.append(VlxMember.fas4(stub_name, stub))
         spec.entries.append(("fas", stub_name))
 
+    seen_names = set()
+    for record in records:
+        stored = record.stored_name()
+        if stored in seen_names:
+            raise ValueError(f"duplicate VLX member name {stored.decode('latin-1')!r}")
+        seen_names.add(stored)
+
     table = [VlxMember.load(spec.render(encoding))] + records
     data = pack_vlx(table)
     with open(output_path, "wb") as handle:

@@ -121,7 +121,7 @@ atlispcc compile app.lsp app.fas --salt hex:0102030405
 - `--date M/D/YY` 钉住尾部 `$;A<M>/<D>/<YY>` 时间戳（默认当天）
 - `--salt deterministic` 使用固定盐 `01 02 … 08`
 - `--salt seed:<n>` 用该种子生成 Autodesk 官方形状的盐（可复现）
-- `--salt hex:<bytes>` 直接指定盐字节
+- `--salt hex:<bytes>` 直接指定盐字节（6~10 字节，超出范围读取端无法定位密钥）
 - 同一源码 + 同一 `--date`/`--salt` ⇒ **逐字节相同的 `.fas`**（`tests/test_fas_trailer.py` 锁定）
 
 #### 编译报告（--report）
@@ -282,6 +282,7 @@ atlispcc build-vlx app.fas -o app.vlx
 atlispcc build-vlx app.fas res/dlg.dcl readme.txt -o app.vlx --export main setup
 atlispcc build-vlx app.fas -o app.vlx --no-separate-namespace --no-protected
 atlispcc build-vlx --prv app.prv              # 按 VLIDE 的 .prv 规范打包
+atlispcc build-vlx --prv app.prv --json       # 打包报告（成员/开关/错误）
 atlispcc unpack-vlx app.vlx -o dist/app       # 解包成员（默认结构校验）
 atlispcc unpack-vlx app.vlx --stub load.lsp   # 生成 (load "…") 加载桩
 atlispcc info app.vlx                         # 查看 LOAD 规格与成员表
@@ -304,6 +305,8 @@ u32 0 + "VRTLIB-1" + u32 0                               （16 字节文件尾�
 - `--prv <file>`：读 Visual LISP 应用规范，`:lsp` 现场编译、`:prj` 先编译工程、
   `:require-file-list` 作为随包资源；`:target` 决定默认输出（`-o` 优先）
 - `--date` / `--salt` 同样适用于打包（`--prv` 时传给内部编译/链接）
+- `--prv --json` / `--report <path>`：输出结构化打包报告（`target`/`members`/
+  `compiled`/`switches`/`errors`/`diagnostics`），退出码 1 表示有错误
 
 ### project — 包级 / 工程级批量编译（CI / Agent）
 
@@ -496,7 +499,7 @@ atlispcc validate output.lsp
 - `tools.lisp_converter_auto` — ZWCAD LispConverter.exe GUI 自动化（样本生产）
 - `tools.cad_probe` — MCP CAD 交互辅助（开发调试）
 - `tools.cad_dialog_killer` — 自动关闭 CAD 模态对话框（alert 等，避免阻塞 MCP 会话）；`python -m tools.cad_dialog_killer <pid> [--watch]`
-- `scripts/cad_verify.py` / `scripts/cad_verify_vlx.py` — CAD 真机验证（编译产物断言 / VRTLIB-1 VLX 加载与命名空间导出）
+- `scripts/cad_verify.py` / `scripts/cad_verify_vlx.py` — CAD 真机验证（编译产物断言 / VRTLIB-1 VLX 加载与命名空间导出；共享目录缓存导致看不到新文件时用 `--remote-file probe.vlx --wait 5`）
 - `tools.analyze_rosetta` — Rosetta 代码分析
 
 用法与输出说明见 `docs/development.md`。

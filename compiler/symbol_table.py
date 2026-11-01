@@ -44,9 +44,17 @@ BUILTIN_FUNCTIONS = {
 }
 
 
+# `is_builtin` 每次调用都重建 {n.upper()} 集合（152 项）会成为编译热点，
+# 改为模块级预计算。
+_BUILTIN_UPPER = frozenset(str(name).upper() for name in BUILTIN_FUNCTIONS)
+
+
 class SymbolTable:
     def __init__(self, package_table: Optional[PackageTable] = None):
         self.name_to_idx: Dict[str, int] = {}
+        # 大小写不敏感索引：upper(name) → 首次登记的槽。`get_or_add` 的回退查找
+        # 与 stub 重复槽判定都依赖它，避免对全部键做线性扫描（O(n²)）。
+        self._ci_index: Dict[str, int] = {}
         self.entries: List[Tuple[str, Any]] = []
         self.strings: List[str] = []
         self.function_offsets: Dict[str, int] = {}
@@ -78,6 +86,18 @@ class SymbolTable:
             "-lambda-",
         )
 
+    def _index_ci(self, name: str, idx: int) -> None:
+        """把普通符号登记进大小写不敏感索引（`__` 前缀私有键与保留大小写符号除外）。"""
+        if name.startswith("__") or self._is_case_sensitive(name):
+            return
+        self._ci_index.setdefault(name.upper(), idx)
+
+    def has_case_insensitive(self, name: str) -> bool:
+        """是否已有大小写不敏感的既有符号槽（stub 重复槽判定用）。"""
+        if name.startswith("__") or self._is_case_sensitive(name):
+            return False
+        return name.upper() in self._ci_index
+
     def get_or_add(self, name: str) -> int:
         name = self._normalize_name(name)
         if name in self.name_to_idx:
@@ -87,12 +107,13 @@ class SymbolTable:
             # 不敏感（voice.lsp 'Status'/'status' 去重），但 name_to_idx 大小写
             # 敏感——codegen get_or_add('status') 找不到 derive 的 'Status'
             # → 各占一槽 nsyms +2、后续槽错位。命中返回既有槽（不新增）。
-            for _k, _v in self.name_to_idx.items():
-                if not _k.startswith("__") and not self._is_case_sensitive(_k) and _k.upper() == name.upper():
-                    return _v
+            hit = self._ci_index.get(name.upper())
+            if hit is not None:
+                return hit
         idx = len(self.entries)
         self.name_to_idx[name] = idx
         self.entries.append(('SYMBOL', name))
+        self._index_ci(name, idx)
         return self.name_to_idx[name]
 
     def add_force(self, name: str) -> int:
@@ -196,7 +217,7 @@ class SymbolTable:
         return name
 
     def is_builtin(self, name: str) -> bool:
-        return name.upper() in {n.upper() for n in BUILTIN_FUNCTIONS}
+        return name.upper() in _BUILTIN_UPPER
 
     def idx_of(self, name: str) -> Optional[int]:
         return self.name_to_idx.get(self._normalize_name(name))

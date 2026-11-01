@@ -300,3 +300,16 @@ def test_build_vlx_export_stub_honours_date_and_salt(tmp_path):
     archive = parse_vlx(first.read_bytes())
     stub = [member for member in archive.members() if member.name == b"_VLX"][0]
     assert stub.payload.rstrip().endswith(b"$;A2/3/26")
+
+
+def test_build_vlx_rejects_duplicate_member_names(tmp_path):
+    import pytest
+
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    _make_fas(str(first / "same.fas"))
+    _make_fas(str(second / "same.fas"))
+    with pytest.raises(ValueError, match="duplicate VLX member name"):
+        build_vlx([str(first / "same.fas"), str(second / "same.fas")], str(tmp_path / "x.vlx"))

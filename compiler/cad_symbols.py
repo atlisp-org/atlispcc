@@ -452,12 +452,15 @@ class _SeenList(list):
     仅覆盖 append 以同步集合。
     """
 
-    __slots__ = ("names", "structs")
+    __slots__ = ("names", "structs", "upper")
 
     def __init__(self):
         super().__init__()
         self.names = set()
         self.structs = set()
+        # 普通符号（非字符串、非 vla-/vlax-）的 upper() 集合：`_seen` 的
+        # 大小写不敏感判定用它做 O(1) 查询（原来对 names 逐项 upper 扫描）。
+        self.upper = set()
 
     def append(self, item):
         name, _forced = item
@@ -466,6 +469,12 @@ class _SeenList(list):
             self.structs.add(name[1])
         else:
             self.names.add(name)
+            if (
+                isinstance(name, str)
+                and not name.startswith('"')
+                and not name.lower().startswith(("vla-", "vlax-"))
+            ):
+                self.upper.add(name.upper())
 
 
 class CadSymbolCollector:
@@ -563,8 +572,7 @@ class CadSymbolCollector:
                 and not name.startswith('"')
                 and not name.lower().startswith(("vla-", "vlax-"))
             ):
-                nk = name.upper()
-                return any(isinstance(n, str) and n.upper() == nk for n in out.names)
+                return name.upper() in out.upper
             return name in out.names
         if is_const_entry(name):
             structure = name[1]
@@ -1026,6 +1034,11 @@ class CadSymbolCollector:
                         # @::uri-safe 的 vl-catch-all-apply 被前一函数占用）：CAD
                         # 把 `kwote` 放在块体之前（实测 [kwote, @::uri]）。
                         _rev = _pre + _body + _rev
+            # 共享参数的大小写索引（避免每个符号都重建 set / 线性 next 扫描）。
+            _shared_upper = {str(_s).upper() for _s in self.shared}
+            _shared_ci_map: dict = {}
+            for _s in self.shared:
+                _shared_ci_map.setdefault(str(_s).upper(), _s)
             _t_added = False
             for name, force in _rev:
                 if str(name).lower() == "t":
@@ -1090,13 +1103,7 @@ class CadSymbolCollector:
                 elif isinstance(name, str) and name in _local_is_param:
                     if (
                         name in self.shared
-                        and _shared_last.get(
-                            next(
-                                (s for s in self.shared if str(s).upper() == name.upper()),
-                                name,
-                            )
-                        )
-                        != i
+                        and _shared_last.get(_shared_ci_map.get(name.upper(), name)) != i
                     ):
                         # 共享参数 + `_local_is_param`（atlisp_u `msg` = @::cleanup-dcl
                         # 等 6 函数参数 + @::voice-test 局部，`_shared_last` =
@@ -1162,23 +1169,10 @@ class CadSymbolCollector:
                                 continue
                 if (
                     isinstance(name, str)
-                    and name.upper()
-                    in {str(s).upper() for s in self.shared}
+                    and name.upper() in _shared_upper
                     and name not in _local_is_param
-                    and _shared_last.get(
-                        next(
-                            (s for s in self.shared if str(s).upper() == name.upper()),
-                            name,
-                        )
-                    )
-                    is not None
-                    and _shared_last.get(
-                        next(
-                            (s for s in self.shared if str(s).upper() == name.upper()),
-                            name,
-                        )
-                    )
-                    != i
+                    and _shared_last.get(_shared_ci_map.get(name.upper(), name)) is not None
+                    and _shared_last.get(_shared_ci_map.get(name.upper(), name)) != i
                 ):
                     # 共享参数名在 body/foreach 引用（persist pkg-name foreach 变量、
                     # cache subdir foreach 变量）：仅在逆序最后引用者（_shared_last）

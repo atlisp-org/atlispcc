@@ -19,6 +19,10 @@
 退出码：0 通过 / 1 结果不符 / 2 CAD 未连接 / 3 共享目录里看不到文件 /
 4 文件可见但 CAD 加载失败（共享缓存或 CAD 的 VLX 加载器状态异常）。
 
+SMB 共享对**新建**目录项有缓存延迟，但对**已存在**文件的内容更新立即生效：
+共享目录不稳定时用 ``--remote-file probe.vlx`` 复用已可见的文件名，
+``--wait N`` 则在放弃前重试 N 秒。
+
 注意：MCP 的沙箱拒绝 ``eval_lisp`` 里的文件写入（``open``/``write-char``），
 所以只能通过共享目录传文件；共享目录对新建文件的可见性依赖 SMB 目录缓存，
 必要时先等待刷新或手工复制一次。
@@ -38,10 +42,14 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 DEFAULT_HOST = os.environ.get("VLX_MCP_HOST", "http://192.168.1.53:8110")
+# 点号目录不会进入 `make packages-check` 的 `packages/*/` 扫描，也不会被
+# 当成应用包；目录本身要长期保留（SMB 对新建目录项的缓存很慢）。
 DEFAULT_LOCAL_DIR = os.environ.get(
-    "VLX_LOCAL_DIR", os.path.expanduser("~/atlisp/packages/_vlx_probe")
+    "VLX_LOCAL_DIR", os.path.expanduser("~/atlisp/packages/.atlispcc_vlx_probe")
 )
-DEFAULT_REMOTE_DIR = os.environ.get("VLX_REMOTE_DIR", "w:/atlisp/packages/_vlx_probe")
+DEFAULT_REMOTE_DIR = os.environ.get(
+    "VLX_REMOTE_DIR", "w:/atlisp/packages/.atlispcc_vlx_probe"
+)
 
 PROBE_SOURCE = """(defun vlx-probe () 42)
 (defun vlx-probe-hidden () 99)
@@ -79,15 +87,23 @@ def _eval(host: str, code: str) -> str:
     return "\n".join(item.get("text", "") for item in result.get("content", []))
 
 
-def _eval_retry(host: str, code: str, attempts: int = 10) -> str:
-    """新建文档后 CAD 可能短暂没有活动文档，重试到可执行为止。"""
+_TRANSIENT_MARKERS = (
+    "No open document",
+    "SERVERCALL_RETRYLATER",
+    "应用程序正在使用中",
+    "call was rejected by callee",
+)
+
+
+def _eval_retry(host: str, code: str, attempts: int = 20) -> str:
+    """新建文档 / CAD 忙（COM RPC_E_SERVERCALL_RETRYLATER）时重试。"""
     last = ""
     for _ in range(attempts):
         try:
             return _eval(host, code)
         except RuntimeError as exc:
             last = str(exc)
-            if "No open document" not in last:
+            if not any(marker in last for marker in _TRANSIENT_MARKERS):
                 raise
             time.sleep(0.5)
     raise RuntimeError(last)
@@ -105,6 +121,18 @@ def main() -> int:
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR, help="shared directory (CAD side)")
     parser.add_argument("--date", default="2/3/26", help="pinned build date")
     parser.add_argument("--salt", default="deterministic", help="pinned container salt")
+    parser.add_argument(
+        "--remote-file",
+        default="",
+        help="reuse this existing basename under --remote-dir (SMB caches new directory "
+        "entries; overwriting a visible file propagates immediately)",
+    )
+    parser.add_argument(
+        "--wait",
+        type=float,
+        default=0.0,
+        help="seconds to retry before giving up when CAD cannot see the file",
+    )
     args = parser.parse_args()
 
     from compiler.compile_cmd import cmd_compile
@@ -119,9 +147,13 @@ def main() -> int:
     os.makedirs(local_dir, exist_ok=True)
     source = os.path.join(local_dir, "probe.lsp")
     fas = os.path.join(local_dir, "probe.fas")
-    # 每次用唯一文件名：独立命名空间的 VLX 以文件名标识其命名空间，重名重复加载
-    # 在部分 AutoCAD 版本上会失败。
-    vlx = os.path.join(local_dir, f"probe_{uuid.uuid4().hex[:8]}.vlx")
+    if args.remote_file:
+        # 复用共享目录里已可见的文件名（SMB 只对已存在文件的内容刷新即时可见）。
+        vlx = os.path.join(local_dir, args.remote_file)
+    else:
+        # 每次用唯一文件名：独立命名空间的 VLX 以文件名标识其命名空间，重名重复加载
+        # 在部分 AutoCAD 版本上会失败。
+        vlx = os.path.join(local_dir, f"probe_{uuid.uuid4().hex[:8]}.vlx")
     with open(source, "w", encoding="utf-8") as handle:
         handle.write(PROBE_SOURCE)
     cmd_compile(source, fas, date=args.date, salt=args.salt)
@@ -129,14 +161,20 @@ def main() -> int:
     print(f"[ok] built {vlx}")
 
     remote = args.remote_dir.rstrip("/") + "/" + os.path.basename(vlx)
-    visible = _eval(args.host, f'(findfile "{remote}")')
-    if visible.strip() in ("nil", ""):
-        print(
-            f"[skip] CAD cannot see {remote}. The shared directory may cache directory "
-            f"listings; copy the file there manually or wait for the share to refresh.",
-            file=sys.stderr,
-        )
-        return 3
+    deadline = time.time() + max(0.0, args.wait)
+    while True:
+        visible = _eval(args.host, f'(findfile "{remote}")')
+        if visible.strip() not in ("nil", ""):
+            break
+        if time.time() >= deadline:
+            print(
+                f"[skip] CAD cannot see {remote}. The shared directory may cache directory "
+                f"listings; retry with --wait, or pass --remote-file with a name that is "
+                f"already visible (overwrites propagate immediately).",
+                file=sys.stderr,
+            )
+            return 3
+        time.sleep(1.0)
 
     try:
         _rpc(args.host, "new_document", {})
@@ -144,10 +182,15 @@ def main() -> int:
         # 已有未保存图形时 CAD 可能拒绝新建；在当前图形里先清掉同名变量同样可验证。
         print(f"[note] new_document failed ({exc}); verifying in the current document")
 
+    app_name = os.path.splitext(os.path.basename(remote))[0]
     try:
         result = _eval_retry(
             args.host,
-            f"(progn (setq vlx-probe nil vlx-probe-hidden nil) (load \"{remote}\") "
+            # 同一文件名重复验证时先卸载旧的独立命名空间应用（AutoLISP 的
+            # vl-unload-vlx 不存在于 atoms-family 时才值得怀疑；这里用
+            # vl-catch-all-apply 忽略「未加载」错误）。
+            f"(progn (vl-catch-all-apply 'vl-unload-vlx (list \"{app_name}\")) "
+            f"(setq vlx-probe nil vlx-probe-hidden nil) (load \"{remote}\") "
             f"(list (type vlx-probe) (if vlx-probe (vlx-probe) nil) (type vlx-probe-hidden)))",
         )
     except RuntimeError as exc:

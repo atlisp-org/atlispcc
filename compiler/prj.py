@@ -363,6 +363,14 @@ def compile_prj(
         from compiler.linker import link_fas
 
         merged_path = os.path.join(target_dir, spec.display_name + ".fas")
+        built_abs = {os.path.abspath(path) for path in built}
+        if os.path.abspath(merged_path) in built_abs:
+            # `:NAME` 与某个源模块同名时不能覆盖该模块（例如 :NAME "a" + a.lsp）。
+            merged_path = os.path.join(target_dir, spec.display_name + "_merged.fas")
+            report["diagnostics"].append(
+                f":NAME {spec.display_name!r} collides with a module output; "
+                f"merged file renamed to {os.path.basename(merged_path)}"
+            )
         try:
             link_fas(built, merged_path, encoding=encoding, date=date, salt=salt)
             report["merged"].update(

@@ -6,6 +6,17 @@
 
 import os
 
+def _detect_layout(bytecode: bytes, catalog, nsyms: int = 0) -> str:
+    """紧凑 stub / 自包含判定（委托反编译器的 ``detect_layout``，只看函数前导）。"""
+    from types import SimpleNamespace
+
+    from decompiler.fas4_decompiler import detect_layout
+
+    return detect_layout(
+        SimpleNamespace(bytecode=bytecode, function_catalog=catalog, symbol_slots=[], nsyms=nsyms)
+    )
+
+
 def cmd_info(source: str, json_out: bool = False, encoding: str = "ansi") -> dict:
     """FAS/ZELX 快速概览 — 文件头/段规模/函数目录/符号/字符串，不触发完整反编译。
 
@@ -95,8 +106,6 @@ def cmd_info(source: str, json_out: bool = False, encoding: str = "ansi") -> dic
     res_items = parsed["res_items"]
     trailer = parsed["trailer"]
 
-    # 格式类型：紧凑 stub / 自包含。沿用 fas-analyzer 的启发式。
-    fmt = "compact-stub"
     if seg1_dec:
         resource_items, symbols, strings = parse_resource_stream(seg1_dec)
         resource_gvars, function_gvars = build_mvar_tables(seg1_dec, nsyms)
@@ -104,6 +113,8 @@ def cmd_info(source: str, json_out: bool = False, encoding: str = "ansi") -> dic
     else:
         resource_items, symbols, strings = [], [], []
         catalog = []
+
+    fmt = _detect_layout(bytecode, catalog, nsyms)
 
     info = {
         "file": source,

@@ -254,13 +254,7 @@ def cmd_compile(
             # `get_or_add` 的大小写不敏感回退会复用模块槽 → fg 表缺函数体重复
             # 槽（CAD fg[128] 有 @::SHOWCOPYRIGHT；atlisp_u 实测 @::SHOWCOPYRIGHT
             # rg[446] + fg[128] 双槽）。须按 CAD stub 语义 `add_force` 追加重复槽。
-            _ci_hit = any(
-                not k.startswith("__")
-                and not SymbolTable._is_case_sensitive(k)
-                and k.upper() == sym.upper()
-                for k in symtab.name_to_idx
-            )
-            if _ci_hit:
+            if symtab.has_case_insensitive(sym):
                 symtab.add_force(sym)
             else:
                 symtab.get_or_add(sym)

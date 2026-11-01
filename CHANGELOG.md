@@ -3,6 +3,43 @@
 本文件记录 atlispcc 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/)，
 版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.2.1] — 2026-11-01
+
+### Performance
+
+- 符号表大小写不敏感查找改为预建索引（`SymbolTable._ci_index` /
+  `has_case_insensitive`）：`atlisp_u` 编译 13.0 s → 2.96 s（整体约 4×）。
+- `is_builtin` 的内建名集合改为模块级预计算（原先每次调用重建 152 项集合）。
+- 符号收集：`_SeenList` 维护 upper 集合、共享参数判定复用循环外构建的映射，
+  去掉逐符号全表扫描。
+- 模块代码：提升 defun 的跳过数与 mid 计数改前缀和，`_has_mid` 不再切片求和。
+- 补丁阶段：`_res_slot_of` 预建末次出现索引，不再线性扫描 `symbol_slots`。
+- 反汇编符号计数一次预计算（195 KB 4.3 s → 1.1 s）；
+  `disasm` 复用布局探测阶段的指令表。
+- 反编译 `is_compact_stub` 缓存键去掉未参与判定的 `sym_count`（1.93 s → 1.63 s）。
+- 写盘只加密一次（`build_trailer(return_ciphertext=True)`）。
+
+### Added
+
+- `atlispcc --version`。
+- `decompiler.detect_layout()` / `detect_layout_bytes()`：按函数前导的 `5c`/`05`
+  局部变量指令 + DEFUN 头（UNK 计数兜底）判定紧凑/自包含布局；
+  `use_short_subr`、反编译器、链接器、`info` 统一使用（小型紧凑 stub 不再误报）。
+- `build-vlx --prv --json` / `--report <path>`：结构化打包报告。
+- `scripts/cad_verify_vlx.py --remote-file/--wait`：SMB 目录缓存导致看不到新文件时，
+  复用已可见文件名并在放弃前重试；探针目录改为持久隐藏目录，加载前
+  `vl-unload-vlx` 卸载同名应用，COM 忙/无文档自动重试。
+- `.prj` 的 `:MERGED` 输出名与源模块同名时自动改名为 `<NAME>_merged.fas` 并告警。
+- `info` 的「格式」字段改用 DEFUN 头启发式判定（原先固定输出 compact-stub）。
+- `build-vlx` 拒绝重复成员名；`build-vlx --prv` 与位置参数同用时报错；
+  `project <file.prv>` 提示改用 `build-vlx --prv`。
+- `--salt` 显式盐长度限制在 6..10（否则读取端 `find_key` 无法定位）。
+- `requires-python` 下限由 3.8 提到 3.10（与 CI 矩阵和 mypy 配置一致）。
+
+### Fixed
+
+- 同源码同参数构建的可复现性覆盖 `build-vlx` 的 `_VLX` 导出桩编译。
+
 ## [0.2.0] — 2026-11-01
 
 ### Added

@@ -1,4 +1,5 @@
 """CLI path tests — cmd_* functions and main() dispatch."""
+import json
 import os
 import sys
 import tempfile
@@ -589,3 +590,27 @@ def test_main_build_vlx_from_prv(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sys, 'argv', ['atlispcc', 'build-vlx', '--prv', str(prv)])
     assert main() == 0
     assert (tmp_path / 'out.vlx').exists()
+
+
+def test_main_build_vlx_prv_json(monkeypatch, tmp_path, capsys):
+    src = tmp_path / 'core.lsp'
+    src.write_text('(defun core () 1)', encoding='utf-8')
+    prv = tmp_path / 'app.prv'
+    prv.write_text(
+        '(PRV-DEF (:target . "out.vlx") (:load-file-list (:lsp "core.lsp")))',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(sys, 'argv', ['atlispcc', 'build-vlx', '--prv', str(prv), '--json'])
+    assert main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['target'].endswith('out.vlx')
+    assert [member['name'] for member in payload['members']] == ['core.fas']
+
+
+def test_main_build_vlx_json_requires_prv(monkeypatch, tmp_path, capsys):
+    fas = tmp_path / 'a.fas'
+    fas.write_bytes(b'x')
+    monkeypatch.setattr(sys, 'argv', ['atlispcc', 'build-vlx', str(fas), '--json'])
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    assert excinfo.value.code == 2

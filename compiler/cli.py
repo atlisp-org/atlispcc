@@ -227,11 +227,21 @@ def _validate_build_options(parser_obj, args) -> None:
             parser_obj.error(str(exc))
 
 
+def _package_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("atlispcc")
+    except Exception:  # noqa: BLE001 - source checkout without installed metadata
+        return "0.0.0+source"
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="atlispcc",
         description="FAS4 bytecode compiler/decompiler toolchain for AutoLISP-compatible CAD platforms",
     )
+    parser.add_argument("--version", action="version", version=f"atlispcc {_package_version()}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     # compile
@@ -355,7 +365,7 @@ def main():
     )
     p_asm.add_argument(
         "--salt", default="",
-        help="container salt: 'deterministic', 'seed:<n>', 'hex:<bytes>', or an integer seed",
+        help="container salt: 'deterministic', 'seed:<n>', 'hex:<6..10 bytes>', or an integer seed",
     )
 
     # link
@@ -373,7 +383,7 @@ def main():
     )
     p_link.add_argument(
         "--salt", default="",
-        help="container salt: 'deterministic', 'seed:<n>', 'hex:<bytes>', or an integer seed",
+        help="container salt: 'deterministic', 'seed:<n>', 'hex:<6..10 bytes>', or an integer seed",
     )
 
     # build-vlx
@@ -403,11 +413,17 @@ def main():
         "--workdir", default="", help="directory for compiled intermediates (default: temp dir)"
     )
     p_vlx.add_argument(
+        "--json", action="store_true", help="print the --prv packing report as JSON"
+    )
+    p_vlx.add_argument(
+        "--report", default="", help="write the --prv packing report (JSON) to this path"
+    )
+    p_vlx.add_argument(
         "--date", default="", help="pin the FAS build stamp (M/D/YY) for reproducible builds"
     )
     p_vlx.add_argument(
         "--salt", default="",
-        help="container salt: 'deterministic', 'seed:<n>', 'hex:<bytes>', or an integer seed",
+        help="container salt: 'deterministic', 'seed:<n>', 'hex:<6..10 bytes>', or an integer seed",
     )
 
     # unpack-vlx: extract VRTLIB-1 members
@@ -460,7 +476,7 @@ def main():
     )
     p_project.add_argument(
         "--salt", default="",
-        help="container salt: 'deterministic', 'seed:<n>', 'hex:<bytes>', or an integer seed",
+        help="container salt: 'deterministic', 'seed:<n>', 'hex:<6..10 bytes>', or an integer seed",
     )
 
     args = parser.parse_args()
@@ -560,6 +576,8 @@ def main():
     if args.command == "build-vlx":
         _validate_build_options(p_vlx, args)
         if args.prv:
+            if args.inputs:
+                p_vlx.error("--prv accepts no positional inputs")
             from compiler.prv import run_prv
 
             return run_prv(
@@ -569,7 +587,11 @@ def main():
                 encoding=args.encoding,
                 date=args.date or None,
                 salt=args.salt or None,
+                json_out=args.json,
+                report_path=args.report,
             )
+        if args.json or args.report:
+            p_vlx.error("--json/--report are only available with --prv")
         if not args.inputs:
             p_vlx.error("either input files or --prv is required")
         output = args.output
@@ -624,6 +646,9 @@ def main():
 
     if args.command == "project":
         from compiler.project_cmd import run_project
+
+        if str(args.source).lower().endswith(".prv"):
+            p_project.error(".prv is an application spec; use `build-vlx --prv <file.prv>`")
 
         _validate_build_options(p_project, args)
         return run_project(

@@ -643,6 +643,22 @@ def _build_cad_module_code(
         _vl_slot = (_first_cmd_slot + 1) if _first_cmd_slot is not None else None
         _mi = 0
         _mid_counts = mid_counts or ()
+        # 前导 top-lambda skip 的前缀和（_mid_counts 的索引偏移）与 mid_counts
+        # 自身的前缀和，避免每次查询都 O(i) 扫描 / 切片求和。
+        _skip_set = skip_funcs or set()
+        _fn_len = len(func_names) if func_names else 0
+        _skip_prefix = [0] * (_fn_len + 1)
+        for _j in range(_fn_len):
+            _skip_prefix[_j + 1] = _skip_prefix[_j] + (
+                1 if func_names[_j] in _skip_set else 0
+            )
+        _mid_prefix = [0]
+        for _cnt in _mid_counts:
+            _mid_prefix.append(_mid_prefix[-1] + _cnt)
+
+        def _mid_ri(i):
+            """func_names 索引 → _mid_counts 索引（扣掉提升 defun）。"""
+            return i - _skip_prefix[i if i <= _fn_len else _fn_len]
 
         def _mid_count_of(i):
             # `_mid_counts` 按**真实 defun 序**（跳过 top-lambda 提升 defun，
@@ -652,20 +668,13 @@ def _build_cad_module_code(
             # 比 func_names 少 3。此处按 func_names 前导 **top-lambda skip**
             # 数偏移映射——**仅 `skip_funcs`**（fasext/vlx/wget 提升 defun），
             # 不含 `_cond_defun_names`（C:%/C:%% 条件 defun 有真实 mid 槽）。
-            _ri = i
-            for _j in range(i):
-                if func_names and _j < len(func_names) and func_names[_j] in (skip_funcs or set()):
-                    _ri -= 1
+            _ri = _mid_ri(i)
             return _mid_counts[_ri] if 0 <= _ri < len(_mid_counts) else 0
 
         def _mid_skip_prefix(i):
             # func_names 前导 **top-lambda skip**（提升 defun）数：mid_counts
             # 索引偏移量。不含 `_cond_defun_names`（条件 defun 有真实 mid 槽）。
-            return sum(
-                1
-                for _j in range(i)
-                if func_names and _j < len(func_names) and func_names[_j] in (skip_funcs or set())
-            )
+            return _skip_prefix[i if i <= _fn_len else _fn_len]
 
         def _emit_mid_for(i):
             nonlocal _mi
@@ -684,7 +693,8 @@ def _build_cad_module_code(
             _cnt_i = _mid_count_of(i)
             if not _interleave_mid or _cnt_i == 0:
                 return False
-            _start = sum(_mid_counts[: (i - _mid_skip_prefix(i))])
+            _ri = _mid_ri(i)
+            _start = _mid_prefix[_ri] if 0 <= _ri <= len(_mid_counts) else 0
             if _start + _cnt_i > len(mid_forms):
                 return False
             return _mid_lead_alias(mid_forms[_start])

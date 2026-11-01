@@ -186,6 +186,12 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
                 _res_symbol_slots.append(str(_rit[1]))
     except Exception:
         _res_symbol_slots = []
+    # 末次出现索引（精确 + 大小写不敏感）预计算：`_res_slot_of` 原来每次线性扫描。
+    _res_last_exact: dict = {}
+    _res_last_upper: dict = {}
+    for _i, _v in enumerate(_res_symbol_slots):
+        _res_last_exact[_v] = _i
+        _res_last_upper[_v.upper()] = _i
 
     def _res_slot_of(value: str) -> Optional[int]:
         """字符串/符号在资源 symbol_slots 中的索引；未找到返回 None。
@@ -205,15 +211,9 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
         精确匹配 None → `_res_offset` 变 None → 表外符号回退 nsyms-1 错槽；
         符号查大小写不敏感，字符串精确命中不受影响）。
         """
-        _found: Optional[int] = None
-        for _i, _v in enumerate(_res_symbol_slots):
-            if str(_v) == value:
-                _found = _i
+        _found: Optional[int] = _res_last_exact.get(value)
         if _found is None:
-            _vu = value.upper()
-            for _i, _v in enumerate(_res_symbol_slots):
-                if str(_v).upper() == _vu:
-                    _found = _i
+            _found = _res_last_upper.get(value.upper())
         return _found
 
     # 表外符号（DEFCODE module 参数等，如 cmd.lsp C:@U 的 `@::upgrade`）：

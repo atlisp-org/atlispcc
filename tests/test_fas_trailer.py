@@ -156,3 +156,10 @@ def test_assembler_accepts_date_and_salt(tmp_path):
     assemble_lasm(text, str(second), date="2/3/26", salt="deterministic")
     assert first.read_bytes() == second.read_bytes()
     assert first.read_bytes().rstrip().endswith(b"$;A2/3/26")
+
+
+def test_build_trailer_rejects_salt_outside_vendor_range():
+    with pytest.raises(ValueError):
+        build_trailer(b"x", salt=b"abcde")       # 5 bytes
+    with pytest.raises(ValueError):
+        build_trailer(b"x", salt=b"0123456789A")  # 11 bytes

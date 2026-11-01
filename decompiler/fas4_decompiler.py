@@ -62,12 +62,14 @@ class Fas4File:
 # ─── Decryption & Parsing ──────────────────────────────────────────────────
 
 
-def _is_compact_stub_cached(bytecode, sym_count, has_catalog):
+def _is_compact_stub_cached(bytecode, has_catalog):
     """计算 ``is_compact_stub`` 结果（纯函数，参数均 hashable）。
 
-    ``function_catalog`` 仅以非空性参与判定，故模块级缓存键用
-    ``(bytes哈希, sym_count, has_catalog)``。大文件 bytecode 反汇编成本高
-    （两份全量反汇编 × 通常 2-3 次调用），缓存避免重复计算。
+    ``function_catalog`` 仅以非空性参与判定，``sym_count`` 不参与判定
+    （内部两份反汇编都不带 sym_count），故模块级缓存键用
+    ``(bytes, has_catalog)``——调用方传不同 ``sym_count`` 时仍命中同一结果。
+    大文件 bytecode 反汇编成本高（两份全量反汇编 × 通常 2-3 次调用），
+    缓存避免重复计算。
     """
     cache_key = bytes(bytecode)
 
@@ -92,7 +94,67 @@ _is_compact_stub_cached = functools.lru_cache(maxsize=64)(_is_compact_stub_cache
 
 
 def is_compact_stub(bytecode: bytes, function_catalog: list, sym_count: int = 0) -> bool:
-    return _is_compact_stub_cached(bytes(bytecode), int(sym_count or 0), bool(function_catalog))
+    return _is_compact_stub_cached(bytes(bytecode), bool(function_catalog))
+
+
+def detect_layout_bytes(bytecode: bytes, function_catalog: list, symbol_slots=None) -> str:
+    """``detect_layout`` 的字节级实现（供没有 Fas4File 对象的调用方使用）。"""
+    from types import SimpleNamespace
+
+    return detect_layout(
+        SimpleNamespace(
+            bytecode=bytecode,
+            function_catalog=function_catalog or [],
+            symbol_slots=symbol_slots or [],
+        )
+    )
+
+
+def detect_layout(fas) -> str:
+    """判定 FAS 布局：``'compact'``（紧凑 stub）/ ``'selfcontained'``。
+
+    与 :func:`is_compact_stub` 的区别：优先看**函数体前导**的局部变量指令
+    ——紧凑 stub 用 `5c <slot:2>`（GET_LOCAL_WIDE），自包含用 `05 <slot>`；
+    其次看 DEFUN 头编码（`14 <argc>x3 00` vs `14 <gvar:2> <off:2>`），
+    最后才回落到 UNK 计数启发式。
+
+    小型紧凑 stub 上带清理字节 `00 03` 的调用会被宽解析「吃掉」而减少
+    UNK，单看 UNK 计数会把紧凑误判为自包含（`tests` 回归锁住该场景）。
+    """
+    bc = bytes(getattr(fas, "bytecode", b"") or b"")
+    catalog = getattr(fas, "function_catalog", None) or []
+    offsets = [off for _name, off in catalog if isinstance(off, int)]
+    if not offsets:
+        # 无函数目录：用函数间的 `16 14`（END_DEFUN; DEFUN）定位，再补首条。
+        offsets = [0]
+        start = 0
+        while True:
+            hit = bc.find(b"\x16\x14", start)
+            if hit < 0:
+                break
+            offsets.append(hit + 1)
+            start = hit + 2
+
+    for off in offsets:
+        if off < 0 or off + 5 > len(bc) or bc[off] != 0x14:
+            continue
+        a, b, c, d = bc[off + 1 : off + 5]
+        # 参数绑定区（DEFUN 头 → INIT_ARGS）里的局部变量指令宽度。
+        region = bc[off + 5 : off + 5 + 48]
+        init = region.find(b"\x18")
+        if init >= 0:
+            region = region[:init]
+        if b"\x5c" in region:
+            return "compact"
+        if b"\x05" in region:
+            return "selfcontained"
+        if d == 0 and a == b == c:
+            return "compact"
+        if d in (0, 1) and a != b:
+            return "selfcontained"
+
+    sym_count = len(getattr(fas, "symbol_slots", []) or [])
+    return "compact" if is_compact_stub(bc, catalog, sym_count) else "selfcontained"
 
 
 def use_short_subr(bytecode: bytes, nsyms: int, function_catalog: list, sym_count: int = 0) -> bool:
@@ -106,7 +168,7 @@ def use_short_subr(bytecode: bytes, nsyms: int, function_catalog: list, sym_coun
     （早期此错位会表现为 OP_1A/OP_1B/OP_38/OP_40/OP_10 等伪指令，
     已从 OPCODES 表移除，现一律归入 UNK_。）
     """
-    return is_compact_stub(bytecode, function_catalog, sym_count) and nsyms <= 256
+    return detect_layout_bytes(bytecode, function_catalog) == "compact" and nsyms <= 256
 
 
 class Fas4Parser:
@@ -987,7 +1049,7 @@ class LispGenerator:
         AutoCAD 编译器产物（如 tests/cad/t01_math_cad.fas 等 t-series golden）无函数目录且 seg0 很短，
         使用 3 字节 Xsubr，符号按资源注册顺序（symbol_slots）编址。
         """
-        if is_compact_stub(self.fas.bytecode, self.fas.function_catalog, len(self.fas.symbol_slots)):
+        if detect_layout(self.fas) == "compact":
             return True
         # 项目 stub 特征：DEFCODE 序列 + DEFUN 头 argc 编码（区分自包含 PDI/bib）。
         if self._has_stub_defcode_seq() and self._defun_headers_are_argc():
@@ -3270,7 +3332,7 @@ class Fas4Decompiler:
     def decompile(self, filepath: str, output_path: Optional[str] = None) -> str:
         parser = Fas4Parser()
         fas = parser.parse(filepath)
-        _stub = is_compact_stub(fas.bytecode, fas.function_catalog, len(fas.symbol_slots))
+        _stub = detect_layout(fas) == "compact"
         disasm = Disassembler(short_subr=use_short_subr(fas.bytecode, fas.nsyms, fas.function_catalog, len(fas.symbol_slots)))
         instructions = disasm.disassemble(
             fas.bytecode,

@@ -97,3 +97,48 @@ def test_collect_symbols_excludes_nil_t():
     st.get_or_add('nil')
     assert st.idx_of('T') is not None
     assert st.idx_of('nil') is not None
+
+
+def test_case_insensitive_index_matches_legacy_fallback():
+    from compiler.symbol_table import SymbolTable
+
+    table = SymbolTable()
+    first = table.get_or_add("Status")
+    assert table.get_or_add("status") == first
+    assert table.get_or_add("STATUS") == first
+    assert table.has_case_insensitive("STATUS") is True
+    assert table.has_case_insensitive("nope") is False
+
+
+def test_case_sensitive_symbols_are_not_merged():
+    from compiler.symbol_table import SymbolTable
+
+    table = SymbolTable()
+    a = table.get_or_add("vla-get-Count")
+    b = table.get_or_add("vla-get-count")
+    assert a != b
+    assert table.has_case_insensitive("vla-get-count") is False
+
+    c = table.get_or_add("kwote")
+    d = table.get_or_add("KWOTE")
+    assert c != d
+
+
+def test_private_keys_are_not_case_merged():
+    from compiler.symbol_table import SymbolTable
+
+    table = SymbolTable()
+    a = table.get_or_add("__str_x__")
+    b = table.get_or_add("__STR_X__")
+    assert a != b
+    assert table.has_case_insensitive("__STR_X__") is False
+
+
+def test_add_force_does_not_join_the_case_index():
+    from compiler.symbol_table import SymbolTable
+
+    table = SymbolTable()
+    slot = table.add_force("Temp")
+    assert table.has_case_insensitive("TEMP") is False
+    fresh = table.get_or_add("TEMP")
+    assert fresh != slot

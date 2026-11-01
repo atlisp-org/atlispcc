@@ -199,3 +199,21 @@ def test_expand_members_supports_glob_patterns(tmp_path):
     diagnostics = []
     assert expand_members(["src/*.zzz"], str(tmp_path), ":OWN-LIST", diagnostics) == []
     assert any("matched no files" in message for message in diagnostics)
+
+
+def test_merged_name_collision_is_renamed(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.lsp").write_text('(defun a-fn () 1)', encoding="utf-8")
+    (src / "b.lsp").write_text('(defun b-fn () 2)', encoding="utf-8")
+    prj = tmp_path / "demo.prj"
+    prj.write_text(
+        '(VLISP-PROJECT-LIST :NAME "a" :OWN-LIST ("src/a.lsp" "src/b.lsp")'
+        ' :PROJECT-KEYS (:BUILD (:STANDARD) :MERGED T))',
+        encoding="utf-8",
+    )
+    report = compile_prj(str(prj))
+    assert report["merged"]["status"] == "ok"
+    assert report["merged"]["output"].endswith("a_merged.fas")
+    assert (tmp_path / "a.fas").exists()
+    assert any("collides" in message for message in report["diagnostics"])
