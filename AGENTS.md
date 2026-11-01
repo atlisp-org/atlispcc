@@ -4,7 +4,7 @@
 
 **atlispcc** = **A**uto**LISP** **C**ompiler **C**ollection，FAS4 字节码编译器套件：`.lsp` ↔ `.fas`（兼容 AutoLISP 的 CAD 平台）。
 
-`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持十二个子命令：
+`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持十三个子命令：
 
 ```
 atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]    # 编译 Lisp → FAS
@@ -19,6 +19,7 @@ atlispcc unzelx <input.zelx> [output.fas]                  # 从 .zelx 恢复 .f
 atlispcc info <input.fas|input.zelx> [--json]              # 快速概览（头/段/函数目录）
 atlispcc analyze [-f text|dot|mermaid|json] [-o OUT] [--no-cc] <lsp|fas>  # 调用图/依赖分析
 atlispcc roundtrip <input.lsp> [-O {0,1,2,3}] [--keep]     # 编译往返冒烟自检
+atlispcc project <pkg.lsp|包目录> [-o OUTDIR] [--json]     # 按 :FILES 批量编译（CI）
 ```
 
 子命令别名：`compile→c`、`decompile→d`、`validate→v`、`disasm→disassemble`、`asm→assemble`。无子命令时默认为 compile。
@@ -66,6 +67,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | `compiler/analyzer.py` | 编译分析与统计（--analyze/--report） |
 | `compiler/dep_analysis.py` | 调用图/依赖分析图模型与 text/dot/mermaid 格式（analyze） |
 | `compiler/roundtrip.py` | 编译往返冒烟（裸内存管线，roundtrip） |
+| `compiler/project_cmd.py` | pkg.lsp `:FILES` 批量编译（project），逐文件状态 + JSON 报告 |
 | `asm/assembler.py` | 反汇编/汇编（.fas ↔ .lasm） |
 | `asm/opcodes.py` | 操作码定义与编码函数（codegen/linker/汇编共用） |
 | `compiler/linker.py` | 多文件 FAS 链接器 |

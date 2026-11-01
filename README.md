@@ -11,6 +11,8 @@
 - **VLX 容器** 打包 FAS 文件，支持独立命名空间隔离
 - **语法验证** 括号平衡、defun 结构、符号合法性等检查
 - **CL 风格包系统** 编译期名混淆（`pkg|name`），不改变 FAS4 格式
+- **包级批量编译** `project` 子命令按 `pkg.lsp` 的 `:FILES` 编译全部 Lisp 源，
+  资源文件自动跳过，输出 JSON 报告（CI / Agent 可直接消费）
 - **大型 @lisp 包支持** 顶层 `(progn ...)` 包裹、条件/嵌套 defun、
   多 kwote 回调（`(function (lambda ...))`）与 >256 符号大文件
   （5 字节 USUBR / 6 字节 FUNC 宽格式）均可编译，产物在 CAD 完整加载运行
@@ -51,6 +53,7 @@ atlispcc disasm <input.fas> [output.lasm]                        # 反汇编 FAS
  atlispcc info <input.fas|input.zelx> [--json]                    # 快速概览：头/段/函数目录
  atlispcc analyze [-f text|dot|mermaid|json] [-o OUT] [--no-cc] <lsp|fas>  # 调用图/依赖分析
  atlispcc roundtrip <input.lsp> [-O {0,1,2,3}] [--keep]           # 往返冒烟测试
+ atlispcc project <pkg.lsp|包目录> [-o OUTDIR] [-O 0..3] [--json]  # 按 :FILES 批量编译
 ```
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
@@ -258,6 +261,23 @@ atlispcc build-vlx app.fas lib.fas -o app.vlx --export main setup
 - 自动生成 `_VLX` 元数据条目（含 `vl-doc-export` 调用）
 - 加载 VLX 时 CAD 运行时创建隔离命名空间，仅导出的函数可被外部访问
 - VLX 格式基于逆向工程，标记为实验性
+
+### project — 包级批量编译（CI / Agent）
+
+读取 `pkg.lsp` 里的 `:FILES`，把其中的 Lisp 源文件（无扩展名或 `.lsp`）
+逐个编译，资源文件（`.pat` / `.dwg` / `.txt` …）自动跳过：
+
+```sh
+atlispcc project packages/at-landscape
+atlispcc project packages/at-landscape -o dist/at-landscape -O2
+atlispcc project packages/at-landscape --json --report build-report.json
+atlispcc project packages/at-landscape --dry-run     # 只列文件
+```
+
+- 单个文件失败不会中断整批（`--stop-on-error` 可改为遇到错误即停）
+- 退出码：全部成功 0；有编译错误/缺文件 1
+- `--json` 输出 `summary`（ok/error/missing/skipped）与逐文件 `status/bytes/elapsed_ms/log`
+- 适合放进 CI 或由 Agent 调用，不需要打开 CAD
 
 ### zelx — 构建 ZWCAD ZELX
 

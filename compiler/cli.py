@@ -443,6 +443,37 @@ def main():
     p_vlx.add_argument("--export", nargs="*", default=[], help="exported function names for namespace isolation")
     p_vlx.add_argument("--package", default="", help="VLX package/application name")
 
+    # project: compile every :FILES source listed in pkg.lsp
+    p_project = sub.add_parser(
+        "project",
+        help="Compile all Lisp sources listed in a package's pkg.lsp (CI friendly)",
+    )
+    p_project.add_argument("source", help="pkg.lsp path or package directory")
+    p_project.add_argument("-o", "--outdir", default="", help="output directory (default: next to each source)")
+    p_project.add_argument(
+        "-O",
+        "--opt",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3],
+        help="optimization level (default: 0)",
+    )
+    p_project.add_argument(
+        "--encoding",
+        default="ansi",
+        help="string/symbol encoding for FAS output (default: ansi=system codepage)",
+    )
+    p_project.add_argument(
+        "--no-verify",
+        dest="verify",
+        action="store_false",
+        help="skip post-compile verification",
+    )
+    p_project.add_argument("--dry-run", action="store_true", help="list files without compiling")
+    p_project.add_argument("--stop-on-error", action="store_true", help="stop at the first failure")
+    p_project.add_argument("--json", action="store_true", help="print the report as JSON")
+    p_project.add_argument("--report", default="", help="write the JSON report to this path")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -535,6 +566,21 @@ def main():
         result = build_vlx(args.inputs, output, exports=args.export, package_name=args.package)
         print(f"Built {result}")
         return 0
+
+    if args.command == "project":
+        from compiler.project_cmd import run_project
+
+        return run_project(
+            args.source,
+            outdir=args.outdir,
+            opt_level=args.opt,
+            encoding=args.encoding,
+            verify=args.verify,
+            dry_run=args.dry_run,
+            stop_on_error=args.stop_on_error,
+            json_out=args.json,
+            report_path=args.report,
+        )
 
     parser.print_help()
     return 1
