@@ -61,7 +61,8 @@ atlispcc decompile <input.fas> [output.lsp]                      # FAS → Lisp
 atlispcc disasm <input.fas> [output.lasm]                        # FAS → bytecode listing
 atlispcc asm <input.lasm> [output.fas]                           # .lasm → FAS
 atlispcc validate <input.lsp>                                    # validate syntax
-atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]          # link FAS files
+atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...] [--merge-top-level]  # link FAS files
+atlispcc merge <a.lsp> <b.lsp> [...] -o merged.fas               # merge sources (keeps top-level forms)
 atlispcc build-vlx <input...> -o output.vlx [--export ...]       # build a VRTLIB-1 VLX
 atlispcc unpack-vlx <input.vlx> [-o DIR] [--list] [--stub FILE]   # unpack / verify
 atlispcc zelx <input.lsp|input.fas> [output.zelx]                # build a ZWCAD ZELX
@@ -73,6 +74,45 @@ atlispcc project <pkg.lsp|dir|file.prj> [-o OUTDIR] [-O 0..3] [--json]  # batch 
 ```
 
 With no subcommand it defaults to `compile`: `atlispcc <input.lsp> [output.fas]`
+
+### Merge sources (merge)
+
+`link` only merges **defun bodies** from `.fas` files. Top-level expressions
+(`setq` / `set` / initialization calls) are interleaved with function
+registration in the bytecode and cannot be safely reconstructed. Use the
+**source-level** `merge` to keep them:
+
+```sh
+atlispcc merge a.lsp b.lsp -o merged.fas
+atlispcc merge a.lsp b.lsp -o merged.fas --keep-source merged.lsp   # keep merged source
+```
+
+- Inputs are concatenated in command-line order and compiled **once**, so
+  top-level expressions run in source order
+- `--keep-source` writes the merged `.lsp` for review or reuse
+- `.fas` inputs are refused by default (decompilation does not preserve
+  top-level expressions); pass `--allow-lossy-fas` to merge defun bodies only
+  (a warning is printed)
+
+### Link FAS files (link)
+
+`link` merges only defun bodies by default; top-level expressions (module code)
+are dropped (with a warning). Pass `--merge-top-level` to merge them too:
+
+```sh
+atlispcc link a.fas b.fas -o merged.fas --merge-top-level
+```
+
+- Supports **linear top-level statements** (`setq` / `princ` / ordinary calls),
+  executed in input order
+- Module code containing `if` / `while` / `let` / command registration (`c:`) /
+  lambda is **rejected explicitly** instead of producing wrong bytecode
+- Top-level statements run after all function registration, so they may call any
+  merged function
+- Output is still one compact stub `.fas`, loadable with `(load "merged.fas")`
+
+> Prefer `merge` when `.lsp` sources are available (source-level merge covers
+> every construct).
 
 ## Quick start
 
@@ -378,7 +418,7 @@ atlispcc zelx app.fas app.zelx      # convert an existing .fas
 
 - `.zelx` = `!ZAS` container: payload (resources) + segment-1 directory (function
   bytecode) + rolling XOR encryption
-- The algorithm is reverse-engineered from ZWCAD `LispConverter.exe`; small/simple
+- The algorithm follows ZWCAD's format conversion rules; small/simple
   files are **byte-for-byte identical** to the official output (15/15 samples)
 - Complex files (many symbols/top-level expressions) still need ZWCAD's compressed
   re-encoding (module-code re-encoding + symbol reordering); see `docs/zelx-format.md`
@@ -533,13 +573,13 @@ Analysis helpers in `tools/` (shipped with the pip package, runnable with `pytho
 
 - `tools.fas-analyzer` — FAS4 file analysis (`--dump`/`--json`)
 - `tools.fas-split` — function splitting (`--trim`/`--outdir`)
-- `tools.decrypt_fas4` / `tools.crack_key` — decryption / key cracking
+- `tools.decrypt_fas4` / `tools.crack_key` — decryption / key recovery
 - `tools.find_key` — locate the XOR key inside a FAS
 - `tools.validate` — syntax / dangerous function (`quit`/`exit`/`startapp`) / dangerous
   command (`command-s` invoking shell/del …) / unused-local checks for generated `.lsp`
 - `tools.compare_lsp` — `.lsp` diff analysis
 - `tools.zelx_info` / `tools.zelx_diff` / `tools.zelx_build` / `tools.zelx_to_fas` —
-  ZWCAD `.zelx` inspect/diff/build/recover (reverse-engineered LispConverter)
+  ZWCAD `.zelx` inspect/diff/build/recover (format conversion)
 - `tools.lisp_converter_auto` — ZWCAD LispConverter.exe GUI automation (sample generation)
 - `tools.cad_probe` — MCP CAD interaction helper (development/debugging)
 - `tools.cad_dialog_killer` — auto-close CAD modal dialogs (alert etc.) that block MCP

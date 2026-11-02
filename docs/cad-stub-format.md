@@ -1,7 +1,7 @@
 # FAS4 紧凑 stub 格式规范与 AutoCAD 兼容实现
 
 > 本文档是 `atlispcc`（FAS4 编译器/反编译器）对 **AutoCAD 编译器输出格式**
-> （紧凑 stub 格式）逆向与兼容实现的完整技术规范。所有结论均基于
+> （紧凑 stub 格式）格式说明与兼容实现的完整技术规范。所有结论均基于
 > AutoCAD 24.1s 实测验证与 `tests/cad/t01_math_cad.fas`（紧凑 stub）等 t-series golden 与 `tests/cad/i18n-cad.fas` 等
 > 参考文件逐字节对比。
 >
@@ -140,7 +140,7 @@ PUSH_G <idx:2>         # 09 xx xx（字符串字面量）
 FUNC 对应 3 字节 `51 <argc> <idx:1>` 与 6 字节宽形式
 `51 <argc:1> <idx:2> <flags=1> 00`。宽形式 flags 内联了原 `00 03` 清理。
 
-**索引规律（关键逆向）**：`idx = 符号的 gvar 槽 - 1`。即 USUBR 调用
+**索引规律（关键）**：`idx = 符号的 gvar 槽 - 1`。即 USUBR 调用
 gvar 槽 `idx+1` 处的符号。
 
 - t01 `(add a b)`：`+` 在 gvar 槽 3 → `USUBR[2, 2]`

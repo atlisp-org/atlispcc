@@ -158,7 +158,7 @@ for sym in derive_symbol_names(program):
 ```
 
 `derive_symbol_names(program)`（compiler/cad_symbols.py，993 行）按 **CAD 符号槽
-顺序**收集，是逐字节一致性的核心。规则（AutoCAD 24.1s 逆向实测）：
+顺序**收集，是逐字节一致性的核心。规则（AutoCAD 24.1s 实测）：
 
 ### 6.2 多函数规则（`CadSymbolCollector.collect_program`）
 
@@ -398,7 +398,7 @@ for i, form in enumerate(defun_forms):
 ## 9. 阶段七：模块代码（seg1 尾部）
 
 CAD 把源码中的**顶层表达式**编译进 seg1 模块代码，seg0 只含 defun 函数。
-`_build_cad_module_code` 逆向规则：
+`_build_cad_module_code` 规则：
 
 - 模块代码符号引用使用 **gvar 槽 = 符号槽 + 1**。
 - 顶部 `PUSH_G <模块注册符号数+1>; POP` 占位。

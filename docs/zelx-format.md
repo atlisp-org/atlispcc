@@ -1,6 +1,6 @@
-# ZWCAD ZELX 格式与转换算法（逆向自 LispConverter.exe）
+# ZWCAD ZELX 格式与转换算法
 
-> 逆向来源：ZWCAD 2017 SDK 的 `LispConverter.exe`（"FAS&VLX Converter"，MFC GUI）
+> 格式依据：ZWCAD 2017 SDK 自带的 FAS/VLX 转换工具（MFC GUI）
 > 与 @lisp 样本对（`base-whole.fas` ↔ `base-whole.zelx` 等）。
 > 工具：CLI `atlispcc zelx <lsp|fas> <out.zelx>` / `atlispcc unzelx <in.zelx> <out.fas>`，
 > 或 `python -m tools.zelx_info <x.zelx> [-s] [-o payload.bin]`。
@@ -124,9 +124,9 @@ AutoCAD 用 `03/35/09/0a/06/32/51/57/67/5c`，ZWCAD 用 `34/2a/16/24/1b/27`。
 代码区过小（594B vs 函数体 5523B）→ 推测 zelx 载荷主要含符号/字符串/注册代码，
 函数体可能由 ZWCAD 在加载时与 .fas 结合，或 zelx 非自包含（待验证）。
 
-## 7. 已破解 / 待破解
+## 7. 已解析 / 待解析
 
-**已破解（可验证）：**
+**已解析（可验证）：**
 - 容器结构（ZAS 头字段、三段布局、密钥尾部）
 - 加密/解密算法（滚动 XOR，密钥定位）→ `tools/zelx_info.py` 已验证 4 样本
 - **载荷 ENCODE（fas seg1 → zelx 载荷）**：上下文感知 opcode 重映射，
@@ -163,7 +163,7 @@ AutoCAD 用 `03/35/09/0a/06/32/51/57/67/5c`，ZWCAD 用 `34/2a/16/24/1b/27`。
   | 67 | - | 1a | JMP32_IFNOT |
   | 2a | 40 | - | CONS |
 
-**待破解：**
+**待解析：**
 - **复杂文件压缩重编码**：ZWCAD 压缩载荷（模块代码重编码 + 符号重排）。
   当前 `tools/zelx_build.py` 已产出自洽结构（保持 fas 符号顺序、混合映射、
   长度更新），但未复刻 ZWCAD 的压缩；**ZWCAD 能否加载需真实验证**
@@ -173,13 +173,13 @@ AutoCAD 用 `03/35/09/0a/06/32/51/57/67/5c`，ZWCAD 用 `34/2a/16/24/1b/27`。
 > sstr(字符串)、szero(0参)、snest(嵌套调用)、aif/awhile/arec/asetq/astrcat/
 > aarith/acons/aand/aor（if/while/递归/setq/strcat/多参/cons/and/or）。
 
-## 8. zelx → fas（逆向恢复）
+## 8. zelx → fas（恢复转换）
 
-`tools/zelx_to_fas.py` / `atlispcc unzelx` 从 `.zelx` 恢复 `.fas`（LispConverter 的逆向）：
+`tools/zelx_to_fas.py` / `atlispcc unzelx` 从 `.zelx` 恢复 `.fas`（转换的逆过程）：
 
 ```
-zelx → 解密载荷 → 逆向重映射资源段/模块代码段 → fas seg1
-     → 逆向重映射段1目录 → fas seg0
+zelx → 解密载荷 → 反向重映射资源段/模块代码段 → fas seg1
+     → 反向重映射段1目录 → fas seg0
      → 组装 fas（magic/total_size/加密 seg1/密钥尾）
 ```
 

@@ -51,7 +51,8 @@ atlispcc decompile <input.fas> [output.lsp]                      # 反编译 FAS
 atlispcc disasm <input.fas> [output.lasm]                        # 反汇编 FAS → 字节码指令列表
  atlispcc asm <input.lasm> [output.fas]                           # 汇编 .lasm → FAS
  atlispcc validate <input.lsp>                                     # 验证
- atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]          # 链接 FAS
+ atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...] [--merge-top-level]  # 链接 FAS
+ atlispcc merge <a.lsp> <b.lsp> [...] -o merged.fas               # 源码级合并（保留顶层表达式）
  atlispcc build-vlx <input...> -o output.vlx [--export ...]      # 构建 VRTLIB-1 VLX
  atlispcc unpack-vlx <input.vlx> [-o DIR] [--list]               # 解包 VLX 成员
  atlispcc zelx <input.lsp|input.fas> [output.zelx]                # 构建 ZWCAD ZELX
@@ -63,6 +64,38 @@ atlispcc disasm <input.fas> [output.lasm]                        # 反汇编 FAS
 ```
 
 无子命令时默认为 compile：`atlispcc <input.lsp> [output.fas]`
+
+### 合并多个源码（merge）
+
+`link` 只合并 `.fas` 里的**函数体**；顶层表达式（`setq` / `set` / 初始化调用）在字节码中与
+函数注册交错，难以安全重建。要连顶层表达式一起合并，用**源码级** `merge`：
+
+```sh
+atlispcc merge a.lsp b.lsp -o merged.fas
+atlispcc merge a.lsp b.lsp -o merged.fas --keep-source merged.lsp   # 保留合并后的源码
+```
+
+- 输入按命令行顺序拼接后**一次编译**，顶层表达式按源码顺序执行
+- `--keep-source` 导出合并后的 `.lsp`，便于审查或复用
+- `.fas` 输入默认拒收——反编译不保留顶层表达式；确需合并函数体时显式加
+  `--allow-lossy-fas`（会打印警告）
+
+### 链接多个 FAS（link）
+
+`link` 默认只合并 `.fas` 里的函数体，顶层表达式（模块代码）会被丢弃（会告警）。
+需要连顶层表达式一起合并时加 `--merge-top-level`：
+
+```sh
+atlispcc link a.fas b.fas -o merged.fas --merge-top-level
+```
+
+- 支持**线性顶层语句**（`setq` / `princ` / 普通函数调用等），按输入顺序执行
+- 含 `if` / `while` / `let` / 命令注册（`c:`）/ lambda 等复杂模块代码时**明确报错**，
+  不会静默产出错误字节码
+- 顶层语句统一排在函数注册之后执行，因此可以调用任意合并后的函数
+- 输出仍是单个紧凑 stub `.fas`，可直接 `(load "merged.fas")`
+
+> 有 `.lsp` 源码时优先用 `merge`（源码级合并，覆盖面最全）。
 
 ## 快速开始
 
@@ -351,7 +384,7 @@ atlispcc zelx app.fas app.zelx      # 直接转换 .fas
 ```
 
 - `.zelx` = `!ZAS` 容器：载荷（资源）+ 段1目录（函数字节码）+ 滚动 XOR 加密
-- 算法逆向自 ZWCAD `LispConverter.exe`；小型/简单文件与官方产物**逐字节一致**（15/15 样本）
+- 算法依据 ZWCAD `LispConverter.exe`；小型/简单文件与官方产物**逐字节一致**（15/15 样本）
 - 复杂文件（大量符号/顶层表达式）仍需 ZWCAD 的压缩重编码（模块代码重编码 + 符号重排），见 `docs/zelx-format.md`
 
 ## 完整工作流
@@ -493,11 +526,11 @@ atlispcc validate output.lsp
 
 - `tools.fas-analyzer` — FAS4 文件分析（`--dump`/`--json`）
 - `tools.fas-split` — 函数分割（`--trim`/`--outdir`）
-- `tools.decrypt_fas4` / `tools.crack_key` — 解密/密钥破解
+- `tools.decrypt_fas4` / `tools.crack_key` — 解密/密钥恢复
 - `tools.find_key` — 在 FAS 中定位 XOR 加密密钥
 - `tools.validate` — 生成的 `.lsp` 语法/危险函数（quit/exit/startapp）/危险命令（command-s 调 shell/del 等）/未使用局部变量检查
 - `tools.compare_lsp` — `.lsp` 对比分析
-- `tools.zelx_info` / `tools.zelx_diff` / `tools.zelx_build` / `tools.zelx_to_fas` — ZWCAD `.zelx` 解析/对比/构建/恢复（逆向 LispConverter）
+- `tools.zelx_info` / `tools.zelx_diff` / `tools.zelx_build` / `tools.zelx_to_fas` — ZWCAD `.zelx` 解析/对比/构建/恢复（格式转换）
 - `tools.lisp_converter_auto` — ZWCAD LispConverter.exe GUI 自动化（样本生产）
 - `tools.cad_probe` — MCP CAD 交互辅助（开发调试）
 - `tools.cad_dialog_killer` — 自动关闭 CAD 模态对话框（alert 等，避免阻塞 MCP 会话）；`python -m tools.cad_dialog_killer <pid> [--watch]`

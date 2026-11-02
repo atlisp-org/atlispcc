@@ -238,7 +238,7 @@ for i in 0..len(data)-1:
 关键区分：同一字节 `32` 在 seg0 是运行时压整数，在 seg1 是加载期压整数值供 GVARINIT
 建表；`5c` 在 seg0 是 `GET_LOCAL_WIDE`（读局部变量），在 seg1 是 DEFCODE 前的固定标记。
 
-### 3.3 GVARINIT 规则（CAD 实测逆向）
+### 3.3 GVARINIT 规则（CAD 实测）
 
 模块部分与 DEFCODE 部分使用固定的 st_init / var_pos：
 
@@ -307,7 +307,7 @@ seg0 只含 defun 函数。三种构建器：
 
 - `build_module_code(n_funcs)`：纯函数文件（无顶层表达式、无命令）固定函数注册尾。
 - `build_command_module_code(n_funcs)`：含 c: 命令（§3.5a）。
-- `_build_cad_module_code(...)`：含顶层表达式（cli.py 逆向实现，最通用）。
+- `_build_cad_module_code(...)`：含顶层表达式（cli.py 实现，最通用）。
 
 **`build_module_code`**（纯函数文件）：
 
@@ -324,7 +324,7 @@ seg0 只含 defun 函数。三种构建器：
 - n_funcs>1：每函数 `PUSH_G <a>; POP; JUMP; PUSH_G <b>; SETQ_G <c>`
   （a=n_funcs+1-i、b=2n+1-i、c=n-i），末 `PUSH_G 1; END`。
 
-**`_build_cad_module_code`**（含顶层表达式，逆向规则）：
+**`_build_cad_module_code`**（含顶层表达式，实现规则）：
 
 - 符号引用使用 **gvar 槽 = 符号槽 + 1**；顶部 `PUSH_G <模块注册符号数+1>; POP` 占位。
 - 顶层 setq → `PUSH_G <值槽+1>; DUP; SETQ_G <变量槽+1>`（中间 pair 无 DUP、
@@ -440,7 +440,7 @@ nsyms = len(entries) - 模块注册符号数 + 1
 |------|------|------|
 | `docs/compilation-process.md` | 编译流程（lexer/parser/analyzer/codegen/reference/优化） | [实现] |
 | `docs/cad-stub-format.md` | CAD 紧凑 stub 格式（DEFUN 头/符号槽/资源段） | [规范] |
-| `docs/zelx-format.md` | ZELX/`!ZAS` 容器与 W4LZ 压缩（逆向 LispConverter.exe） | [推断] |
+| `docs/zelx-format.md` | ZELX/`!ZAS` 容器与 W4LZ 压缩（ZELX 格式转换） | [推断] |
 | `docs/lasm.md` | Lisp Assembly 语言（反汇编输出/汇编输入） | [实现] |
 | `docs/opcodes.md` | FAS4 操作码表 | [规范] |
 | `docs/opcode-comparison.md` | AutoCAD vs ZWCAD 操作码对照（重编译而非重映射） | [推断] |

@@ -1,7 +1,6 @@
 # AutoCAD 与 ZWCAD 字节码操作码对比
 
-> 逆向来源：AutoCAD FAS4 格式（`asm/opcodes.py` / `decompiler/fas4_decompiler.py`）
-> 与 ZWCAD `LispConverter.exe`（`tools/zelx_build.py` 的双 opcode 映射表）。
+> 格式依据：AutoCAD FAS4 格式与 ZWCAD 字节码格式，各自的操作码映射表。
 > 结论经 ZWCAD 实测验证：生成的 `.zelx` 加载成功。
 
 ## 核心结论

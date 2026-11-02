@@ -4,7 +4,7 @@
 
 **atlispcc** = **A**uto**LISP** **C**ompiler **C**ollection，FAS4 字节码编译器套件：`.lsp` ↔ `.fas`（兼容 AutoLISP 的 CAD 平台）。
 
-`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持十四个子命令：
+`atlispcc` — 统一 CLI 工具（`compiler/cli.py`），支持十五个子命令：
 
 ```
 atlispcc compile [-O {0,1,2,3}] <input.lsp> [output.fas]    # 编译 Lisp → FAS
@@ -12,11 +12,12 @@ atlispcc decompile <input.fas> [output.lsp]                # 反编译 FAS → L
 atlispcc disasm <input.fas> [output.lasm]                  # 反汇编 FAS → 字节码指令列表
 atlispcc asm <input.lasm> [output.fas]                     # 汇编 .lasm → FAS
 atlispcc validate <input.lsp>                              # 语法验证
-atlispcc link [-o OUTPUT] <input.fas> <input.fas> [...]    # 多文件链接
+atlispcc link [-o OUTPUT] <input.fas> ... [--merge-top-level]  # 多文件链接（可合并顶层表达式）
+atlispcc merge <a.lsp> <b.lsp> [...] -o merged.fas         # 源码级合并（保留顶层表达式）
 atlispcc build-vlx <input...> -o output.vlx [--export ...]  # VRTLIB-1 VLX 容器
 atlispcc build-vlx --prv app.prv [-o out.vlx]               # 按 .prv 规范打包
 atlispcc unpack-vlx <input.vlx> [-o DIR] [--list] [--stub FILE]  # 解包/校验 VLX
-atlispcc zelx <input.lsp|input.fas> [output.zelx]          # ZWCAD ZELX（逆向 LispConverter）
+atlispcc zelx <input.lsp|input.fas> [output.zelx]          # ZWCAD ZELX（格式转换）
 atlispcc unzelx <input.zelx> [output.fas]                  # 从 .zelx 恢复 .fas
 atlispcc info <input.fas|input.zelx|input.vlx> [--json]    # 快速概览（头/段/函数目录）
 atlispcc analyze [-f text|dot|mermaid|json] [-o OUT] [--no-cc] <lsp|fas>  # 调用图/依赖分析
@@ -81,7 +82,7 @@ FAS A + FAS B + ... → 合并符号表/函数目录 → 重排索引 → 修复
 | `compiler/vlx_builder.py` | VRTLIB-1 `.vlx` 打包/解包（记录表 + LOAD 规格 + 16 字节文件尾） |
 | `tools/validate.py` | 生成的 `.lsp` 语法验证器 |
 
-工具脚本（`tools/decrypt_fas4.py`、`tools/fas-split.py`、`tools/fas-analyzer.py`、`tools/crack_key.py` 等）使用 `core/fas_core.py`。ZELX 工具（`tools/zelx_info.py`/`zelx_diff.py`/`zelx_build.py`）基于逆向 LispConverter.exe，格式见 `docs/zelx-format.md`。
+工具脚本（`tools/decrypt_fas4.py`、`tools/fas-split.py`、`tools/fas-analyzer.py`、`tools/crack_key.py` 等）使用 `core/fas_core.py`。ZELX 工具（`tools/zelx_info.py`/`zelx_diff.py`/`zelx_build.py`）基于 ZWCAD 转换格式，格式见 `docs/zelx-format.md`。
 
 ## 优化器（compiler/opt.py）
 

@@ -58,7 +58,7 @@
 
 > 单函数文件（`fun.lsp`）解密后与 CAD 编译器输出逐字节一致。
 
-关键逆向成果：
+关键格式成果：
 - **USUBR 索引 = 符号 gvar 槽 - 1**
 - DEFCODE 仅最后一个追加 `01`
 - 模块代码参数化、函数代码引用多函数范围
@@ -116,8 +116,7 @@ CAD 逐字节一致。
 **现象**：多函数 USUBR 索引、参数槽的精确 gvar 表偏移依赖 CAD
 加载器内部行为（`build_mvar_tables` 模拟不完全准确）。
 
-**技术路线**：结合调试器（如之前 fas-format.org 的 OD 方法）逆向
-acad.exe 的 FAS 加载器，完善 gvar 表模型。
+**技术路线**：结合调试器分析 FAS 加载器行为，完善 gvar 表模型。
 
 ### 3.4 ✅ 已解决：反编译 stub 参数名错位（定参）
 
@@ -132,12 +131,12 @@ acad.exe 的 FAS 加载器，完善 gvar 表模型。
 > - **范围**：定参函数；`&optional`/`&rest` 变参的单函数见 §3.5b（已修复）、
 >   多函数见 §3.5c（遗留）。
 
-### 3.5 纯 `&rest`（min=0）CAD 不收集 rest（优先级：中）✅ 已逆向/已处理
+### 3.5 纯 `&rest`（min=0）CAD 不收集 rest（优先级：中）✅ 已实测/已处理
 
 **现象**：`(defun sum (&rest n) ...)` 编译为 `14 00 00 00 01`（min=0），
 CAD 加载后函数可定义（SUBR）但调用返回空（rest 未收集）。
 
-**逆向结论**（已用 patch 试错穷尽）：CAD 对 `b4=01, min=0` **硬性不收集**
+**实测结论**（已用 patch 试错穷尽）：CAD 对 `b4=01, min=0` **硬性不收集**
 rest——试遍 DEFUN 头 b1/b2/b3 组合、读取槽（0-5）、GET_LOCAL 槽、
 PUSH_G 绑定槽均无效；且 `b1 ≥ 1` 时 CAD 按 min 解析参数绑定数，
 绑定数不匹配即报「Xsubr(L) 指令错误」（Xsubr = CAD 对 `USUBR` 0x35
@@ -381,7 +380,7 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | 参数顺序修复 | ✅ | codegen 公式 `nsyms-argc+i`、`_patch_usubr_idx` 逆公式 |
 | seg1 items 计数 | ✅ | `count_resource_records` 按操作码结构跳转，避免 `0x1c/0x43` 误计 |
 | 死代码清理 | ✅ | 移除 `Fas4Parser.build_mvar_tables`（~196 行，从未调用） |
-| 纯 `&rest` min=0 | ✅ | 已逆向（CAD 硬性不收集）+ 编译警告 |
+| 纯 `&rest` min=0 | ✅ | 已实测（CAD 硬性不收集）+ 编译警告 |
 | 编译符号整理 O(n²)→O(n)（2026-08-09） | ✅ | `compiler/cad_symbols.derive_name` 等改用 `_Seen`/set 去重，5000 函数源 `pytest` 编译 10.6s → 0.28s（~38×） |
 | 反编译 O(n²) 热点（2026-08-09） | ✅ | `decompiler/fas4_decompiler` 的 `_stub_extended_gvar`、`_defun_headers_are_argc` 加 memoization，大文件反编译 456s → 6.9s（~66×） |
 | 编译模块代码 per-form 反汇编消除（2026-08-09） | ✅ | `compiler/cli._stmt_bytes` setq 快路径新增 Integer 分肢（内联 `PUSH_INT8/INT32` + `DUP` + `SETQ_G`），消除每顶层 setq 的两段 disassemble（5000 setq → 10000×），字节输出与 codegen 逐字节一致 |
@@ -420,8 +419,8 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | CAD 版本兼容 | 多 AutoCAD 版本（2008-2025）FAS 变体 |
 | VLX 增强 | 依赖收集、eTransmit |
 | 文档完善 | 完整 FAS 格式规范 |
-| ZELX 复杂文件压缩（8.D） | 复刻 ZWCAD 压缩重编码（模块代码重编码 + 符号重排），对小型/简单文件已逐字节一致，复杂文件需逆向 LispConverter.exe（`docs/zelx-format.md` §5-6 + `tools/zelx_diff.py`）+ ZWCAD 真机验证 |
-| CAD 加载器内部逆向 | 逆向 acad.exe FAS 加载器，完善 `build_mvar_tables` gvar 表精确模型（`core/fas_core.py`） |
+| ZELX 复杂文件压缩（8.D） | 复刻 ZWCAD 压缩重编码（模块代码重编码 + 符号重排），对小型/简单文件已逐字节一致，复杂文件需进一步分析转换规则（`docs/zelx-format.md` §5-6 + `tools/zelx_diff.py`）+ ZWCAD 真机验证 |
+| CAD 加载器行为研究 | 分析 FAS 加载器行为，完善 `build_mvar_tables` gvar 表精确模型（`core/fas_core.py`） |
 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见第 8 节 D1） |
 | **链接器 CAD 兼容根治（3.6）** | ✅ 已修复（2026-08-08）：链接产物与 CAD golden 逐字节一致（分隔符 `16`、参数绑定 gvar 槽-1/参数序、符号槽顺序、sec2_items），CAD 真机 add/mul/square/sum-squares/f1-f3/碰撞场景全部可调用。见 §3.6「修复完成」 |
 
@@ -441,10 +440,10 @@ atlisp-lint（MCP `analyze_lisp_code`，99 条规则）是**源码质量/安全/
 | P1 | 工具链健壮性 | `compiler/cli.py` ast 遮蔽、README/打包矛盾、validate 补强（见 8.A） |
 | P1 | 测试与 CI 完善 | t-series byte-identity 回归（已落地 18 份 golden，16 项 identical，2 项 xfail）、i18n roundtrip、mypy、twine check（见 8.B） |
 | P2 | ZELX 复杂文件压缩 | ZWCAD 压缩重编码复刻（见 8.D） |
-| P2 | CAD 加载器内部逆向 | gvar 表精确模型 |
+| P2 | CAD 加载器行为研究 | gvar 表精确模型 |
 | P2 | 性能与多版本兼容 | 大文件性能（2026-08-09 首批优化已落地，见 §4.1）+ 工具链健壮性 |
 
-> 纯 `&rest` min=0（3.5）已逆向并加编译警告（CAD 硬性不收集），移出优先级表。
+> 纯 `&rest` min=0（3.5）已实测并加编译警告（CAD 硬性不收集），移出优先级表。
 
 ---
 

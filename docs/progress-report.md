@@ -434,7 +434,7 @@ seg1 明文结构，定位符号注册差异。
 | P0 | `build_module_code` PUSH_G 越界（4+ 函数） | 已修复 `045b42a`，待 CAD 复测 |
 | P1 | while/cond/局部变量符号槽逐字节对齐 | 进行中 |
 | P1 | lambda 参数绑定（`(lambda (x) ...)` x 未局部化） | 部分修复（skip_reg） |
-| P2 | CAD 加载器内部逆向（gvar 表精确模型） | 未开始 |
+| P2 | CAD 加载器行为研究（gvar 表精确模型） | 未开始 |
 | 严重 | CAD 会话稳定性（坏 FAS 破坏 Lisp 环境需重启） | 运维约束 |
 
 ---

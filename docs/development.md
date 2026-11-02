@@ -51,7 +51,7 @@ tools/
   fas-analyzer.py    FAS4 分析工具
   fas-split.py       FAS 分割工具
   decrypt_fas4.py    解密工具
-  crack_key.py       密钥破解工具
+  crack_key.py       密钥恢复工具
 ```
 
 ### 关键文件
@@ -448,7 +448,7 @@ python -m tools.fas-split tests/cad/i18n-cad.fas --trim
 python -m tools.fas-split tests/cad/i18n-cad.fas --outdir ./split_output
 ```
 
-### 解密/破解
+### 解密/密钥恢复
 
 ```sh
 python -m tools.decrypt_fas4 tests/cad/i18n-cad.fas
@@ -462,7 +462,7 @@ python -m tools.find_key encrypted.fas    # 在 FAS 中定位 XOR 加密密钥
 python -m tools.validate output.lsp       # 语法 + 危险函数 + 危险命令（validate_command）+ 未使用局部变量
 ```
 
-### ZWCAD ZELX（逆向 LispConverter）
+### ZWCAD ZELX（格式转换）
 
 ```sh
 python -m tools.zelx_info file.zelx       # 解析/解密 .zelx 容器
