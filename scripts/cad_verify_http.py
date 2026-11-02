@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CAD 真机测试运行器（HTTP MCP 版）— 编译/加载/断言 tests/compile_src/ 产物。
 
-与 scripts/cad_verify.py 等价，但通过 HTTP MCP（192.168.1.210:8110）驱动
+与 scripts/cad_verify.py 等价，但通过 HTTP MCP（192.168.1.53:8110）驱动
 AutoCAD，不依赖本地 atlisp-mcp 二进制。每个用例独立：本地编译 → 同步
 （W:/atlisp/atlispcc 与本地一致）→ CAD load → 断言返回值。
 
@@ -19,7 +19,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-MCP_URL = "http://192.168.1.210:8110/mcp"
+MCP_URL = "http://192.168.1.53:8110/mcp"
 GOLD_DIR = os.path.join(_ROOT, "tests", "cad")
 REMOTE_DIR = "W:/atlisp/atlispcc/tests/cad"
 

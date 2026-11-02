@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, List, Tuple
 
 
-SYMBOL_RE = re.compile(r'^[\w\-?!*/=<>+:.&@%]+$')
+SYMBOL_RE = re.compile(r'^[\w\-?!*/=<>+:.&@%^]+$')
 NUMBER_RE = re.compile(r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$')
 
 
