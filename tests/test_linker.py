@@ -288,3 +288,111 @@ def test_link_byte_identity_with_cad_golden(name, srcs):
         for p in fas_list + [out]:
             if os.path.exists(p):
                 os.unlink(p)
+
+
+# ── Route C: top-level (module code) merging ────────────────────────────
+
+def _tmp_fas(tag: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"test_lk_{tag}_" + os.urandom(4).hex() + ".fas")
+
+
+def _module_map(path: str):
+    from compiler._gvar_map import build_module_gvar_map
+
+    fas = Fas4Parser().parse(path)
+    return fas, build_module_gvar_map(fas.sec2_data)
+
+
+def test_link_merges_top_level_expressions():
+    """`--merge-top-level` keeps top-level setq in the merged module code."""
+    from compiler.linker import _split_module_code
+
+    src1 = '(defun ma (x) (+ x 1))\n(setq *loaded-a* (list "A" 1))\n'
+    src2 = '(defun mb (y) (* y 2))\n(setq *loaded-b* (list "B" 2))\n'
+    f1, f2 = _compile(src1), _compile(src2)
+    out = _tmp_fas("top")
+    try:
+        link_fas([f1, f2], out, merge_top_level=True)
+        fas, modmap = _module_map(out)
+        assert "*LOADED-A*" in modmap, modmap
+        assert "*LOADED-B*" in modmap, modmap
+
+        mc = _split_module_code(fas)
+        insts = Disassembler(short_subr=False).disassemble(mc, fas.nsyms)
+        setq_targets = {i.operands[0] for i in insts if i.op_name == "SETQ_G"}
+        assert modmap["*LOADED-A*"] in setq_targets
+        assert modmap["*LOADED-B*"] in setq_targets
+    finally:
+        for p in (f1, f2, out):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def test_link_rejects_complex_top_level():
+    """Jumps/let/command module code is rejected instead of silently dropped."""
+    src1 = "(defun ma (x) (+ x 1))\n(if T (setq *x* 1))\n"
+    src2 = "(defun mb (y) (* y 2))\n"
+    f1, f2 = _compile(src1), _compile(src2)
+    out = _tmp_fas("reject")
+    try:
+        with pytest.raises(ValueError, match="cannot merge top-level"):
+            link_fas([f1, f2], out, merge_top_level=True)
+    finally:
+        for p in (f1, f2, out):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def test_link_warns_when_top_level_dropped(capsys):
+    src1 = "(defun ma (x) (+ x 1))\n(setq *loaded-a* 1)\n"
+    src2 = "(defun mb (y) (* y 2))\n"
+    f1, f2 = _compile(src1), _compile(src2)
+    out = _tmp_fas("warn")
+    try:
+        link_fas([f1, f2], out)
+        captured = capsys.readouterr()
+        assert "top-level expressions" in captured.err
+        assert "--merge-top-level" in captured.err
+    finally:
+        for p in (f1, f2, out):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def test_link_balances_tail_top_level_statement():
+    """A tail `princ` (leaves a value) gets a trailing POP, not a broken stack."""
+    src1 = '(defun ma (x) (+ x 1))\n(princ "hi")\n'
+    src2 = "(defun mb (y) (* y 2))\n"
+    f1, f2 = _compile(src1), _compile(src2)
+    out = _tmp_fas("tail")
+    try:
+        link_fas([f1, f2], out, merge_top_level=True)
+        fas, modmap = _module_map(out)
+        assert "PRINC" in modmap, modmap
+        assert Fas4Parser().parse(out).bytecode
+    finally:
+        for p in (f1, f2, out):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def test_link_merges_top_level_chinese_strings():
+    """Non-ASCII strings survive the module-code remap (GBK round-trip)."""
+    src1 = '(defun za () 1)\n(setq *中文甲* (list "你好" 1))\n'
+    src2 = '(defun zb () 2)\n(setq *中文乙* (list "世界" 2))\n'
+    f1 = os.path.join(tempfile.gettempdir(), "test_lk_za_" + os.urandom(4).hex() + ".fas")
+    f2 = os.path.join(tempfile.gettempdir(), "test_lk_zb_" + os.urandom(4).hex() + ".fas")
+    compile_lsp(src1, f1, encoding="gbk")
+    compile_lsp(src2, f2, encoding="gbk")
+    out = _tmp_fas("zh")
+    try:
+        link_fas([f1, f2], out, merge_top_level=True, encoding="gbk")
+        _fas, modmap = _module_map(out)
+        assert "*中文甲*" in modmap, modmap
+        assert "*中文乙*" in modmap, modmap
+        assert "你好" in modmap, modmap
+        assert "世界" in modmap, modmap
+    finally:
+        for p in (f1, f2, out):
+            if os.path.exists(p):
+                os.unlink(p)

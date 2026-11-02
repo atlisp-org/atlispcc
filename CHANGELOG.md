@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- `atlispcc link --merge-top-level`：合并 `.fas` 的**顶层表达式**（seg1 模块代码）：
+  切分 INI_DONE 之后的模块代码、剥离注册组、按合并后的模块 gvar 表重映射槽位，
+  再在函数注册之后回插顶层语句。支持线性顶层语句（`setq`/`princ`/普通调用）；
+  含 `if`/`while`/`let`/命令注册等复杂模块代码时明确报错（不静默丢弃）。不带该
+  选项时保持原行为（只合并函数体）并告警“顶层表达式被丢弃”。
+- `atlispcc merge <a.lsp> <b.lsp> [...] -o merged.fas`：源码级合并，按命令行顺序拼接后
+  一次编译，**保留顶层表达式**（`link` 只合并函数体）。支持 `--keep-source` 导出合并后的
+  `.lsp`、`-O`、`--encoding`、`--report`、`--date/--salt`。`.fas` 输入默认拒收（反编译
+  不保留顶层表达式），确需合并函数体时显式加 `--allow-lossy-fas`。
+
 ### Documentation
 
 - Added `README.en.md` (English) and a language switcher in both READMEs.

@@ -203,8 +203,9 @@ def cmd_analyze(
 
 
 def cmd_link(inputs: list, output: str, verbose: bool = False, encoding: str = "ansi",
-             date=None, salt=None) -> str:
-    return link_fas(inputs, output, verbose, encoding=encoding, date=date, salt=salt)
+             date=None, salt=None, merge_top_level: bool = False) -> str:
+    return link_fas(inputs, output, verbose, encoding=encoding, date=date, salt=salt,
+                    merge_top_level=merge_top_level)
 
 
 def _validate_build_options(parser_obj, args) -> None:
@@ -374,6 +375,11 @@ def main():
     p_link.add_argument("-o", "--output", default="", help="output .fas file")
     p_link.add_argument("--verbose", "-v", action="store_true", help="verbose output")
     p_link.add_argument(
+        "--merge-top-level", action="store_true",
+        help="also merge top-level expressions (simple linear forms only; "
+             "rejects if/while/let/command module code)",
+    )
+    p_link.add_argument(
         "--encoding",
         default="ansi",
         help="string/symbol encoding for linked FAS output (default: ansi=system codepage)",
@@ -382,6 +388,50 @@ def main():
         "--date", default="", help="pin the FAS build stamp (M/D/YY) for reproducible builds"
     )
     p_link.add_argument(
+        "--salt", default="",
+        help="container salt: 'deterministic', 'seed:<n>', 'hex:<6..10 bytes>', or an integer seed",
+    )
+
+    # merge: concatenate sources (and optionally decompiled .fas) and compile once
+    p_merge = sub.add_parser(
+        "merge",
+        help="Merge .lsp sources (and optionally .fas bodies) into one .fas",
+    )
+    p_merge.add_argument(
+        "inputs", nargs="+", help="input .lsp files (merged in the given order); .fas requires --allow-lossy-fas"
+    )
+    p_merge.add_argument("-o", "--output", default="", help="output .fas file")
+    p_merge.add_argument(
+        "-O", type=int, default=0, choices=[0, 1, 2, 3],
+        help="optimization level (default: 0)",
+    )
+    p_merge.add_argument(
+        "--encoding", default="ansi",
+        help="string/symbol encoding for FAS output (default: ansi=system codepage)",
+    )
+    p_merge.add_argument(
+        "--keep-source", default="",
+        help="write the merged .lsp to this path (useful for inspection/reuse)",
+    )
+    p_merge.add_argument(
+        "--report", default="",
+        help="write a structured compilation report (JSON) to the given path",
+    )
+    p_merge.add_argument(
+        "--analyze", action="store_true", help="show compilation analysis report"
+    )
+    p_merge.add_argument(
+        "--no-verify", dest="verify", action="store_false",
+        help="skip post-compile verification",
+    )
+    p_merge.add_argument(
+        "--allow-lossy-fas", action="store_true",
+        help="allow .fas inputs: they are decompiled and lose top-level expressions",
+    )
+    p_merge.add_argument(
+        "--date", default="", help="pin the FAS build stamp (M/D/YY) for reproducible builds"
+    )
+    p_merge.add_argument(
         "--salt", default="",
         help="container salt: 'deterministic', 'seed:<n>', 'hex:<6..10 bytes>', or an integer seed",
     )
@@ -570,8 +620,27 @@ def main():
             output = f"{base}_linked.fas"
         _validate_build_options(p_link, args)
         cmd_link(args.inputs, output, args.verbose, args.encoding,
-                 date=args.date or None, salt=args.salt or None)
+                 date=args.date or None, salt=args.salt or None,
+                 merge_top_level=args.merge_top_level)
         return 0
+
+    if args.command == "merge":
+        from compiler.merge_cmd import cmd_merge
+
+        _validate_build_options(p_merge, args)
+        return cmd_merge(
+            args.inputs,
+            output=args.output,
+            opt_level=args.O,
+            encoding=args.encoding,
+            date=args.date or None,
+            salt=args.salt or None,
+            keep_source=args.keep_source,
+            report_json=args.report,
+            verify=args.verify,
+            show_analysis=args.analyze,
+            allow_lossy_fas=args.allow_lossy_fas,
+        )
 
     if args.command == "build-vlx":
         _validate_build_options(p_vlx, args)

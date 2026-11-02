@@ -10,6 +10,8 @@ gvar 槽从 1 起算（槽 0 为模块头/代码引用）。commands 混合模�
 
 import struct
 
+from core.fas_core import decode_fas_text
+
 
 def build_module_gvar_map(seg1_decrypted: bytes):
     """返回 {符号名大写: gvar槽} 与 {字符串值大写: gvar槽}。"""
@@ -27,7 +29,7 @@ def build_module_gvar_map(seg1_decrypted: bytes):
                 z = data.index(0, j)
                 if z == j:
                     break
-                name = data[j:z].decode("latin1")
+                name = decode_fas_text(data[j:z])
                 gvar.setdefault(name.upper(), slot)
                 slot += 1
                 j = z + 1
@@ -36,7 +38,7 @@ def build_module_gvar_map(seg1_decrypted: bytes):
             i = j + 1
         elif b == 0x56:
             j = data.index(0, i + 1)
-            gvar.setdefault(data[i + 1 : j].decode("latin1").upper(), slot)
+            gvar.setdefault(decode_fas_text(data[i + 1:j]).upper(), slot)
             slot += 1
             i = j + 2
         elif b == 0x55:
@@ -45,7 +47,7 @@ def build_module_gvar_map(seg1_decrypted: bytes):
             for _ in range(cnt):
                 ln = struct.unpack("<H", data[j : j + 2])[0]
                 j += 2
-                gvar.setdefault(data[j : j + ln].decode("latin1").upper(), slot)
+                gvar.setdefault(decode_fas_text(data[j:j + ln]).upper(), slot)
                 slot += 1
                 j += ln
             i = j

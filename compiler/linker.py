@@ -1,6 +1,7 @@
 """FAS4 Linker — merge multiple .fas files into one, resolving cross-file symbols."""
 
 import os
+import struct
 import sys
 from typing import List, Dict, Tuple, Set, Any, Optional
 
@@ -26,6 +27,7 @@ from asm.opcodes import (
     encode_real,
 )
 from decompiler.fas4_decompiler import is_compact_stub, use_short_subr
+from compiler._gvar_map import build_module_gvar_map
 
 
 def _fas_is_stub(fas) -> bool:
@@ -160,6 +162,213 @@ def _encode_with_opcode(opcode: int, name: str, operands: List, short_subr: bool
         raise ValueError(f"Unknown format {fmt} for {name} (op={opcode:02x})")
 
 
+# ── module code / top-level expressions (seg1 tail) ────────────────────
+#
+# A compiled unit keeps its top-level (non-defun) expressions in the module
+# code that follows the resource stream's INIT_DONE (0x1c).  The module code is
+# `DEFUN头 + [顶层语句] + [函数注册组] + END_DEFUN`, with registration groups
+# interleaved in source order.  For merging we:
+#   1. split the tail after `1c 14 01`,
+#   2. drop the header / placeholder / registration groups / tail,
+#   3. keep the remaining (top-level) instructions,
+#   4. remap their gvar/function slots into the merged module table,
+#   5. rebuild one registration block and splice the top-level bytes before
+#      its final `PUSH_G 1; END_DEFUN`.
+#
+# Only linear top-level statements are supported (no if/while/let/lambda,
+# no commands).  Anything else is rejected with a clear message.
+
+_MODULE_UNSUPPORTED = {
+    "DEFUN", "DEFUN_ALT",
+    "JMP16_IFNOT", "JMP16_IF", "JMP16_IFNOT_ALT", "JMP16_IF_ALT",
+    "JMP32_IFNOT", "JUMP", "JUMP_ALT", "COND_OR", "COND_AND",
+    "GET_LOCAL", "GET_LOCAL_WIDE", "SET_LOCAL", "CLEAR_LOCAL",
+    "EXIT_IF_NOT_ZERO", "EXIT_IF_ZERO", "COPY_ELEM", "EVAL",
+}
+
+_PUSH_OPS = {
+    "PUSH_G", "PUSH_G_ALT", "PUSH_VALUE", "PUSH_INT8", "PUSH_INT32",
+    "PUSH_REAL", "PUSH_NIL", "PUSH_T", "GET_LOCAL", "GET_LOCAL_WIDE",
+    "DUP", "CAR", "CDR", "NOT", "ATOM", "INC", "DEC",
+}
+_POP_OPS = {"POP", "SETQ_G", "SET_LOCAL", "CLEAR_LOCAL"}
+_ARITH_OPS = {
+    "FIX_ADD", "FIX_SUB", "FIX_MUL", "FIX_DIV", "FIX_MOD",
+    "FIX_LEQ", "FIX_GEQ", "FIX_LT", "FIX_GT",
+}
+_SLOT_OPS = {"PUSH_G", "PUSH_G_ALT", "PUSH_VALUE", "SETQ_G"}
+
+
+def _split_module_code(fas) -> bytes:
+    """Return the module-code tail of seg1 (after the resource INIT_DONE)."""
+    data = getattr(fas, "sec2_data", b"") or b""
+    idx = data.rfind(b"\x1c\x14\x01")
+    return data[idx + 1:] if idx >= 0 else b""
+
+
+def _stack_effect(inst) -> int:
+    """Net stack delta of one module-code instruction (linear code only)."""
+    name = inst.op_name
+    if name in _PUSH_OPS:
+        return 1
+    if name in _POP_OPS:
+        return -1
+    if name in _ARITH_OPS or name == "CONS":
+        return -1
+    if name in ("BUILD_LIST", "BUILD_LIST_ALT"):
+        return 1 - int(inst.operands[0])
+    if name in ("USUBR", "FUNC"):
+        return 1 - int(inst.operands[0])
+    if name == "NIL":
+        return 0
+    raise ValueError(f"unsupported opcode in top-level code: {name}")
+
+
+def _is_registration_start(insts, i) -> bool:
+    """`JUMP 0; PUSH_G; SETQ_G` marks a function-registration group."""
+    return (
+        i + 2 < len(insts)
+        and insts[i].op_name == "JUMP"
+        and insts[i].operands
+        and insts[i].operands[0] == 0
+        and insts[i + 1].op_name == "PUSH_G"
+        and insts[i + 2].op_name == "SETQ_G"
+    )
+
+
+def _extract_module_top(fas) -> Tuple[bytes, List]:
+    """Split a module code into ``(top_level_bytes, top_level_instructions)``.
+
+    Raises ``ValueError`` for module code that cannot be merged safely
+    (nested defun, jumps, let/locals, commands are rejected by the caller).
+    """
+    mc = _split_module_code(fas)
+    if not mc:
+        return b"", []
+    if not mc.startswith(b"\x14\x01\x00\x00\x00"):
+        raise ValueError("module code does not start with a DEFUN header")
+    dis = Disassembler(short_subr=False)
+    insts = dis.disassemble(mc, fas.nsyms)
+    if not insts or insts[0].op_name != "DEFUN":
+        raise ValueError("module code is missing its DEFUN header")
+
+    i = 1
+    # Optional placeholder `PUSH_G <module_reg_count+1>; POP`.
+    if (i + 1 < len(insts) and insts[i].op_name == "PUSH_G"
+            and insts[i + 1].op_name == "POP"):
+        i += 2
+
+    top = bytearray()
+    top_insts: List = []
+    while i < len(insts):
+        inst = insts[i]
+        if inst.op_name == "END_DEFUN":
+            break
+        if _is_registration_start(insts, i):
+            i += 3
+            # optional `PUSH_G <c>; POP` (or the final `PUSH_G 1; END_DEFUN`)
+            if i < len(insts) and insts[i].op_name == "PUSH_G":
+                if i + 1 < len(insts) and insts[i + 1].op_name == "POP":
+                    i += 2
+                elif i + 1 < len(insts) and insts[i + 1].op_name == "END_DEFUN":
+                    i += 1
+                else:
+                    i += 1
+            continue
+        if inst.op_name in _MODULE_UNSUPPORTED:
+            raise ValueError(f"module code uses unsupported {inst.op_name}")
+        # Remember the offset **inside the extracted block** (gaps from
+        # removed registration groups make inst.offset unusable for slicing).
+        top_insts.append((inst, len(top)))
+        top.extend(mc[inst.offset:inst.offset + inst.size])
+        i += 1
+    return bytes(top), top_insts
+
+
+def _balance_bytes(insts) -> bytes:
+    """Trailing POPs needed to keep the top-level block stack-neutral."""
+    depth = 0
+    for inst, _off in insts:
+        depth += _stack_effect(inst)
+        if depth < 0:
+            raise ValueError(f"stack underflow at {inst.op_name}")
+    return b"\x0a" * depth
+
+
+def _remap_module_top(
+    top: bytes, insts, file_map: Dict[str, int], merged_map: Dict[str, int]
+) -> bytes:
+    """Rewrite top-level gvar/function slots into the merged module table."""
+    inv = {slot: name for name, slot in file_map.items()}
+    out = bytearray()
+    for inst, off in insts:
+        name = inst.op_name
+        if name in _SLOT_OPS:
+            idx = int(inst.operands[0])
+            sym = inv.get(idx)
+            if sym is None:
+                raise ValueError(f"unmapped module slot {idx} ({name})")
+            new = merged_map.get(sym) or merged_map.get(sym.upper())
+            if new is None:
+                raise ValueError(f"symbol {sym!r} missing from merged module table")
+            out += encode_op_u16(inst.opcode, new)
+        elif name in ("USUBR", "FUNC"):
+            argc = int(inst.operands[0])
+            idx = int(inst.operands[1])
+            sym = inv.get(idx)
+            if sym is None:
+                raise ValueError(f"unmapped module function slot {idx} ({name})")
+            new = merged_map.get(sym) or merged_map.get(sym.upper())
+            if new is None:
+                raise ValueError(f"function {sym!r} missing from merged module table")
+            flags = int(inst.operands[2]) if len(inst.operands) > 2 else 0
+            if inst.size >= 6:
+                out += encode_func(argc, new, flags)
+            else:
+                out += encode_usubr(argc, new, flags)
+        else:
+            out += top[off:off + inst.size]
+    return bytes(out)
+
+
+def _build_module_code_with_top(
+    n_funcs: int,
+    func_order: List[str],
+    merged_map: Dict[str, int],
+    top_level: bytes,
+) -> bytes:
+    """Rebuild the module code with one registration block + top-level bytes.
+
+    Mirrors the compiler's layout for a mixed unit:
+    ``DEFUN头; PUSH_G <注册数+1>; POP; [每函数注册组]; <顶层语句>; PUSH_G 1; END``
+    (top-level statements run after registration, so they may call any merged
+    function; their relative order is preserved).
+    """
+    out = bytearray(b"\x14\x01\x00\x00\x00")
+    if n_funcs == 0:
+        out += top_level
+        out += b"\x16"
+        return bytes(out)
+
+    reg_count = len(merged_map)
+    top_count = reg_count - n_funcs
+    # Placeholder: PUSH_G <module registration count + 1>; POP
+    out += b"\x09" + struct.pack("<H", reg_count + 1) + b"\x0a"
+    for i, fname in enumerate(func_order):
+        c = merged_map.get(str(fname)) or merged_map.get(str(fname).upper())
+        if c is None:
+            raise ValueError(f"function {fname!r} missing from merged module table")
+        b = 2 * n_funcs + top_count + 1 - i
+        out += b"\x57\x00\x00\x00\x00"
+        out += b"\x09" + struct.pack("<H", b) + b"\x06" + struct.pack("<H", c)
+        if i < n_funcs - 1:
+            out += b"\x09" + struct.pack("<H", c) + b"\x0a"
+        else:
+            out += top_level
+            out += b"\x09\x01\x00\x16"
+    return bytes(out)
+
+
 def _data_items_of(fas) -> List[Tuple]:
     """按注册顺序提取符号槽条目（CAD 紧凑格式下直接用 symbol_slots）。"""
     if getattr(fas, "symbol_slots", None):
@@ -223,7 +432,8 @@ def _extract_functions(fas) -> List[Tuple[str, int]]:
 
 
 def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
-             encoding: str = 'ansi', date=None, salt=None) -> str:
+             encoding: str = 'ansi', date=None, salt=None,
+             merge_top_level: bool = False) -> str:
     if len(input_paths) < 2:
         raise ValueError("Need at least 2 input .fas files to link")
 
@@ -282,6 +492,34 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
             symtab.get_or_add(fname)
     _func_names = set(_func_order)
 
+    # 顶层表达式用到的符号/字符串必须进入**模块注册段**（模块代码按该表
+    # 编址）。只合顶层时启用；纯函数链接保持原有布局（golden 字节不变）。
+    _top_symbols: List[Tuple[str, str]] = []
+    _top_symbol_count = 0
+    if merge_top_level:
+        _seen_top: Set[str] = set()
+        for _fas in parsed:
+            _file_funcs_upper = {
+                str(f).upper() for f, _ in _extract_functions(_fas)
+            }
+            _type_map: Dict[str, Tuple[str, str]] = {}
+            for _t, _v in _fas.symbol_slots:
+                _key = str(_v).upper()
+                if _t == "STRING" or _key not in _type_map:
+                    _type_map[_key] = (_t, str(_v))
+            for _sym in build_module_gvar_map(_fas.sec2_data):
+                if _sym in _file_funcs_upper or _sym in _seen_top:
+                    continue
+                _seen_top.add(_sym)
+                _top_symbols.append(_type_map.get(_sym, ("SYMBOL", _sym)))
+        for _t, _v in _top_symbols:
+            if _t == "STRING":
+                if _v not in symtab.name_to_idx:
+                    symtab.add_string(_v)
+            elif _v not in symtab.name_to_idx:
+                symtab.get_or_add(_v)
+        _top_symbol_count = len(_top_symbols)
+
     def _file_body_slots(fas):
         """文件符号槽：去掉前部（模块注册函数名）与尾部（模块重复）区域。
 
@@ -291,7 +529,15 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
         """
         file_funcs = [f for f, _ in _extract_functions(fas)]
         slots = fas.symbol_slots
-        start = len(file_funcs)
+        # 模块注册段（函数名 + 顶层符号）不进入函数体符号：
+        # 顶层合并时按解析出的模块注册宽度跳过，否则沿用「函数数个」。
+        if merge_top_level:
+            try:
+                start = len(build_module_gvar_map(fas.sec2_data))
+            except Exception:
+                start = len(file_funcs)
+        else:
+            start = len(file_funcs)
         end = len(slots) - len(file_funcs)
         if end < start:
             end = len(slots)
@@ -382,7 +628,16 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
     for fname, foff in global_func_catalog:
         symtab.add_func_ref(fname, foff)
     _pre_module_code = build_module_code(len(_pre_func_offsets))
-    _pre_sec1 = ResourceBuilder(symtab, encoding=encoding).build(_pre_func_offsets, module_code=_pre_module_code, stub_format=True)
+    _pre_sec1 = ResourceBuilder(symtab, encoding=encoding).build(
+        _pre_func_offsets, module_code=_pre_module_code, stub_format=True,
+        top_level_count=_top_symbol_count,
+    )
+    # 模块注册表（符号名 → gvar 槽）：模块代码里的槽引用按此表编址。
+    # 顶层表达式的符号已在 symtab 中（global_data），所以该表在最终 seg1 中不变。
+    try:
+        _merged_module_map = build_module_gvar_map(_pre_sec1)
+    except Exception:
+        _merged_module_map = {}
     _pre_nsyms = len(symtab.entries)
     from core.fas_core import build_mvar_tables
     try:
@@ -566,14 +821,57 @@ def link_fas(input_paths: List[str], output_path: str, verbose: bool = False,
     func_offsets = {fname: foff for fname, foff in global_func_catalog}
     for fname, foff in func_offsets.items():
         symtab.add_func_ref(fname, foff)
-    module_code = build_module_code(len(func_offsets))
+    # ── Top-level expressions (seg1 module code) ──
+    merged_top = bytearray()
+    _top_detected = False
+    for _path, _fas in zip(input_paths, parsed):
+        if _skip_dup_file(_fas):
+            continue
+        try:
+            _top, _top_insts = _extract_module_top(_fas)
+        except ValueError as exc:
+            if merge_top_level:
+                raise ValueError(
+                    f"cannot merge top-level expressions from "
+                    f"{os.path.basename(_path)}: {exc}"
+                ) from exc
+            continue
+        if not _top_insts:
+            continue
+        _top_detected = True
+        if not merge_top_level:
+            continue
+        if not _merged_module_map:
+            raise ValueError("cannot read the merged module registration table")
+        _file_map = build_module_gvar_map(_fas.sec2_data)
+        merged_top += _remap_module_top(
+            _top, _top_insts, _file_map, _merged_module_map
+        )
+        merged_top += _balance_bytes(_top_insts)
+
+    if _top_detected and not merge_top_level:
+        _warn(
+            "input .fas contains top-level expressions; they are DROPPED "
+            "(pass --merge-top-level to merge them)"
+        )
+
+    if merged_top:
+        module_code = _build_module_code_with_top(
+            len(func_offsets),
+            [f for f, _ in global_func_catalog],
+            _merged_module_map,
+            bytes(merged_top),
+        )
+    else:
+        module_code = build_module_code(len(func_offsets))
     resource = ResourceBuilder(symtab, encoding=encoding)
     nsyms = len(symtab.entries) - len(func_offsets) + 1
     seg1 = resource.build(func_offsets, module_code=module_code,
-                          total_size=len(seg0) + 1, stub_format=True)
-    # items 与 CAD 编译器一致：2 * 模块注册数 + 2（模块注册数 = 函数数；
-    # 链接无顶层表达式）。CAD 加载时按 items 处理 GVARINIT，偏小会遗漏
-    # 函数注册（实测 2 函数 → 6，而 count_resource_records 仅 4）。
+                          total_size=len(seg0) + 1, stub_format=True,
+                          top_level_count=_top_symbol_count)
+    # items 与 CAD 编译器一致：2 * 模块注册数 + 2。CAD 加载时按 items 处理
+    # GVARINIT，偏小会遗漏函数注册（实测 2 函数 → 6，而 count_resource_records
+    # 仅 4）。合并顶层表达式时 count_resource_records 会更大，max 兜底。
     min_items = 2 * len(func_offsets) + 2
     sec2_items = max(count_resource_records(seg1), min_items)
     writer = FasWriter(symtab, date=date, salt=salt)
