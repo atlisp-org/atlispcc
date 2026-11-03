@@ -662,7 +662,7 @@ def cmd_compile(
             e[1] for e in symtab.entries
             if isinstance(e, tuple) and len(e) == 2 and e[0] == "FUNCOBJ"
         ]
-        _fo_by_name = {}
+        _fo_by_name: dict = {}
         for _name, _off in func_offsets.items():
             for _fr in codegen._func_nested_defuns.get(_name, []):
                 _fo_by_name.setdefault(_fr[2], _fr[5])
@@ -814,7 +814,7 @@ def cmd_compile(
         from compiler.cad_symbols import CadSymbolCollector, _SeenList
         from compiler.cad_symbols import normalize_vla_name as _nvn
 
-        _param_counts = {}
+        _param_counts: dict = {}
         for _sym, _lam in top_lambda_binds:
             _lp = _lam.args
             if "/" in _lp:
@@ -1098,8 +1098,8 @@ def cmd_compile(
         # VL-LOAD-COM 模块注册位 1450 vs rg[1029]），会导致模块代码调用错槽 →
         # CAD 加载报"参数太少"。函数体用 fg（table1），模块代码用 rg（table0），
         # 两表独立（2026-08-14 对拍确认）。
-        gvar_map = None
-        real_map = None
+        gvar_map: dict | None = None
+        real_map: dict | None = None
         try:
             from core.fas_core import build_mvar_tables as _bmt
 

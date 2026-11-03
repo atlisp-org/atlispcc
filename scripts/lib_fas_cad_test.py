@@ -42,7 +42,7 @@ EXCLUDE_TEST = {"pickset", "ui/test-ui-getdist.lsp"}
 
 
 def mcp_eval(code: str, max_tries: int = 15, timeout: int = 300,
-             done_marker: Path = None) -> str:
+             done_marker: Path | None = None) -> str:
     """短路径 eval：No open document 重试（COM 假阴性），429 按 retryAfter 退避。
 
     done_marker：若该文件已出现，说明上一条命令已在 CAD 中执行（长阻塞调用

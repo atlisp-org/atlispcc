@@ -34,7 +34,7 @@ class Parser:
         return self.advance()
 
     def parse(self) -> Program:
-        forms = []
+        forms: list[Node] = []
         while self.peek()[0] != 'EOF':
             form = self.parse_form()
             # `#-sbcl <form>`：CAD 把 `#-sbcl` 当作**顶层符号表达式**编译

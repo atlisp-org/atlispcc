@@ -887,12 +887,12 @@ class ResourceBuilder:
                 # 须父在前（CAD 实测 [bt-man@2961, outer@2850, inner@2869]），
                 # 否则 offset 降序 [2961, 2869, 2850] 错位。
                 for _pi, (_poff, _pname) in enumerate(list(nd_offsets)):
-                    if ResourceBuilder._is_lambda_key(_pname) and not nested_ends.get(_poff):
+                    if ResourceBuilder._is_lambda_key(_pname) and not nested_ends.get(_poff):  # type: ignore[union-attr]
                         continue
                     _children = [
                         j for j in range(len(nd_offsets))
                         if j != _pi and nd_offsets[j][0] > _poff
-                        and nested_ends.get(_poff) and _poff < nd_offsets[j][0] < nested_ends[_poff]
+                        and nested_ends.get(_poff) and _poff < nd_offsets[j][0] < nested_ends[_poff]  # type: ignore[union-attr,index]
                     ]
                     if not _children:
                         continue

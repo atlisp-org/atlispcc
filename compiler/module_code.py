@@ -33,7 +33,7 @@ def _build_cad_module_code(
     n_funcs: int = 0,
     top_level_count: int = 0,
     top_after_defun: bool = False,
-    func_names: object = (),
+    func_names = (),
     n_post_forms: int = 0,
     n_globals: int = 0,
     gvar_map: object = None,
@@ -200,15 +200,15 @@ def _build_cad_module_code(
                     _i = func_names.index(_m.name) if _m.name in func_names else -1
                     if _i < 0:
                         continue
-                    _b = 2 * (n_module_funcs or n_funcs) + top_level_count + 1 + n_cmds + _tl_lam_count - _i
+                    _b0 = 2 * (n_module_funcs or n_funcs) + top_level_count + 1 + n_cmds + _tl_lam_count - _i
                     if _tl_lam_count and _i >= n_pre:
-                        _b -= 1
+                        _b0 -= 1
                     _fs = symtab.name_to_idx.get(func_names[_i])
                     _c = (_fs + 1) if _fs is not None else (n_funcs - _i)
                     if _fs is not None and _fc is not None and _fs >= _fc:
                         _c += 1
                     _cb += b"\x57\x00\x00\x00\x00"  # JUMP +0
-                    _cb += bytes([0x09]) + struct.pack("<H", _b)  # PUSH_G func-obj
+                    _cb += bytes([0x09]) + struct.pack("<H", _b0)  # PUSH_G func-obj
                     _cb += bytes([0x06]) + struct.pack("<H", _c)  # SETQ_G sym
                     _cb += bytes([0x09]) + struct.pack("<H", _c)  # PUSH_G sym
                     if _vl is not None:

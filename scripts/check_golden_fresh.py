@@ -168,7 +168,7 @@ def main() -> int:
     src_root = Path(args.src).resolve()
     golden_root = Path(args.golden).resolve()
 
-    pairs = []
+    pairs: list = []
     for fas in sorted(golden_root.rglob("*.fas")):
         rel = fas.relative_to(golden_root).with_suffix(".lsp")
         src = src_root / rel
@@ -178,7 +178,7 @@ def main() -> int:
         pairs = pairs[: args.limit]
 
     t0 = time.time()
-    results = []
+    results: list[dict] = []
     for src, fas, rel in pairs:
         if not src.exists():
             results.append({

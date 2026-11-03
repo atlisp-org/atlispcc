@@ -170,7 +170,7 @@ def build_trailer(
                 else (AUTODESK_SALT_MIN + rng.below(AUTODESK_SALT_MAX - AUTODESK_SALT_MIN + 1))
             )
             current = rng.random_string(length)
-        key = current + CRUNCH_MARKER
+        key = current + CRUNCH_MARKER  # type: ignore[operator]
         encrypted = _rolling_xor(seg1_plaintext, key)
         # 密文中出现标记会让读取端把数据误解为尾部；重抽（固定盐则报错）。
         if CRUNCH_MARKER in encrypted:

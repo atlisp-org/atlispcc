@@ -276,7 +276,7 @@ def disassemble_fas(fas_path: str) -> str:
         symbols = fas.symbols
         sym_types = ["SYMBOL"] * len(symbols)
 
-    symbol_counts = {}
+    symbol_counts: dict = {}
     for sym in symbols:
         symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
 

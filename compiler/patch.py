@@ -174,7 +174,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     # 对多 kwote 文件（`-lambda-` 参数混入 func_args 使 multi=True）会越界
     # 错槽（platform-api/test-2kwote 的 `"platform"` 在 slot 6 而非末尾，
     # 被改成 nsyms-1=8 → CAD 加载报 `-lambda-` 类型错误）。改用真实注册序。
-    _res_symbol_slots: List[str] = []
+    _res_symbol_slots: list[str] = []
     try:
         from core.fas_core import parse_resource_stream as _prs
 
@@ -354,7 +354,7 @@ def _patch_usubr_idx(seg0: bytes, seg1: bytes, symtab, nsyms: int, func_args=Non
     except Exception:
         return seg0
 
-    def gvar_slot(name: str) -> int:
+    def gvar_slot(name: str) -> tuple[int, bool]:
         # 资源段符号名已大写（_enc_sym），参数名为小写，查找时统一大写。
         # 返回 (槽位, 是否命中 gvar 表)。未命中返回 (nsyms, False)——CAD 对
         # 表外符号（参数/末尾常量等）按 gvar 槽 = nsyms 编址，此时才需减

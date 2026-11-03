@@ -28,7 +28,7 @@ SUBR_OPS = {"USUBR", "FUNC"}
 LOCAL_OPS = {"GET_LOCAL", "GET_LOCAL_WIDE", "SET_LOCAL", "CLEAR_LOCAL"}
 
 
-def _defun_local_count(header: bytes) -> int:
+def _defun_local_count(header: bytes) -> int | None:
     """从 DEFUN 头 4 字节推断局部槽数。
 
     CAD 紧凑 stub DEFUN 头为 `14 <a> <b> <c> <d>`，其中 a = argc +

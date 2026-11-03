@@ -1857,7 +1857,8 @@ class CadSymbolCollector:
         n = len(forms_all)
         reads, targets = [], []
         for form in forms_all:
-            r, t = set(), set()
+            r: set = set()
+            t: set = set()
             if isinstance(form, Defun):
                 t.add(form.name)
             elif isinstance(form, InPackage):
@@ -1921,7 +1922,7 @@ class CadSymbolCollector:
             for s in reads[i]:
                 if s not in owner_read:
                     owner_read[s] = i
-        ancestor = {}
+        ancestor: dict = {}
 
         def _owner_of(sym):
             # 符号归属到**最早出现的 form**（read 或 target 的最小 form 序）：
@@ -1988,10 +1989,10 @@ class CadSymbolCollector:
                         _dp_items.append((":use", False))
                     _dp_items += [(u, False) for u in (form.use or [])]
                     _dp_items += [(form.name, False)]
-                for s in _dp_items:
-                    if _owner_of(s[0]) == i and s[0] not in module_seen:
-                        module_seen.add(s[0])
-                        self.add(s[0])
+                for _item in _dp_items:
+                    if _owner_of(_item[0]) == i and _item[0] not in module_seen:
+                        module_seen.add(_item[0])
+                        self.add(_item[0])
             else:
                 form_refs = _SeenList()
                 self._collect_byteorder(form, form_refs, set(), module_ctx=True)

@@ -20,9 +20,9 @@ try:
 except ImportError:  # 非 Windows / 未装 uiautomation：模块仍可导入，仅运行时需要
     auto = None
 
-u32: Optional[ctypes.WinDLL] = None
+u32: Optional[ctypes.WinDLL] = None  # type: ignore[name-defined]
 try:
-    u32 = ctypes.windll.user32
+    u32 = ctypes.windll.user32  # type: ignore[attr-defined]
     u32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
     u32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
     u32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]

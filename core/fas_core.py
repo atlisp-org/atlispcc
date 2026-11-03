@@ -235,7 +235,7 @@ def get_ansi_encoding() -> str:
     try:
         import ctypes
 
-        acp = ctypes.windll.kernel32.GetACP()
+        acp = ctypes.windll.kernel32.GetACP()  # type: ignore[attr-defined]
         if acp:
             _ansi_encoding_cache = f'cp{acp}'
             return _ansi_encoding_cache

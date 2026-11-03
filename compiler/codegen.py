@@ -244,7 +244,7 @@ class CodeGenerator:
         self._in_stmt_ctx: bool = False
         # let body 尾 if 的 else fall-through 后 USUBR(2, LET)（CAD 原生 LET
         # 清理，minlet/let3 CAD 真机实测）——`_emit_let` 设置、`_emit_if` 读取。
-        self._in_let_tail: bool = False
+        self._in_let_tail: int = 0
 
     def _get_local_slot(self, name: str) -> int:
         if name not in self.local_slots:
@@ -1461,7 +1461,7 @@ class CodeGenerator:
                 actions = [
                     x for i, x in enumerate(actions)
                     if i == len(actions) - 1 or not isinstance(x, String)
-                ]
+                ]  # type: ignore[assignment]
             if isinstance(cond, Symbol) and cond.name.lower() == "t":
                 for action in actions:
                     self._emit_expr(buf, action)
@@ -1535,7 +1535,7 @@ class CodeGenerator:
                 actions = [
                     x for i, x in enumerate(actions)
                     if i == len(actions) - 1 or not isinstance(x, String)
-                ]
+                ]  # type: ignore[assignment]
             # 语句上下文（值被丢弃）：子句体末/中位置的字面 `nil`/`T` 是纯 no-op
             # （PUSH+POP），CAD 省略（dcl:set-mtext `(cond ((> i% rows) nil) ...)`
             # golden 子句体仅入口 `0a`，无 `01 0a`）。值上下文（cond 结果是该
@@ -1544,7 +1544,7 @@ class CodeGenerator:
                 actions = [
                     a for a in actions
                     if not (isinstance(a, Symbol) and a.name.lower() in ("nil", "t"))
-                ]
+                ]  # type: ignore[assignment]
             buf.label(f"{base}_body_{i}")
             # CAD stub：空体子句（`(cond (x) ...)`，无动作）不发入口 POP——
             # 测试值留在栈顶作为 cond 结果，COND_OR 真时直接落到该子句结束

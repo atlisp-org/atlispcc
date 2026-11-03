@@ -31,7 +31,7 @@ def cmd_info(source: str, json_out: bool = False, encoding: str = "ansi") -> dic
 
         archive = read_vlx(source)
         load = archive.load()
-        info = {
+        info: dict = {
             "file": source,
             "format": "vrtlib-1",
             "size": os.path.getsize(source),
